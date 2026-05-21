@@ -9,10 +9,11 @@ plan is to sync it to Argo and build the dashboard there.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
-| `claude-code` | `~/.claude/projects/**/*.jsonl` (offset-incremental) | message | `requestId` | working |
+| `claude-code` | `~/.claude/projects/**/*.jsonl` (offset-incremental) | message | `requestId` | working (Max-only, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
-| `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` | session | `id` | needs container read (see below) |
+| `feuer` | Docker `feuer` container → `/opt/data/state.db` → `sessions` | session | `id` | postponed (see below) |
+| `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | working |
 
 Each source records tokens; almost none records reliable cost. So the tracker
 computes one comparable cost for every row from its own pricing table
@@ -66,21 +67,43 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 2. Register it in `src/collectors/index.ts`.
 3. If its model isn't priced yet, add a rate to `src/pricing.ts`.
 
+## Source-specific notes
+
+### Claude Code Max-only exclusion
+
+The `claude-code` collector intentionally skips worker sessions whose model
+routes through the IU bridge (Kimi-K2.6, GPT-4o, etc.) or carries the `-eu`
+suffix. Those requests are now counted directly by the `litellm` source; keeping
+them in `claude-code` would double-count bridge traffic. Only Max-orchestrated
+Claude sessions (`claude-*` without `-eu`) remain in the `claude-code` source.
+
+### LiteLLM bridge
+
+The litellm source reads a newline-delimited JSON log written by a LiteLLM
+`CustomLogger` callback (`dotfiles/config/litellm/usage_logger.py`) — one line
+per request. The collector consumes it by byte offset so it never re-reads
+history. If the file is absent the collector reports not-present gracefully.
+
+### Feuer access (postponed)
+
+Feuer runs the hermes-agent runtime in a Docker container with its `state.db`
+bind-mounted. Reading it from a *transient* SQLite connection fails with
+`database disk image is malformed` — both from the host (mid-WAL bind mount) and
+from inside the container. Root cause: the DB contains an FTS5 virtual table
+(`messages_fts`); a fresh connection cannot construct the vtable
+(`vtable constructor failed: messages_fts`), which poisons reads of the regular
+`sessions` table too. The app's own long-lived connection is unaffected.
+
+The docker-exec collector path is built and gated behind `FEUER_CONTAINER`
+(unset by default → cheap skip). Re-enabling needs a read method that doesn't
+use a transient stock-sqlite connection — e.g. read through the hermes-agent
+runtime's own code (`lib/telemetry.py` already projects sessions), or have Feuer
+export `sessions` to JSON on a schedule that the tracker ingests. Hermes (native,
+`~/.hermes/state.db`) shares the identical schema and ingests fine — it is the
+working hermes-agent POC.
+
 ## Known gaps / follow-ups
 
-- **Pricing is seed values.** `src/pricing.ts` carries published Anthropic list
-  prices and the Feuer agent's configured Kimi/gpt rates. Verify against current
-  numbers and IU's actual per-token EU rates before trusting `$` figures.
-- **Feuer needs a container-side read.** Its `state.db` is bind-mounted into the
-  running `feuer` Docker container, so the host file is mid-WAL and reads as
-  malformed. The collector skips gracefully (status `skipped`, note `unreadable`)
-  until a consistent read path exists — e.g. a small container export
-  (`docker exec feuer python -c "..."` dumping `sessions` to JSON) or a
-  Feuer-side telemetry export the tracker can read.
-- **LiteLLM bridge is not yet a direct source.** The bridge logs nothing usable
-  today. Bridge spend is currently captured indirectly via the consumers that
-  route through it (Hermes, OpenCode, and Claude Code worker sessions tagged
-  `Kimi-K2.6`). A direct, authoritative capture would add a LiteLLM callback
-  writing per-request usage — a dotfiles config change plus a bridge restart.
+- **Feuer (postponed).** See "Feuer access" above — needs a non-transient read path.
 - **Argo sync + dashboard.** This DB is the staging layer; syncing to Argo and
   rendering the dashboard there is the next milestone.

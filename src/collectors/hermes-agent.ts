@@ -6,11 +6,6 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // the `sessions` table shape. The table is small (low thousands of rows) and
 // rows mutate as a session progresses, so we re-read all of it each run and rely
 // on the upsert to reconcile — no fragile watermark needed.
-//
-// Caveat (Feuer): its DB is bind-mounted into a running Docker container, so the
-// host file is mid-WAL and reads as malformed. We open read-only and, on any
-// failure, skip with a note rather than aborting the whole ingest. A consistent
-// read needs a container-side export (see README → "Feuer access").
 
 interface SessionRow {
   id: string;
@@ -32,39 +27,98 @@ interface SessionRow {
   cost_status: string | null;
 }
 
-export function hermesAgentCollector(opts: { source: string; dbPath: string }): Collector {
+export function hermesAgentCollector(opts: {
+  source: string;
+  dbPath: string;
+  container?: string;
+}): Collector {
   return {
     source: opts.source,
 
     available() {
+      if (opts.container) return true;
       return existsSync(opts.dbPath);
     },
 
     async collect(_ctx: CollectContext): Promise<CollectResult> {
-      let db: Database | undefined;
-      try {
-        db = new Database(opts.dbPath, { readonly: true });
-        const rows = db
-          .query<SessionRow, []>(
-            `SELECT id, source, model, started_at, ended_at, end_reason,
-                    message_count, tool_call_count,
-                    input_tokens, output_tokens, cache_read_tokens,
-                    cache_write_tokens, reasoning_tokens,
-                    billing_provider, estimated_cost_usd, actual_cost_usd, cost_status
-             FROM sessions`,
-          )
-          .all();
-        const records = rows.map((r) => toRecord(r));
-        const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
-        return { records, cursor };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { records: [], cursor: _ctx.cursor, note: `unreadable: ${msg}` };
-      } finally {
-        db?.close();
+      if (opts.container) {
+        return collectFromContainer(opts.container, _ctx);
       }
+      return collectFromHostFile(opts.dbPath, _ctx);
     },
   };
+}
+
+async function collectFromContainer(
+  container: string,
+  _ctx: CollectContext,
+): Promise<CollectResult> {
+  const script =
+    'import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute("SELECT id, source, model, started_at, ended_at, end_reason, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider, estimated_cost_usd, actual_cost_usd, cost_status FROM sessions")]; print(json.dumps(rows))';
+
+  try {
+    const proc = Bun.spawn(["docker", "exec", container, "python3", "-c", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+      // LaunchAgents (and worker subprocesses) inherit a minimal PATH; ensure the
+      // docker binary is resolvable — OrbStack/Docker Desktop install to
+      // /usr/local/bin, Homebrew to /opt/homebrew/bin.
+      env: { ...process.env, PATH: `/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}` },
+    });
+    const exitCode = await proc.exited;
+    const stdout = await new Response(proc.stdout).text();
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return {
+        records: [],
+        cursor: _ctx.cursor,
+        note: `unreadable: docker exec exited ${exitCode}${stderr ? ` — ${stderr.trim()}` : ""}`,
+      };
+    }
+
+    const trimmed = stdout.trim();
+    if (!trimmed) {
+      return { records: [], cursor: _ctx.cursor, note: "unreadable: empty output" };
+    }
+
+    const rows = JSON.parse(trimmed) as SessionRow[];
+    if (!Array.isArray(rows)) {
+      return { records: [], cursor: _ctx.cursor, note: "unreadable: expected JSON array" };
+    }
+
+    const records = rows.map((r) => toRecord(r));
+    const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
+    return { records, cursor };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { records: [], cursor: _ctx.cursor, note: `unreadable: ${msg}` };
+  }
+}
+
+function collectFromHostFile(dbPath: string, _ctx: CollectContext): CollectResult {
+  let db: Database | undefined;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const rows = db
+      .query<SessionRow, []>(
+        `SELECT id, source, model, started_at, ended_at, end_reason,
+                message_count, tool_call_count,
+                input_tokens, output_tokens, cache_read_tokens,
+                cache_write_tokens, reasoning_tokens,
+                billing_provider, estimated_cost_usd, actual_cost_usd, cost_status
+         FROM sessions`,
+      )
+      .all();
+    const records = rows.map((r) => toRecord(r));
+    const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
+    return { records, cursor };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { records: [], cursor: _ctx.cursor, note: `unreadable: ${msg}` };
+  } finally {
+    db?.close();
+  }
 }
 
 function toRecord(r: SessionRow): UsageRecord {

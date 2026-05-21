@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { classifyBilling } from "../models.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
 
 // Claude Code writes one JSONL file per session under ~/.claude/projects/.
@@ -78,6 +79,10 @@ function parseLine(line: string): UsageRecord | null {
   const usage = obj.message?.usage;
   if (obj.type !== "assistant" || !usage) return null;
   if (obj.message?.model === "<synthetic>") return null; // local, non-API message
+
+  const model = obj.message?.model ?? null;
+  // Skip bridge-model worker sessions to avoid double-counting with the litellm source.
+  if (classifyBilling("claude-code", model) === "iu") return null;
 
   const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
   if (!sourceId) return null;
