@@ -1,0 +1,21 @@
+{
+  "name": "usage-tracker",
+  "version": "0.1.0",
+  "description": "Local SQLite token/cost telemetry across Claude Code, the LiteLLM bridge, Hermes, Feuer and OpenCode",
+  "private": true,
+  "type": "module",
+  "module": "src/cli.ts",
+  "bin": {
+    "usage-tracker": "src/cli.ts"
+  },
+  "scripts": {
+    "ingest": "bun run src/cli.ts ingest",
+    "stats": "bun run src/cli.ts stats",
+    "sources": "bun run src/cli.ts sources",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

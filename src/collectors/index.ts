@@ -1,0 +1,27 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Collector } from "../types.ts";
+import { claudeCodeCollector } from "./claude-code.ts";
+import { hermesAgentCollector } from "./hermes-agent.ts";
+import { opencodeCollector } from "./opencode.ts";
+
+// The registry. Adding a source = write a collector and append it here. Paths
+// are overridable via env so the registry stays machine-agnostic.
+export const collectors: Collector[] = [
+  claudeCodeCollector,
+  hermesAgentCollector({
+    source: "hermes",
+    dbPath: process.env.HERMES_DB ?? join(homedir(), ".hermes", "state.db"),
+  }),
+  hermesAgentCollector({
+    source: "feuer",
+    dbPath:
+      process.env.FEUER_DB ??
+      join(homedir(), "IuRoot", "prometheus-feuer-agent", "state", "hermes", "state.db"),
+  }),
+  opencodeCollector,
+];
+
+export function findCollector(source: string): Collector | undefined {
+  return collectors.find((c) => c.source === source);
+}
