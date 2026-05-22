@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { homedir } from "node:os";
 import { SCHEMA } from "./schema.ts";
+import { currentMachine } from "./machine.ts";
 import { classifyBilling, normalizeModel } from "./models.ts";
 import { computeCost } from "./pricing.ts";
 import type { CollectResult, UsageRecord } from "./types.ts";
@@ -18,7 +19,29 @@ export function openDb(path = dbPath()): Database {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/**
+ * Forward-migrate an existing DB to the current schema. SCHEMA only creates
+ * missing tables/indexes (CREATE … IF NOT EXISTS), so a column added to an
+ * already-created table needs a guarded ALTER here. Each ALTER is keyed on the
+ * live column set, making this idempotent and safe on every open.
+ */
+function migrate(db: Database): void {
+  const cols = new Set(
+    db
+      .query<{ name: string }, []>("PRAGMA table_info(usage_record)")
+      .all()
+      .map((r) => r.name),
+  );
+  if (!cols.has("machine")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN machine TEXT");
+  }
+  if (!cols.has("outcome")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN outcome TEXT NOT NULL DEFAULT 'ok'");
+  }
 }
 
 export interface UpsertSummary {
@@ -28,16 +51,17 @@ export interface UpsertSummary {
 
 const UPSERT_SQL = `
 INSERT INTO usage_record
-  (source, source_id, grain, ts, model, model_norm, project, billing,
+  (source, source_id, grain, ts, model, model_norm, project, billing, machine, outcome,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
-  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $billing,
+  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $billing, $machine, $outcome,
    $input, $output, $cache_read, $cache_write, $reasoning,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
   model_norm=excluded.model_norm, project=excluded.project, billing=excluded.billing,
+  machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
   reasoning_tokens=excluded.reasoning_tokens,
@@ -57,6 +81,7 @@ export function upsertRecords(
 ): UpsertSummary {
   const before = countRows(db, source);
   const stmt = db.prepare(UPSERT_SQL);
+  const machine = currentMachine();
 
   const tx = db.transaction((rows: UsageRecord[]) => {
     for (const r of rows) {
@@ -77,6 +102,8 @@ export function upsertRecords(
         $model_norm: modelNorm,
         $project: r.project,
         $billing: classifyBilling(source, r.model),
+        $machine: machine,
+        $outcome: r.outcome ?? "ok",
         $input: r.inputTokens,
         $output: r.outputTokens,
         $cache_read: r.cacheReadTokens,

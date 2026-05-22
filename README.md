@@ -26,6 +26,10 @@ computes one comparable cost for every row from its own pricing table
 So `stats --by billing` answers both "how much Max value am I burning" and "what
 am I actually paying IU".
 
+Every row is also tagged with the `machine` that produced it (the macOS hardware
+model + chip, e.g. `Mac mini (M2 Pro)`) so multiple laptops' DBs stay
+distinguishable once merged — see "Machine attribution" below.
+
 ## Usage
 
 ```bash
@@ -33,14 +37,17 @@ make install            # bun install
 make backfill           # first run: full scan of all sources
 make ingest             # incremental (what the LaunchAgent runs)
 make stats              # cost + tokens by source
-make stats BY=model     # by model      (also: billing, day)
+make stats BY=model     # by model      (also: billing, day, machine)
 make stats BY=day SINCE=7
-make sources            # per-collector status, last run, last note
+make sources            # per-collector status, error rate, last run, last note
 make install-agent      # 15-min incremental ingest via LaunchAgent
 make logs               # tail agent logs
 ```
 
 DB path defaults to `~/.local/share/usage-tracker/usage.db` (override `USAGE_DB`).
+
+The LaunchAgent is also installed automatically by the dotfiles `make setup`
+(`_setup-usage-tracker` runs `bun install` + this repo's `install-agent.sh`).
 
 ## Design
 
@@ -83,6 +90,28 @@ The litellm source reads a newline-delimited JSON log written by a LiteLLM
 `CustomLogger` callback (`dotfiles/config/litellm/usage_logger.py`) — one line
 per request. The collector consumes it by byte offset so it never re-reads
 history. If the file is absent the collector reports not-present gracefully.
+
+### Bridge error rate
+
+Kimi-K2.6 is single-backend (Azure Sweden) and intermittently 5xx/429s, so its
+error rate is a property of the *bridge*, not of any one consumer — every source
+routed through it (Hermes, sideclaw, OpenCode, …) sees the same rate. Rather than
+attribute it per source, the logger's `async_log_failure_event` writes a
+token-less `event: "error"` line whenever a request fails, and the collector
+ingests those as `outcome = 'error'` rows. A failed attempt the fallback later
+rescues still logs (the rescue is a separate success on `claude-sonnet-4-6-eu`),
+which is the correct signal for Kimi availability.
+
+`stats` counts only successful rows (`outcome = 'ok'`) so the error rows never
+dilute token/cost totals; the error rate surfaces in `make sources` as `err%`.
+
+### Machine attribution
+
+The DB is local per machine; the eventual Argo sync merges several laptops' DBs
+into one view. So every row is tagged at ingest time with the host that produced
+it. The label is derived once per run: `USAGE_MACHINE` if set, else the macOS
+hardware model + chip via `system_profiler` (e.g. `Mac mini (M2 Pro)`), falling
+back to the hostname. Group by it with `make stats BY=machine`.
 
 ### Feuer access (postponed)
 

@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 // Read-side queries for the CLI. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine";
 
 interface StatRow {
   key: string;
@@ -21,12 +21,17 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   model: "coalesce(model_norm, '(unknown)')",
   billing: "billing",
   day: "substr(ts, 1, 10)",
+  machine: "coalesce(machine, '(unknown)')",
 };
 
 export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {
-  const where = opts.sinceDays
-    ? `WHERE ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`
-    : "";
+  // Error rows carry no tokens and would only dilute counts — keep token/cost
+  // aggregates to successful requests; the error rate lives in `sources`.
+  const conds = ["outcome = 'ok'"];
+  if (opts.sinceDays) {
+    conds.push(`ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
+  }
+  const where = `WHERE ${conds.join(" AND ")}`;
   return db
     .query<StatRow, []>(
       `SELECT ${GROUP_EXPR[opts.by]} AS key,
@@ -50,17 +55,30 @@ export interface SourceStatus {
   lastRunAt: string | null;
   lastStatus: string | null;
   lastNote: string | null;
+  errors: number;
+  total: number;
 }
 
 export function sourceStatus(db: Database): SourceStatus[] {
+  // errors/total come from the rows themselves (LEFT JOIN), so sources that
+  // never log failures simply show 0 — only the bridge surfaces a real rate.
   return db
     .query<SourceStatus, []>(
       `SELECT cs.source                              AS source,
               cs.records_total                       AS records,
               cs.last_run_at                         AS lastRunAt,
               cs.last_status                         AS lastStatus,
-              cs.last_note                           AS lastNote
+              cs.last_note                           AS lastNote,
+              coalesce(oc.errors, 0)                 AS errors,
+              coalesce(oc.total, 0)                  AS total
        FROM collector_state cs
+       LEFT JOIN (
+         SELECT source,
+                sum(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS errors,
+                count(*)                                           AS total
+         FROM usage_record
+         GROUP BY source
+       ) oc ON oc.source = cs.source
        ORDER BY cs.source`,
     )
     .all();
@@ -100,7 +118,7 @@ export function formatStats(rows: StatRow[], by: GroupBy): string {
 export function formatSources(rows: SourceStatus[]): string {
   if (rows.length === 0) return "(no collector state yet — run `ingest`)";
   const lines = [
-    [pad("source", 14), r("records", 9), pad("status", 9), pad("last run (UTC)", 22), "note"].join("  "),
+    [pad("source", 14), r("records", 9), pad("status", 9), r("err%", 7), pad("last run (UTC)", 22), "note"].join("  "),
   ];
   for (const s of rows) {
     lines.push(
@@ -108,6 +126,7 @@ export function formatSources(rows: SourceStatus[]): string {
         pad(s.source, 14),
         r(num(s.records), 9),
         pad(s.lastStatus ?? "-", 9),
+        r(errPct(s), 7),
         pad(s.lastRunAt ?? "-", 22),
         s.lastNote ?? "",
       ].join("  "),
@@ -115,6 +134,13 @@ export function formatSources(rows: SourceStatus[]): string {
   }
   return lines.join("\n");
 }
+
+// "-" when nothing seen yet, "0%" when clean, else one decimal (e.g. "4.2%").
+const errPct = (s: SourceStatus): string => {
+  if (s.total === 0) return "-";
+  if (s.errors === 0) return "0%";
+  return `${((s.errors / s.total) * 100).toFixed(1)}%`;
+};
 
 const num = (n: number | null) => (n ?? 0).toLocaleString("en-US");
 const usd = (n: number) => `$${n.toFixed(n < 10 ? 4 : 2)}`;

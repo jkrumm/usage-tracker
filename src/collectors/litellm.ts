@@ -6,6 +6,12 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // Reads offset-incrementally from a newline-delimited JSON file produced by the
 // LiteLLM bridge. Each line is one request: { ts, request_id, model, input_tokens,
 // output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens }.
+//
+// Failed requests are logged too, marked `event: "error"` with no token fields.
+// Kimi-K2.6 is single-backend (Azure Sweden) and intermittently 5xx/429s, so the
+// error rate is a property of the bridge, not of any one consumer — every source
+// routed through it (Hermes, sideclaw, …) sees the same rate. Capturing it once
+// here as zero-token error rows makes that one rate queryable.
 
 const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "litellm.jsonl");
 
@@ -13,6 +19,10 @@ interface LitellmLine {
   ts?: string;
   request_id?: string;
   model?: string | null;
+  event?: string;
+  error_type?: string | null;
+  error_code?: string | number | null;
+  status_code?: number | null;
   input_tokens?: number;
   output_tokens?: number;
   cache_read_tokens?: number;
@@ -74,6 +84,28 @@ function parseLine(line: string): UsageRecord | null {
   }
 
   const sourceId = obj.request_id ?? String(Bun.hash(line));
+
+  if (obj.event === "error") {
+    return {
+      sourceId,
+      grain: "message",
+      ts: obj.ts ?? new Date().toISOString(),
+      model: obj.model ?? null,
+      project: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      outcome: "error",
+      raw: {
+        errorType: obj.error_type ?? null,
+        errorCode: obj.error_code ?? null,
+        statusCode: obj.status_code ?? null,
+      },
+    };
+  }
+
   return {
     sourceId,
     grain: "message",

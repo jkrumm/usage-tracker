@@ -12,16 +12,17 @@ COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
     --source <name>      Only run one collector (claude-code|hermes|feuer|opencode)
-  stats                  Aggregated token + cost report
-    --by <dim>           Group by: source (default) | model | billing | day
+  stats                  Aggregated token + cost report (successful requests only)
+    --by <dim>           Group by: source (default) | model | billing | day | machine
     --since <N>          Only the last N days
-  sources                Per-collector status: rows, last run, last note
+  sources                Per-collector status: rows, error rate, last run, last note
   help                   This message
 
 ENV
-  USAGE_DB     SQLite path (default ~/.local/share/usage-tracker/usage.db)
-  HERMES_DB    Override Hermes state.db path
-  FEUER_DB     Override Feuer state.db path
+  USAGE_DB       SQLite path (default ~/.local/share/usage-tracker/usage.db)
+  USAGE_MACHINE  Override the machine label (default: macOS hardware model, e.g. "Mac mini (M2 Pro)")
+  HERMES_DB      Override Hermes state.db path
+  FEUER_DB       Override Feuer state.db path
 `;
 
 function flag(args: string[], name: string): string | undefined {

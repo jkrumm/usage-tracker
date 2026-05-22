@@ -7,6 +7,7 @@
 
 export type Billing = "max" | "iu" | "anthropic-api" | "unknown";
 export type Grain = "message" | "session";
+export type Outcome = "ok" | "error";
 
 /**
  * A normalized usage record. Collectors produce these knowing only tokens —
@@ -28,6 +29,11 @@ export interface UsageRecord {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
+  /**
+   * Request outcome. Defaults to "ok"; sources that observe failures (the
+   * LiteLLM bridge) emit zero-token "error" rows so the error rate is queryable.
+   */
+  outcome?: Outcome;
   /** Optional source-specific extras, persisted as JSON for later inspection. */
   raw?: Record<string, unknown>;
 }

@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS usage_record (
   model_norm         TEXT,                        -- canonical name used for pricing/grouping
   project            TEXT,                        -- cwd / workspace / channel
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
+  machine            TEXT,                        -- host that produced the record (derived at ingest)
+  outcome            TEXT    NOT NULL DEFAULT 'ok', -- 'ok' | 'error' (bridge request outcome)
 
   input_tokens       INTEGER NOT NULL DEFAULT 0,
   output_tokens      INTEGER NOT NULL DEFAULT 0,
