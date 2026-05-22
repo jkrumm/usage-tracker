@@ -13,10 +13,25 @@ if [[ -z "$BUN" ]]; then
   exit 1
 fi
 
+ARGO_URL="https://argo.jkrumm.com/api"
+ARGO_TOKEN=""
+
+if command -v op >/dev/null 2>&1; then
+  if ! ARGO_TOKEN=$(op read "op://common/api/SECRET" --account tkrumm 2>/dev/null); then
+    echo "warning: could not read ARGO_TOKEN from 1Password — sync will be disabled" >&2
+  fi
+else
+  echo "warning: op CLI not found — ARGO_TOKEN not set; sync will be disabled" >&2
+fi
+
 mkdir -p "$HOME/Library/LaunchAgents"
 sed -e "s|__BUN__|${BUN}|g" \
     -e "s|__REPO__|${REPO}|g" \
+    -e "s|__ARGO_URL__|${ARGO_URL}|g" \
+    -e "s|__ARGO_TOKEN__|${ARGO_TOKEN}|g" \
     "${REPO}/launchd/${LABEL}.plist.template" > "$PLIST"
+
+chmod 600 "$PLIST"
 
 # Reload cleanly: bootout if already loaded, then bootstrap + kickstart.
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true

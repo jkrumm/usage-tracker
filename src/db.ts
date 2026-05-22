@@ -42,6 +42,9 @@ function migrate(db: Database): void {
   if (!cols.has("outcome")) {
     db.exec("ALTER TABLE usage_record ADD COLUMN outcome TEXT NOT NULL DEFAULT 'ok'");
   }
+  if (!cols.has("synced_at")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN synced_at TEXT");
+  }
 }
 
 export interface UpsertSummary {

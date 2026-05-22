@@ -2,6 +2,7 @@
 import { dbPath, openDb } from "./db.ts";
 import { runIngest } from "./ingest.ts";
 import { formatSources, formatStats, sourceStatus, stats, type GroupBy } from "./report.ts";
+import { sync } from "./sync.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
 
@@ -12,6 +13,7 @@ COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
     --source <name>      Only run one collector (claude-code|hermes|feuer|opencode)
+  sync                   Push eligible usage_record rows to the Argo API
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine
     --since <N>          Only the last N days
@@ -21,6 +23,8 @@ COMMANDS
 ENV
   USAGE_DB       SQLite path (default ~/.local/share/usage-tracker/usage.db)
   USAGE_MACHINE  Override the machine label (default: macOS hardware model, e.g. "Mac mini (M2 Pro)")
+  ARGO_URL       Argo API base URL (default https://argo.jkrumm.com/api)
+  ARGO_TOKEN     Bearer token for Argo sync (if absent, sync is silently disabled)
   HERMES_DB      Override Hermes state.db path
   FEUER_DB       Override Feuer state.db path
 `;
@@ -55,6 +59,12 @@ async function main(): Promise<number> {
       const failed = results.some((r) => r.status === "error");
       process.stdout.write(`\ndb: ${dbPath()}\n`);
       return failed ? 1 : 0;
+    }
+
+    if (cmd === "sync") {
+      const { pushed, batches } = await sync(db);
+      process.stdout.write(`sync: ${pushed} records pushed in ${batches} batch${batches === 1 ? "" : "es"}\n`);
+      return 0;
     }
 
     if (cmd === "stats") {

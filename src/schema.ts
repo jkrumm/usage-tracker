@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
 
   raw                TEXT,                         -- JSON: source-specific extras
   ingested_at        TEXT    NOT NULL,
+  synced_at          TEXT,                         -- set by the Argo remote sync client; NULL = not yet pushed
 
   UNIQUE (source, source_id)
 );

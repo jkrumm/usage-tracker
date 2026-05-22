@@ -36,6 +36,7 @@ distinguishable once merged — see "Machine attribution" below.
 make install            # bun install
 make backfill           # first run: full scan of all sources
 make ingest             # incremental (what the LaunchAgent runs)
+make sync               # push unsynced rows to Argo API
 make stats              # cost + tokens by source
 make stats BY=model     # by model      (also: billing, day, machine)
 make stats BY=day SINCE=7
@@ -133,6 +134,28 @@ working hermes-agent POC.
 
 ## Known gaps / follow-ups
 
+### Argo sync
+
+Syncing with the Argo API happens automatically at the end of every `ingest` run
+and can also be triggered manually with `bun run src/cli.ts sync` or
+`make sync`. The sync reads every local `usage_record` row where
+`synced_at IS NULL OR ingested_at > synced_at` and POSTs it in batches of 500
+to the Argo endpoint. Argo identifies rows by the `(source, source_id)` pair
+which is our unique key, so re-sending already-pushed rows simply updates them
+on the server with the latest token counts and cost. This makes the sync safe to
+run idempotently and means a row whose tokens grew since its last sync will be
+re-sent and updated on the server.
+
+Only two env vars are required:
+
+| Variable | Default | Description |
+|-|-|-|
+| `ARGO_URL` | `https://argo.jkrumm.com/api` | Base URL of the Argo API |
+| `ARGO_TOKEN` | — (no default) | Bearer token for the Argo `/usage/records` endpoint |
+
+If `ARGO_TOKEN` is absent the sync step logs one info line and does nothing —
+not an error, so a machine that only collects locally is still fully functional.
+This is also what happens when a fresh LaunchAgent is installed and `op` is not
+available to retrieve the token at install time.
+
 - **Feuer (postponed).** See "Feuer access" above — needs a non-transient read path.
-- **Argo sync + dashboard.** This DB is the staging layer; syncing to Argo and
-  rendering the dashboard there is the next milestone.

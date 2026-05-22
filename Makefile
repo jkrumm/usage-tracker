@@ -17,6 +17,9 @@ backfill: ## Full re-scan of every source (ignores watermarks)
 stats: ## Token + cost report (override: make stats BY=model SINCE=7)
 	bun run src/cli.ts stats $(if $(BY),--by $(BY)) $(if $(SINCE),--since $(SINCE))
 
+sync: ## Push unsynced rows to the Argo API
+	bun run src/cli.ts sync
+
 sources: ## Per-collector status
 	bun run src/cli.ts sources
 

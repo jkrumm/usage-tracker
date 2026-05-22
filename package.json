@@ -12,6 +12,7 @@
     "ingest": "bun run src/cli.ts ingest",
     "stats": "bun run src/cli.ts stats",
     "sources": "bun run src/cli.ts sources",
+    "sync": "bun run src/cli.ts sync",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
+import { sync } from "./sync.ts";
 import type { Collector } from "./types.ts";
 
 export interface SourceResult {
@@ -36,6 +37,17 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
   for (const c of targets) {
     results.push(await runOne(db, c, opts));
   }
+
+  try {
+    const { pushed, batches } = await sync(db);
+    if (pushed > 0) {
+      log.info(`sync: pushed ${pushed} records in ${batches} batch${batches === 1 ? "" : "es"}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error(`sync: ${msg}`);
+  }
+
   return results;
 }
 

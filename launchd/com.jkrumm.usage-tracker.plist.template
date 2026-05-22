@@ -28,6 +28,14 @@
     <key>StandardErrorPath</key>
     <string>/tmp/usage-tracker.err</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ARGO_URL</key>
+        <string>__ARGO_URL__</string>
+        <key>ARGO_TOKEN</key>
+        <string>__ARGO_TOKEN__</string>
+    </dict>
+
     <key>ProcessType</key>
     <string>Background</string>
 </dict>
