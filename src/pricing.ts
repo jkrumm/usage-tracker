@@ -36,6 +36,8 @@ export const PRICING: Record<string, Rate> = {
   // OpenAI / Google list prices, verified May 2026.
   "gpt-5-mini": { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0.25 },
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
+  "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
+  "gemini-3.1-flash-tts-preview": { input: 1.0, output: 20.0, cacheRead: 0, cacheWrite: 0 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
