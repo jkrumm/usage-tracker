@@ -42,9 +42,9 @@ export function hermesAgentCollector(opts: {
 
     async collect(_ctx: CollectContext): Promise<CollectResult> {
       if (opts.container) {
-        return collectFromContainer(opts.container, _ctx);
+        return collectFromContainer(opts.container, _ctx, opts.source);
       }
-      return collectFromHostFile(opts.dbPath, _ctx);
+      return collectFromHostFile(opts.dbPath, _ctx, opts.source);
     },
   };
 }
@@ -52,6 +52,7 @@ export function hermesAgentCollector(opts: {
 async function collectFromContainer(
   container: string,
   _ctx: CollectContext,
+  source: string,
 ): Promise<CollectResult> {
   const script =
     'import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute("SELECT id, source, model, started_at, ended_at, end_reason, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider, estimated_cost_usd, actual_cost_usd, cost_status FROM sessions")]; print(json.dumps(rows))';
@@ -87,7 +88,7 @@ async function collectFromContainer(
       return { records: [], cursor: _ctx.cursor, note: "unreadable: expected JSON array" };
     }
 
-    const records = rows.map((r) => toRecord(r));
+    const records = rows.map((r) => toRecord(r, source));
     const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
     return { records, cursor };
   } catch (err) {
@@ -96,7 +97,7 @@ async function collectFromContainer(
   }
 }
 
-function collectFromHostFile(dbPath: string, _ctx: CollectContext): CollectResult {
+function collectFromHostFile(dbPath: string, _ctx: CollectContext, source: string): CollectResult {
   let db: Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true });
@@ -110,7 +111,7 @@ function collectFromHostFile(dbPath: string, _ctx: CollectContext): CollectResul
          FROM sessions`,
       )
       .all();
-    const records = rows.map((r) => toRecord(r));
+    const records = rows.map((r) => toRecord(r, source));
     const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
     return { records, cursor };
   } catch (err) {
@@ -121,7 +122,15 @@ function collectFromHostFile(dbPath: string, _ctx: CollectContext): CollectResul
   }
 }
 
-function toRecord(r: SessionRow): UsageRecord {
+// Map the collector source to the actual repo name. The Hermes session table's
+// own `source` column (cron/cli/…) is an invocation channel, not a project, so
+// we route it to `subTool` and pin `project` to the repo the daemon lives in.
+const PROJECT_BY_SOURCE: Record<string, string> = {
+  hermes: "hermes-agent",
+  feuer: "prometheus-feuer-agent",
+};
+
+function toRecord(r: SessionRow, source: string): UsageRecord {
   const durationMs =
     r.ended_at != null && r.started_at != null
       ? Math.max(0, Math.round((r.ended_at - r.started_at) * 1000))
@@ -131,7 +140,8 @@ function toRecord(r: SessionRow): UsageRecord {
     grain: "session",
     ts: new Date(r.started_at * 1000).toISOString(),
     model: r.model,
-    project: r.source,
+    project: PROJECT_BY_SOURCE[source] ?? null,
+    subTool: r.source,
     inputTokens: r.input_tokens ?? 0,
     outputTokens: r.output_tokens ?? 0,
     cacheReadTokens: r.cache_read_tokens ?? 0,
