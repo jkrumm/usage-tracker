@@ -122,6 +122,10 @@ function collectFromHostFile(dbPath: string, _ctx: CollectContext): CollectResul
 }
 
 function toRecord(r: SessionRow): UsageRecord {
+  const durationMs =
+    r.ended_at != null && r.started_at != null
+      ? Math.max(0, Math.round((r.ended_at - r.started_at) * 1000))
+      : null;
   return {
     sourceId: r.id,
     grain: "session",
@@ -133,6 +137,7 @@ function toRecord(r: SessionRow): UsageRecord {
     cacheReadTokens: r.cache_read_tokens ?? 0,
     cacheWriteTokens: r.cache_write_tokens ?? 0,
     reasoningTokens: r.reasoning_tokens ?? 0,
+    durationMs,
     raw: {
       endReason: r.end_reason,
       messageCount: r.message_count,

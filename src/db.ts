@@ -45,6 +45,13 @@ function migrate(db: Database): void {
   if (!cols.has("synced_at")) {
     db.exec("ALTER TABLE usage_record ADD COLUMN synced_at TEXT");
   }
+  if (!cols.has("sub_tool")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN sub_tool TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_usage_sub_tool ON usage_record (sub_tool)");
+  }
+  if (!cols.has("duration_ms")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN duration_ms INTEGER");
+  }
 }
 
 export interface UpsertSummary {
@@ -54,20 +61,20 @@ export interface UpsertSummary {
 
 const UPSERT_SQL = `
 INSERT INTO usage_record
-  (source, source_id, grain, ts, model, model_norm, project, billing, machine, outcome,
-   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+  (source, source_id, grain, ts, model, model_norm, project, sub_tool, billing, machine, outcome,
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
-  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $billing, $machine, $outcome,
-   $input, $output, $cache_read, $cache_write, $reasoning,
+  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $sub_tool, $billing, $machine, $outcome,
+   $input, $output, $cache_read, $cache_write, $reasoning, $duration_ms,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
-  model_norm=excluded.model_norm, project=excluded.project, billing=excluded.billing,
-  machine=excluded.machine, outcome=excluded.outcome,
+  model_norm=excluded.model_norm, project=excluded.project, sub_tool=excluded.sub_tool,
+  billing=excluded.billing, machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
-  reasoning_tokens=excluded.reasoning_tokens,
+  reasoning_tokens=excluded.reasoning_tokens, duration_ms=excluded.duration_ms,
   cost_usd=excluded.cost_usd, cost_source=excluded.cost_source, raw=excluded.raw,
   ingested_at=datetime('now');
 `;
@@ -104,6 +111,7 @@ export function upsertRecords(
         $model: r.model,
         $model_norm: modelNorm,
         $project: r.project,
+        $sub_tool: r.subTool ?? null,
         $billing: classifyBilling(source, r.model),
         $machine: machine,
         $outcome: r.outcome ?? "ok",
@@ -112,6 +120,7 @@ export function upsertRecords(
         $cache_read: r.cacheReadTokens,
         $cache_write: r.cacheWriteTokens,
         $reasoning: r.reasoningTokens,
+        $duration_ms: r.durationMs ?? null,
         $cost_usd: cost.usd,
         $cost_source: cost.source,
         $raw: r.raw ? JSON.stringify(r.raw) : null,

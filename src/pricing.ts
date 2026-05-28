@@ -38,6 +38,12 @@ export const PRICING: Record<string, Rate> = {
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
   "gemini-3.1-flash-tts-preview": { input: 1.0, output: 20.0, cacheRead: 0, cacheWrite: 0 },
+  // Audio models (OpenAI), text-token rates — audio_tokens / audio_seconds are
+  // captured in raw.{audioTokens,audioSeconds} for future per-audio-minute pricing
+  // refinement. Cache fields zero (no caching on the audio path).
+  "gpt-4o-transcribe": { input: 2.5, output: 10.0, cacheRead: 0, cacheWrite: 0 },
+  "gpt-4o-mini-tts": { input: 0.6, output: 12.0, cacheRead: 0, cacheWrite: 0 },
+  "whisper": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };

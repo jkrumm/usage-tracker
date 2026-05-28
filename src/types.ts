@@ -24,11 +24,19 @@ export interface UsageRecord {
   model: string | null;
   /** Project / workspace / channel context, source-specific. */
   project: string | null;
+  /**
+   * Sub-tool / action that triggered the request, where the source can attribute
+   * it — e.g. "check", "review:angle", "implement" for sideclaw-attributed rows.
+   * Null when the source doesn't expose this granularity.
+   */
+  subTool?: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
+  /** Request/session latency in milliseconds when the source reports it. */
+  durationMs?: number | null;
   /**
    * Request outcome. Defaults to "ok"; sources that observe failures (the
    * LiteLLM bridge) emit zero-token "error" rows so the error rate is queryable.

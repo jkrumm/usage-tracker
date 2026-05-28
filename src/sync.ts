@@ -22,6 +22,7 @@ interface DbRow {
   model: string | null;
   model_norm: string | null;
   project: string | null;
+  sub_tool: string | null;
   billing: string;
   machine: string | null;
   outcome: string;
@@ -30,6 +31,7 @@ interface DbRow {
   cache_read_tokens: number;
   cache_write_tokens: number;
   reasoning_tokens: number;
+  duration_ms: number | null;
   cost_usd: number | null;
   cost_source: string;
   raw: string | null;
@@ -37,8 +39,8 @@ interface DbRow {
 }
 
 const ELIGIBLE_SQL = `
-SELECT id, source, source_id, grain, ts, model, model_norm, project, billing, machine, outcome,
-       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
+SELECT id, source, source_id, grain, ts, model, model_norm, project, sub_tool, billing, machine, outcome,
+       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
        cost_usd, cost_source, raw, ingested_at
 FROM usage_record
 WHERE synced_at IS NULL OR ingested_at > synced_at
@@ -117,6 +119,7 @@ function rowToPayload(r: DbRow): Record<string, unknown> {
     model: r.model,
     model_norm: r.model_norm,
     project: r.project,
+    sub_tool: r.sub_tool,
     billing: r.billing,
     machine: r.machine,
     outcome: r.outcome,
@@ -125,6 +128,7 @@ function rowToPayload(r: DbRow): Record<string, unknown> {
     cache_read_tokens: r.cache_read_tokens,
     cache_write_tokens: r.cache_write_tokens,
     reasoning_tokens: r.reasoning_tokens,
+    duration_ms: r.duration_ms,
     cost_usd: r.cost_usd,
     cost_source: r.cost_source,
     raw: safeJsonParse(r.raw),

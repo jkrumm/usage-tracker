@@ -39,7 +39,7 @@ make backfill           # first run: full scan of all sources
 make ingest             # incremental (what the LaunchAgent runs)
 make sync               # push unsynced rows to Argo API
 make stats              # cost + tokens by source
-make stats BY=model     # by model      (also: billing, day, machine)
+make stats BY=model     # by model      (also: billing, day, machine, sub_tool)
 make stats BY=day SINCE=7
 make sources            # per-collector status, error rate, last run, last note
 make install-agent      # 15-min incremental ingest via LaunchAgent
@@ -92,6 +92,24 @@ The litellm source reads a newline-delimited JSON log written by a LiteLLM
 `CustomLogger` callback (`dotfiles/config/litellm/usage_logger.py`) — one line
 per request. The collector consumes it by byte offset so it never re-reads
 history. If the file is absent the collector reports not-present gracefully.
+
+Each line carries `ts_start` / `ts_end` / `duration_ms`, so the bridge's
+per-request latency is queryable directly.
+
+### Sideclaw attribution
+
+The bridge logger sees only tokens — it has no way to know which sideclaw tool
+(`check`, `review`, `research`, `implement`, …) caused a given request. To
+recover that, sideclaw's `runSession` appends one record per worker to
+`~/.local/share/usage-tracker/sideclaw-sessions.jsonl` with
+`{ tool, project, tsStart, tsEnd, outcome, durationMs, turns }`. The litellm
+collector loads this on every run and tags rows whose `ts` falls inside a
+window with `sub_tool` and `project`. When concurrent windows overlap, the
+narrowest one wins (best-effort heuristic — small risk of misattribution under
+heavy parallel fan-out). Review's three internal phases are tagged separately
+as `review:router` / `review:angle` / `review:synthesis`.
+
+Group by it with `make stats BY=sub_tool`.
 
 ### Bridge error rate
 

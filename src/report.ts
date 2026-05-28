@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 // Read-side queries for the CLI. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool";
 
 interface StatRow {
   key: string;
@@ -22,6 +22,7 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   billing: "billing",
   day: "substr(ts, 1, 10)",
   machine: "coalesce(machine, '(unknown)')",
+  sub_tool: "coalesce(sub_tool, '(none)')",
 };
 
 export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {

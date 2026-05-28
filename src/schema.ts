@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   model              TEXT,                        -- raw model string from the source
   model_norm         TEXT,                        -- canonical name used for pricing/grouping
   project            TEXT,                        -- cwd / workspace / channel
+  sub_tool           TEXT,                        -- e.g. 'check' | 'review' | 'implement' for sideclaw-attributed rows
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
   machine            TEXT,                        -- host that produced the record (derived at ingest)
   outcome            TEXT    NOT NULL DEFAULT 'ok', -- 'ok' | 'error' (bridge request outcome)
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
+  duration_ms        INTEGER,                      -- request/session latency when the source reports it
 
   cost_usd           REAL,                         -- computed from pricing.ts; NULL if model unpriced
   cost_source        TEXT    NOT NULL DEFAULT 'none', -- 'computed' | 'none'
@@ -35,6 +37,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_ts      ON usage_record (ts);
 CREATE INDEX IF NOT EXISTS idx_usage_source  ON usage_record (source);
 CREATE INDEX IF NOT EXISTS idx_usage_model   ON usage_record (model_norm);
 CREATE INDEX IF NOT EXISTS idx_usage_billing ON usage_record (billing);
+-- idx_usage_sub_tool is created in db.ts migrate() so it lands after the
+-- guarded ALTER on existing DBs (column doesn't exist on pre-migration tables).
 
 -- One row per collector: its watermark and last-run bookkeeping.
 CREATE TABLE IF NOT EXISTS collector_state (

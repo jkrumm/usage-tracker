@@ -15,7 +15,7 @@ COMMANDS
     --source <name>      Only run one collector (claude-code|hermes|feuer|opencode)
   sync                   Push eligible usage_record rows to the Argo API
   stats                  Aggregated token + cost report (successful requests only)
-    --by <dim>           Group by: source (default) | model | billing | day | machine
+    --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
   help                   This message

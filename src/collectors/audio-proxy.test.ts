@@ -11,8 +11,12 @@ describe("audio-proxy collector", () => {
       endpoint: "speech",
       model: "gemini-3.1-flash-tts-preview",
       status: 200,
+      latency_ms: 1234,
       input_tokens: 12,
       output_tokens: 3400,
+      audio_tokens: null,
+      audio_seconds: 75.5,
+      input_chars: null,
       bytes_out: 50000,
     };
     const record = toRecord(row);
@@ -22,6 +26,8 @@ describe("audio-proxy collector", () => {
     expect(record.inputTokens).toBe(12);
     expect(record.outputTokens).toBe(3400);
     expect(record.outcome).toBe("ok");
+    expect(record.durationMs).toBe(1234);
+    expect(record.subTool).toBe("speech");
   });
 
   test("computeCost for gemini-3.1-flash-tts-preview output tokens", () => {
