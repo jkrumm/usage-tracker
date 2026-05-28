@@ -14,6 +14,8 @@ export const collectors: Collector[] = [
   hermesAgentCollector({
     source: "hermes",
     dbPath: process.env.HERMES_DB ?? join(homedir(), ".hermes", "state.db"),
+    workspace: "private",
+    project: "hermes-agent",
   }),
   hermesAgentCollector({
     source: "feuer",
@@ -25,6 +27,8 @@ export const collectors: Collector[] = [
     // to re-enable the docker-exec path once a working read method exists.
     // See README → "Feuer access (postponed)".
     container: process.env.FEUER_CONTAINER,
+    workspace: "work",
+    project: "prometheus-feuer-agent",
   }),
   opencodeCollector,
   litellmCollector,

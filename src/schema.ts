@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   model              TEXT,                        -- raw model string from the source
   model_norm         TEXT,                        -- canonical name used for pricing/grouping
   project            TEXT,                        -- cwd / workspace / channel
+  workspace          TEXT,                        -- 'work' | 'private' | NULL (collector-declared or null when Argo classifies)
   sub_tool           TEXT,                        -- e.g. 'check' | 'review' | 'implement' for sideclaw-attributed rows
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
   machine            TEXT,                        -- host that produced the record (derived at ingest)

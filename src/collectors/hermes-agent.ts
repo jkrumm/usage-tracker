@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import type {
+  Collector,
+  CollectContext,
+  CollectResult,
+  UsageRecord,
+  Workspace,
+} from "../types.ts";
 
 // Hermes and Feuer both run the NousResearch hermes-agent runtime, so they share
 // the `sessions` table shape. The table is small (low thousands of rows) and
@@ -31,9 +37,19 @@ export function hermesAgentCollector(opts: {
   source: string;
   dbPath: string;
   container?: string;
+  /** Workspace this collector emits — the daemon is pinned, not the records. */
+  workspace: Workspace;
+  /**
+   * Repo this daemon lives in. The Hermes `session.source` column is an
+   * invocation channel (`cron`/`cli`/…); we route that to `subTool` and pin
+   * `project` to the repo so the dashboard's project breakdown shows
+   * `hermes-agent` / `prometheus-feuer-agent` instead of `cron`.
+   */
+  project: string;
 }): Collector {
   return {
     source: opts.source,
+    workspace: opts.workspace,
 
     available() {
       if (opts.container) return true;
@@ -42,9 +58,9 @@ export function hermesAgentCollector(opts: {
 
     async collect(_ctx: CollectContext): Promise<CollectResult> {
       if (opts.container) {
-        return collectFromContainer(opts.container, _ctx, opts.source);
+        return collectFromContainer(opts.container, _ctx, opts.project);
       }
-      return collectFromHostFile(opts.dbPath, _ctx, opts.source);
+      return collectFromHostFile(opts.dbPath, _ctx, opts.project);
     },
   };
 }
@@ -52,7 +68,7 @@ export function hermesAgentCollector(opts: {
 async function collectFromContainer(
   container: string,
   _ctx: CollectContext,
-  source: string,
+  project: string,
 ): Promise<CollectResult> {
   const script =
     'import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute("SELECT id, source, model, started_at, ended_at, end_reason, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider, estimated_cost_usd, actual_cost_usd, cost_status FROM sessions")]; print(json.dumps(rows))';
@@ -88,7 +104,7 @@ async function collectFromContainer(
       return { records: [], cursor: _ctx.cursor, note: "unreadable: expected JSON array" };
     }
 
-    const records = rows.map((r) => toRecord(r, source));
+    const records = rows.map((r) => toRecord(r, project));
     const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
     return { records, cursor };
   } catch (err) {
@@ -97,7 +113,11 @@ async function collectFromContainer(
   }
 }
 
-function collectFromHostFile(dbPath: string, _ctx: CollectContext, source: string): CollectResult {
+function collectFromHostFile(
+  dbPath: string,
+  _ctx: CollectContext,
+  project: string,
+): CollectResult {
   let db: Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true });
@@ -111,7 +131,7 @@ function collectFromHostFile(dbPath: string, _ctx: CollectContext, source: strin
          FROM sessions`,
       )
       .all();
-    const records = rows.map((r) => toRecord(r, source));
+    const records = rows.map((r) => toRecord(r, project));
     const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
     return { records, cursor };
   } catch (err) {
@@ -122,15 +142,7 @@ function collectFromHostFile(dbPath: string, _ctx: CollectContext, source: strin
   }
 }
 
-// Map the collector source to the actual repo name. The Hermes session table's
-// own `source` column (cron/cli/…) is an invocation channel, not a project, so
-// we route it to `subTool` and pin `project` to the repo the daemon lives in.
-const PROJECT_BY_SOURCE: Record<string, string> = {
-  hermes: "hermes-agent",
-  feuer: "prometheus-feuer-agent",
-};
-
-function toRecord(r: SessionRow, source: string): UsageRecord {
+function toRecord(r: SessionRow, project: string): UsageRecord {
   const durationMs =
     r.ended_at != null && r.started_at != null
       ? Math.max(0, Math.round((r.ended_at - r.started_at) * 1000))
@@ -140,7 +152,7 @@ function toRecord(r: SessionRow, source: string): UsageRecord {
     grain: "session",
     ts: new Date(r.started_at * 1000).toISOString(),
     model: r.model,
-    project: PROJECT_BY_SOURCE[source] ?? null,
+    project,
     subTool: r.source,
     inputTokens: r.input_tokens ?? 0,
     outputTokens: r.output_tokens ?? 0,

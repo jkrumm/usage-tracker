@@ -23,6 +23,7 @@ export interface AudioProxyRow {
 
 export const audioProxyCollector: Collector = {
   source: "audio-proxy",
+  workspace: "private",
 
   available() {
     return existsSync(DB_PATH);

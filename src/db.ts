@@ -6,7 +6,7 @@ import { SCHEMA } from "./schema.ts";
 import { currentMachine } from "./machine.ts";
 import { classifyBilling, normalizeModel } from "./models.ts";
 import { computeCost } from "./pricing.ts";
-import type { CollectResult, UsageRecord } from "./types.ts";
+import type { CollectResult, UsageRecord, Workspace } from "./types.ts";
 
 /** Resolve the SQLite path: $USAGE_DB or ~/.local/share/usage-tracker/usage.db. */
 export function dbPath(): string {
@@ -52,6 +52,10 @@ function migrate(db: Database): void {
   if (!cols.has("duration_ms")) {
     db.exec("ALTER TABLE usage_record ADD COLUMN duration_ms INTEGER");
   }
+  if (!cols.has("workspace")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN workspace TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_usage_workspace ON usage_record (workspace)");
+  }
 }
 
 export interface UpsertSummary {
@@ -61,16 +65,17 @@ export interface UpsertSummary {
 
 const UPSERT_SQL = `
 INSERT INTO usage_record
-  (source, source_id, grain, ts, model, model_norm, project, sub_tool, billing, machine, outcome,
+  (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, machine, outcome,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
-  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $sub_tool, $billing, $machine, $outcome,
+  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $machine, $outcome,
    $input, $output, $cache_read, $cache_write, $reasoning, $duration_ms,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
-  model_norm=excluded.model_norm, project=excluded.project, sub_tool=excluded.sub_tool,
+  model_norm=excluded.model_norm, project=excluded.project, workspace=excluded.workspace,
+  sub_tool=excluded.sub_tool,
   billing=excluded.billing, machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
@@ -88,10 +93,12 @@ export function upsertRecords(
   db: Database,
   source: string,
   records: UsageRecord[],
+  opts: { defaultWorkspace?: Workspace | null } = {},
 ): UpsertSummary {
   const before = countRows(db, source);
   const stmt = db.prepare(UPSERT_SQL);
   const machine = currentMachine();
+  const defaultWorkspace = opts.defaultWorkspace ?? null;
 
   const tx = db.transaction((rows: UsageRecord[]) => {
     for (const r of rows) {
@@ -111,6 +118,7 @@ export function upsertRecords(
         $model: r.model,
         $model_norm: modelNorm,
         $project: r.project,
+        $workspace: r.workspace ?? defaultWorkspace,
         $sub_tool: r.subTool ?? null,
         $billing: classifyBilling(source, r.model),
         $machine: machine,

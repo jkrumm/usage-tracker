@@ -30,6 +30,7 @@ interface SessionRow {
 
 export const opencodeCollector: Collector = {
   source: "opencode",
+  workspace: "private",
 
   available() {
     return existsSync(DB_PATH);

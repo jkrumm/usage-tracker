@@ -62,7 +62,9 @@ async function runOne(db: Database, c: Collector, opts: IngestOptions): Promise<
       full: opts.full ?? false,
       log,
     });
-    const { processed, newRows } = upsertRecords(db, c.source, result.records);
+    const { processed, newRows } = upsertRecords(db, c.source, result.records, {
+      defaultWorkspace: c.workspace ?? null,
+    });
 
     const status = result.note && result.records.length === 0 ? "skipped" : "ok";
     saveState(db, c.source, { result, status, processed });

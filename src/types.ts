@@ -6,6 +6,7 @@
 // single table and a single set of queries cover all of them.
 
 export type Billing = "max" | "iu" | "anthropic-api" | "unknown";
+export type Workspace = "work" | "private";
 export type Grain = "message" | "session";
 export type Outcome = "ok" | "error";
 
@@ -24,6 +25,13 @@ export interface UsageRecord {
   model: string | null;
   /** Project / workspace / channel context, source-specific. */
   project: string | null;
+  /**
+   * Optional per-record workspace override. Collectors that are pinned to a
+   * single workspace (hermes, feuer, …) declare it on the Collector and let
+   * upsertRecords stamp it; per-record path-based classification on the Argo
+   * side handles claude-code/litellm where the cwd determines workspace.
+   */
+  workspace?: Workspace | null;
   /**
    * Sub-tool / action that triggered the request, where the source can attribute
    * it — e.g. "check", "review:angle", "implement" for sideclaw-attributed rows.
@@ -71,6 +79,13 @@ export interface CollectResult {
 export interface Collector {
   /** Stable source key — also the value stored in usage_record.source. */
   readonly source: string;
+  /**
+   * Workspace the collector emits when records don't carry one of their own.
+   * Set when the daemon is pinned to a workspace (hermes/feuer/opencode/
+   * audio-proxy); omit when the workspace is per-record and Argo derives it
+   * from the cwd (claude-code, litellm).
+   */
+  readonly workspace?: Workspace | null;
   /** Cheap check: is this source present on this machine at all? */
   available(): boolean;
   collect(ctx: CollectContext): Promise<CollectResult>;
