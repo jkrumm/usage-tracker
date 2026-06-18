@@ -36,7 +36,7 @@ export const PRICING: Record<string, Rate> = {
   // IU bridge rate (Feuer agent config — authoritative for this setup).
   "kimi-k2.6": { input: 0.95, output: 4.0, cacheRead: 0.16, cacheWrite: 0.95 },
   // DeepSeek V4 (IU unified endpoint, EU-resident) — Hermes brain runs Pro, its
-  // auxiliaries and audio-proxy's TTS prep step run Flash/Pro. Rates from modelpick's
+  // auxiliaries run Flash/Pro. Rates from modelpick's
   // scraped aggregators (OpenRouter + ArtificialAnalysis, 2026-06-02); cacheRead/Write
   // follow the table's non-Claude convention (0.1x / 1.0x input). Same public-list
   // caveat as the other IU-routed models — actual EU per-token rate may differ.
@@ -46,13 +46,6 @@ export const PRICING: Record<string, Rate> = {
   "gpt-5-mini": { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0.25 },
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
-  "gemini-3.1-flash-tts-preview": { input: 1.0, output: 20.0, cacheRead: 0, cacheWrite: 0 },
-  // Audio models (OpenAI), text-token rates — audio_tokens / audio_seconds are
-  // captured in raw.{audioTokens,audioSeconds} for future per-audio-minute pricing
-  // refinement. Cache fields zero (no caching on the audio path).
-  "gpt-4o-transcribe": { input: 2.5, output: 10.0, cacheRead: 0, cacheWrite: 0 },
-  "gpt-4o-mini-tts": { input: 0.6, output: 12.0, cacheRead: 0, cacheWrite: 0 },
-  "whisper": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };

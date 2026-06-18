@@ -81,8 +81,8 @@ export interface Collector {
   readonly source: string;
   /**
    * Workspace the collector emits when records don't carry one of their own.
-   * Set when the daemon is pinned to a workspace (hermes/feuer/opencode/
-   * audio-proxy); omit when the workspace is per-record and Argo derives it
+   * Set when the daemon is pinned to a workspace (hermes/feuer/opencode);
+   * omit when the workspace is per-record and Argo derives it
    * from the cwd (claude-code, litellm).
    */
   readonly workspace?: Workspace | null;

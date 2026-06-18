@@ -14,7 +14,6 @@ plan is to sync it to Argo and build the dashboard there.
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
 | `feuer` | Docker `feuer` container → `/opt/data/state.db` → `sessions` | session | `id` | postponed (see below) |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | working |
-| `audio-proxy` | `~/SourceRoot/audio-proxy/data/usage.db` → `usage_record` (full re-read) | message | `audio-proxy:<id>` | working |
 
 Each source records tokens; almost none records reliable cost. So the tracker
 computes one comparable cost for every row from its own pricing table

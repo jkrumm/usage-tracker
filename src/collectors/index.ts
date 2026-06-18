@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
-import { audioProxyCollector } from "./audio-proxy.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
 import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
@@ -32,7 +31,6 @@ export const collectors: Collector[] = [
   }),
   opencodeCollector,
   litellmCollector,
-  audioProxyCollector,
 ];
 
 export function findCollector(source: string): Collector | undefined {
