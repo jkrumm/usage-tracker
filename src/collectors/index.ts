@@ -21,10 +21,10 @@ export const collectors: Collector[] = [
     dbPath:
       process.env.FEUER_DB ??
       join(homedir(), "IuRoot", "prometheus-feuer-agent", "state", "hermes", "state.db"),
-    // Postponed: the container read is blocked by the FTS5 `messages_fts` vtable
-    // (transient sqlite connections fail "malformed"). Set FEUER_CONTAINER=feuer
-    // to re-enable the docker-exec path once a working read method exists.
-    // See README → "Feuer access (postponed)".
+    // Default: read the host bind-mount via the system `sqlite3` (bun:sqlite
+    // can't — it lacks FTS5 and the DB carries a `messages_fts` vtable). Set
+    // FEUER_CONTAINER=feuer to force the docker-exec read instead. See README →
+    // "Feuer access".
     container: process.env.FEUER_CONTAINER,
     workspace: "work",
     project: "prometheus-feuer-agent",

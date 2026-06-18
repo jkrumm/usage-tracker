@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import type {
   Collector,
@@ -65,80 +64,79 @@ export function hermesAgentCollector(opts: {
   };
 }
 
-async function collectFromContainer(
+// Both daemons store the same `sessions` shape, but bun:sqlite can't open the
+// DB: it lacks FTS5 and the schema carries a `messages_fts` virtual table, so a
+// fresh bun connection fails with "unable to open database file". So we read out
+// of process via a tool that *does* have FTS5 — the system `sqlite3` for the
+// host bind-mount, or `python3` inside the container when FEUER_CONTAINER pins
+// one. Both emit a JSON array of session rows that we map identically.
+const SESSION_COLUMNS =
+  "id, source, model, started_at, ended_at, end_reason, message_count, tool_call_count, " +
+  "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, " +
+  "billing_provider, estimated_cost_usd, actual_cost_usd, cost_status";
+
+function collectFromContainer(
   container: string,
-  _ctx: CollectContext,
+  ctx: CollectContext,
   project: string,
 ): Promise<CollectResult> {
+  const sql = `SELECT ${SESSION_COLUMNS} FROM sessions`;
   const script =
-    'import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute("SELECT id, source, model, started_at, ended_at, end_reason, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider, estimated_cost_usd, actual_cost_usd, cost_status FROM sessions")]; print(json.dumps(rows))';
-
-  try {
-    const proc = Bun.spawn(["docker", "exec", container, "python3", "-c", script], {
-      stdout: "pipe",
-      stderr: "pipe",
-      // LaunchAgents (and worker subprocesses) inherit a minimal PATH; ensure the
-      // docker binary is resolvable — OrbStack/Docker Desktop install to
-      // /usr/local/bin, Homebrew to /opt/homebrew/bin.
-      env: { ...process.env, PATH: `/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}` },
-    });
-    const exitCode = await proc.exited;
-    const stdout = await new Response(proc.stdout).text();
-
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      return {
-        records: [],
-        cursor: _ctx.cursor,
-        note: `unreadable: docker exec exited ${exitCode}${stderr ? ` — ${stderr.trim()}` : ""}`,
-      };
-    }
-
-    const trimmed = stdout.trim();
-    if (!trimmed) {
-      return { records: [], cursor: _ctx.cursor, note: "unreadable: empty output" };
-    }
-
-    const rows = JSON.parse(trimmed) as SessionRow[];
-    if (!Array.isArray(rows)) {
-      return { records: [], cursor: _ctx.cursor, note: "unreadable: expected JSON array" };
-    }
-
-    const records = rows.map((r) => toRecord(r, project));
-    const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
-    return { records, cursor };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { records: [], cursor: _ctx.cursor, note: `unreadable: ${msg}` };
-  }
+    `import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); ` +
+    `db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute(${JSON.stringify(sql)})]; ` +
+    `print(json.dumps(rows))`;
+  return runSessionQuery(["docker", "exec", container, "python3", "-c", script], ctx, project);
 }
 
 function collectFromHostFile(
   dbPath: string,
-  _ctx: CollectContext,
+  ctx: CollectContext,
   project: string,
-): CollectResult {
-  let db: Database | undefined;
+): Promise<CollectResult> {
+  const sql = `SELECT ${SESSION_COLUMNS} FROM sessions`;
+  return runSessionQuery(["sqlite3", "-json", `file:${dbPath}?mode=ro`, sql], ctx, project);
+}
+
+/**
+ * Run a subprocess that prints a JSON array of session rows, parse it, and map
+ * to records. Fully isolated: any failure (missing binary, locked/mid-WAL DB,
+ * malformed JSON) returns a `note` with zero records, so the run is recorded as
+ * `skipped` and never aborts the other collectors. An empty result set (no
+ * sessions yet) is a valid `ok` run, not an error.
+ */
+async function runSessionQuery(
+  argv: string[],
+  ctx: CollectContext,
+  project: string,
+): Promise<CollectResult> {
   try {
-    db = new Database(dbPath, { readonly: true });
-    const rows = db
-      .query<SessionRow, []>(
-        `SELECT id, source, model, started_at, ended_at, end_reason,
-                message_count, tool_call_count,
-                input_tokens, output_tokens, cache_read_tokens,
-                cache_write_tokens, reasoning_tokens,
-                billing_provider, estimated_cost_usd, actual_cost_usd, cost_status
-         FROM sessions`,
-      )
-      .all();
+    const proc = Bun.spawn(argv, {
+      stdout: "pipe",
+      stderr: "pipe",
+      // LaunchAgents inherit a minimal PATH; ensure both sqlite3 (/usr/bin) and
+      // docker (OrbStack/Docker Desktop → /usr/local/bin, Homebrew →
+      // /opt/homebrew/bin) resolve regardless of the launch environment.
+      env: { ...process.env, PATH: `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}` },
+    });
+    const exitCode = await proc.exited;
+    const stdout = (await new Response(proc.stdout).text()).trim();
+
+    if (exitCode !== 0) {
+      const stderr = (await new Response(proc.stderr).text()).trim();
+      return { records: [], cursor: ctx.cursor, note: `unreadable: exit ${exitCode}${stderr ? ` — ${stderr}` : ""}` };
+    }
+
+    const rows = (stdout ? JSON.parse(stdout) : []) as SessionRow[];
+    if (!Array.isArray(rows)) {
+      return { records: [], cursor: ctx.cursor, note: "unreadable: expected JSON array" };
+    }
+
     const records = rows.map((r) => toRecord(r, project));
-    const cursor = String(Math.max(0, ...rows.map((r) => r.started_at)));
+    const cursor = rows.length ? String(Math.max(0, ...rows.map((r) => r.started_at))) : ctx.cursor;
     return { records, cursor };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { records: [], cursor: _ctx.cursor, note: `unreadable: ${msg}` };
-  } finally {
-    db?.close();
+    return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` };
   }
 }
 

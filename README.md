@@ -12,7 +12,7 @@ plan is to sync it to Argo and build the dashboard there.
 | `claude-code` | `~/.claude/projects/**/*.jsonl` (offset-incremental) | message | `requestId` | working (Max-only, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
-| `feuer` | Docker `feuer` container → `/opt/data/state.db` → `sessions` | session | `id` | postponed (see below) |
+| `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | working |
 
 Each source records tokens; almost none records reliable cost. So the tracker
@@ -132,23 +132,23 @@ it. The label is derived once per run: `USAGE_MACHINE` if set, else the macOS
 hardware model + chip via `system_profiler` (e.g. `Mac mini (M2 Pro)`), falling
 back to the hostname. Group by it with `make stats BY=machine`.
 
-### Feuer access (postponed)
+### Feuer access
 
-Feuer runs the hermes-agent runtime in a Docker container with its `state.db`
-bind-mounted. Reading it from a *transient* SQLite connection fails with
-`database disk image is malformed` — both from the host (mid-WAL bind mount) and
-from inside the container. Root cause: the DB contains an FTS5 virtual table
-(`messages_fts`); a fresh connection cannot construct the vtable
-(`vtable constructor failed: messages_fts`), which poisons reads of the regular
-`sessions` table too. The app's own long-lived connection is unaffected.
+Hermes and Feuer both run the hermes-agent runtime, so their `state.db` shares
+the same `sessions` schema — including an FTS5 `messages_fts` virtual table.
+`bun:sqlite` reads Hermes's DB fine but **fails to open Feuer's**
+(`unable to open database file`): Feuer's FTS5 schema isn't constructible by
+bun's bundled SQLite. The system `sqlite3` (and the container's `python3`) open
+both cleanly.
 
-The docker-exec collector path is built and gated behind `FEUER_CONTAINER`
-(unset by default → cheap skip). Re-enabling needs a read method that doesn't
-use a transient stock-sqlite connection — e.g. read through the hermes-agent
-runtime's own code (`lib/telemetry.py` already projects sessions), or have Feuer
-export `sessions` to JSON on a schedule that the tracker ingests. Hermes (native,
-`~/.hermes/state.db`) shares the identical schema and ingests fine — it is the
-working hermes-agent POC.
+So the host collector reads **out of process** via the system `sqlite3`
+(`-json`, read-only) rather than `bun:sqlite` — one uniform path for both
+daemons, robust regardless of the FTS5 schema. Setting `FEUER_CONTAINER=<name>`
+switches Feuer to a `python3` read inside that container
+(`file:/opt/data/state.db?mode=ro`) instead, for when the host bind-mount isn't
+reachable. Either way the whole (small, rotating) `sessions` table is re-read
+each run and reconciled by upsert — the source rotates old sessions out, so the
+tracker stays the durable accumulator.
 
 ## Known gaps / follow-ups
 
@@ -175,5 +175,3 @@ If `ARGO_TOKEN` is absent the sync step logs one info line and does nothing —
 not an error, so a machine that only collects locally is still fully functional.
 This is also what happens when a fresh LaunchAgent is installed and `op` is not
 available to retrieve the token at install time.
-
-- **Feuer (postponed).** See "Feuer access" above — needs a non-transient read path.
