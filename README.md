@@ -79,11 +79,14 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 
 ### Claude Code Max-only exclusion
 
-The `claude-code` collector intentionally skips worker sessions whose model
-routes through the IU bridge (Kimi-K2.6, GPT-4o, etc.) or carries the `-eu`
-suffix. Those requests are now counted directly by the `litellm` source; keeping
-them in `claude-code` would double-count bridge traffic. Only Max-orchestrated
-Claude sessions (`claude-*` without `-eu`) remain in the `claude-code` source.
+The `claude-code` collector keeps **only** Max-orchestrated Claude sessions
+(`claude-*` without the `-eu` suffix). Every other model that can appear in a
+claude-code session — DeepSeek, Kimi-K2.6, GPT, or `-eu` EU-routed Claude —
+reached the model through the IU LiteLLM bridge and is already counted
+per-request by the `litellm` source; admitting it here would double-count bridge
+traffic. The guard is `classifyBilling(…) !== "max"` (`src/models.ts`), so any
+non-Max model is dropped regardless of whether it has an explicit rate — which is
+why `billing = 'unknown'` no longer occurs for this source.
 
 ### LiteLLM bridge
 

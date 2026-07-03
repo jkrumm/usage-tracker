@@ -35,10 +35,13 @@ export function classifyBilling(source: string, rawModel: string | null): Billin
   const r = (rawModel ?? "").toLowerCase();
 
   if (source === "claude-code") {
-    if (r.includes("kimi") || r.includes("gpt")) return "iu"; // bridge worker
-    if (r.endsWith("-eu")) return "iu"; // bridge-routed EU Claude
-    if (r.startsWith("claude")) return "max"; // orchestrator on Max
-    return "unknown";
+    // Only a Max-subscription Claude orchestrator bills as `max`. Everything else
+    // in a claude-code session (DeepSeek/Kimi/GPT bridge workers, `-eu` EU-routed
+    // Claude) reached the model through the IU LiteLLM bridge — real IU spend, and
+    // already counted per-request by the `litellm` source, so the collector skips
+    // it (see claude-code.ts) to avoid double-counting. `unknown` never occurs.
+    if (r.startsWith("claude") && !r.endsWith("-eu")) return "max"; // orchestrator on Max
+    return "iu";
   }
 
   // hermes / feuer / opencode all route through the IU LiteLLM bridge.

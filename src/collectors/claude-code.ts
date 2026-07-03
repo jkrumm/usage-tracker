@@ -81,8 +81,11 @@ function parseLine(line: string): UsageRecord | null {
   if (obj.message?.model === "<synthetic>") return null; // local, non-API message
 
   const model = obj.message?.model ?? null;
-  // Skip bridge-model worker sessions to avoid double-counting with the litellm source.
-  if (classifyBilling("claude-code", model) === "iu") return null;
+  // Keep only Max-orchestrated Claude sessions. Every other model in a claude-code
+  // session (DeepSeek/Kimi/GPT bridge workers, `-eu` EU-routed Claude) reached the
+  // model through the IU LiteLLM bridge and is already counted per-request by the
+  // litellm source — admitting it here would double-count. See models.ts.
+  if (classifyBilling("claude-code", model) !== "max") return null;
 
   const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
   if (!sourceId) return null;

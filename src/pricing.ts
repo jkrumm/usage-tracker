@@ -8,7 +8,8 @@
 //
 // Rates verified May 2026 against published list prices (Anthropic, OpenAI,
 // Google) and the Feuer agent's configured IU rate for Kimi-K2.6; DeepSeek V4
-// and Opus 4.8 added June 2026 (see inline notes). Two caveats
+// and Opus 4.8 added June 2026, Claude 5 family (Sonnet 5, Fable 5) July 2026
+// (see inline notes). Two caveats
 // remain: (1) IU's actual per-token EU rates may differ from public list prices
 // for the Claude/Gemini models routed through the bridge; (2) cache-write uses
 // the 1.25x 5-minute multiplier and does not yet split the 1-hour tier. Editing
@@ -31,6 +32,11 @@ export const PRICING: Record<string, Rate> = {
   // 1-hour tier is 2x but is not split out here — a future refinement).
   "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50);
+  // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro through
+  // 2026-08-31 is not tracked (these are Max value, not a real bill).
+  "claude-fable-5": { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   // IU bridge rate (Feuer agent config — authoritative for this setup).
