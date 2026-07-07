@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getSessionBaseUrl } from "./models.ts";
 
 // Read-side queries for the CLI. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
@@ -85,6 +86,87 @@ export function sourceStatus(db: Database): SourceStatus[] {
     .all();
 }
 
+export interface BillingAuditRow {
+  sessionId: string;
+  records: number;
+  models: string;
+  billings: string;
+  costUsd: number | null;
+  firstTs: string;
+  lastTs: string;
+  liveLabel: "expired/missing" | "max (c)" | "iu-direct (ca)";
+  multiBilling: boolean;
+  mismatch: boolean;
+}
+
+interface RawAuditRow {
+  sessionId: string;
+  records: number;
+  models: string | null;
+  billings: string | null;
+  costUsd: number | null;
+  firstTs: string;
+  lastTs: string;
+}
+
+/**
+ * Per-session view over claude-code rows, cross-referenced against the live
+ * `session_env` log (`getSessionBaseUrl`) rather than trusting the stored
+ * `billing` column alone — that's the whole point of the audit. A session
+ * showing more than one distinct `billing` value is a bug post-fix (every row
+ * in a session, subagents included, must bill the same way); `mismatch` is
+ * only set when the live log can still answer (inside its 3-day retention).
+ */
+export function sessionBillingAudit(
+  db: Database,
+  opts: { sinceDays?: number; sessionId?: string } = {},
+): BillingAuditRow[] {
+  const conds = ["source = 'claude-code'", "json_extract(raw, '$.sessionId') IS NOT NULL"];
+  const params: string[] = [];
+  if (opts.sinceDays) {
+    conds.push(`ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
+  }
+  if (opts.sessionId) {
+    conds.push("json_extract(raw, '$.sessionId') = ?");
+    params.push(opts.sessionId);
+  }
+  const where = `WHERE ${conds.join(" AND ")}`;
+  const rows = db
+    .query<RawAuditRow, string[]>(
+      `SELECT json_extract(raw, '$.sessionId') AS sessionId,
+              count(*)                         AS records,
+              group_concat(DISTINCT model_norm) AS models,
+              group_concat(DISTINCT billing)    AS billings,
+              sum(cost_usd)                     AS costUsd,
+              min(ts)                           AS firstTs,
+              max(ts)                           AS lastTs
+       FROM usage_record ${where}
+       GROUP BY sessionId
+       ORDER BY lastTs DESC`,
+    )
+    .all(...params);
+
+  return rows.map((row) => {
+    const liveBaseUrl = getSessionBaseUrl(row.sessionId);
+    const liveLabel: BillingAuditRow["liveLabel"] =
+      liveBaseUrl === undefined ? "expired/missing" : liveBaseUrl ? "iu-direct (ca)" : "max (c)";
+    const billingValues = (row.billings ?? "").split(",").filter(Boolean);
+    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "iu-direct" : "max";
+    return {
+      sessionId: row.sessionId,
+      records: row.records,
+      models: row.models ?? "",
+      billings: row.billings ?? "",
+      costUsd: row.costUsd,
+      firstTs: row.firstTs,
+      lastTs: row.lastTs,
+      liveLabel,
+      multiBilling: billingValues.length > 1,
+      mismatch: expected != null && !(billingValues.length === 1 && billingValues[0] === expected),
+    };
+  });
+}
+
 // ── formatting ──────────────────────────────────────────────────────────────
 
 export function formatStats(rows: StatRow[], by: GroupBy): string {
@@ -133,6 +215,42 @@ export function formatSources(rows: SourceStatus[]): string {
       ].join("  "),
     );
   }
+  return lines.join("\n");
+}
+
+export function formatBillingAudit(rows: BillingAuditRow[]): string {
+  if (rows.length === 0) return "(no claude-code sessions in range)";
+
+  const header = [
+    pad("session", 36),
+    r("rows", 5),
+    pad("models", 24),
+    pad("billing", 14),
+    pad("live", 15),
+    pad("last (UTC)", 20),
+    "flags",
+  ];
+  const lines = [header.join("  ")];
+  lines.push("-".repeat(header.join("  ").length));
+
+  let flagged = 0;
+  for (const row of rows) {
+    const flags = [row.multiBilling && "MULTI-BILLING", row.mismatch && "MISMATCH"].filter(Boolean).join(" ");
+    if (flags) flagged++;
+    lines.push(
+      [
+        pad(row.sessionId, 36),
+        r(num(row.records), 5),
+        pad(row.models, 24),
+        pad(row.billings, 14),
+        pad(row.liveLabel, 15),
+        pad(row.lastTs, 20),
+        flags,
+      ].join("  "),
+    );
+  }
+  lines.push("-".repeat(header.join("  ").length));
+  lines.push(`${rows.length} session${rows.length === 1 ? "" : "s"}, ${flagged} flagged`);
   return lines.join("\n");
 }
 

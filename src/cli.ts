@@ -1,7 +1,15 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
 import { runIngest } from "./ingest.ts";
-import { formatSources, formatStats, sourceStatus, stats, type GroupBy } from "./report.ts";
+import {
+  formatBillingAudit,
+  formatSources,
+  formatStats,
+  sessionBillingAudit,
+  sourceStatus,
+  stats,
+  type GroupBy,
+} from "./report.ts";
 import { sync } from "./sync.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
@@ -18,6 +26,9 @@ COMMANDS
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
+  billing-audit          Per-session claude-code billing check vs. the live session_env log
+    --since <N>          Only the last N days (default 3, matches log retention)
+    --session <id>       Only this session
   help                   This message
 
 ENV
@@ -77,6 +88,16 @@ async function main(): Promise<number> {
 
     if (cmd === "sources") {
       process.stdout.write(`${formatSources(sourceStatus(db))}\n`);
+      return 0;
+    }
+
+    if (cmd === "billing-audit") {
+      const sinceRaw = flag(rest, "--since");
+      const rows = sessionBillingAudit(db, {
+        sinceDays: sinceRaw ? Number(sinceRaw) : 3,
+        sessionId: flag(rest, "--session"),
+      });
+      process.stdout.write(`${formatBillingAudit(rows)}\n`);
       return 0;
     }
 
