@@ -9,7 +9,7 @@ plan is to sync it to Argo and build the dashboard there.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
-| `claude-code` | `~/.claude/projects/**/*.jsonl` (offset-incremental) | message | `requestId` | working (Max-only, see below) |
+| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) | message | `requestId` | working (Max + IU-direct, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
@@ -22,9 +22,12 @@ computes one comparable cost for every row from its own pricing table
 - `max` — Claude Code orchestrator on the Max subscription. Cost is the
   list-price *value* consumed, not a real bill.
 - `iu` — routed through the IU LiteLLM bridge (Kimi-K2.6 etc.). Real per-token spend.
+- `iu-direct` — Claude Code going straight to the IU Anthropic endpoint (the
+  `ca` launcher), no bridge involved. Real per-token spend, same as `iu` but
+  never touches the litellm source (see below).
 
-So `stats --by billing` answers both "how much Max value am I burning" and "what
-am I actually paying IU".
+So `stats --by billing` answers "how much Max value am I burning" and "what am
+I actually paying IU" (`iu` + `iu-direct` combined) in one view.
 
 Every row is also tagged with the `machine` that produced it (the macOS hardware
 model + chip, e.g. `Mac mini (M2 Pro)`) so multiple laptops' DBs stay
@@ -41,6 +44,8 @@ make stats              # cost + tokens by source
 make stats BY=model     # by model      (also: billing, day, machine, sub_tool)
 make stats BY=day SINCE=7
 make sources            # per-collector status, error rate, last run, last note
+make billing-audit      # per-session claude-code billing vs. the live session_env log
+make billing-audit SESSION=<id> SINCE=7
 make install-agent      # 15-min incremental ingest via LaunchAgent
 make logs               # tail agent logs
 ```
@@ -77,16 +82,46 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 
 ## Source-specific notes
 
-### Claude Code Max-only exclusion
+### Claude Code billing classification
 
-The `claude-code` collector keeps **only** Max-orchestrated Claude sessions
-(`claude-*` without the `-eu` suffix). Every other model that can appear in a
-claude-code session — DeepSeek, Kimi-K2.6, GPT, or `-eu` EU-routed Claude —
-reached the model through the IU LiteLLM bridge and is already counted
-per-request by the `litellm` source; admitting it here would double-count bridge
-traffic. The guard is `classifyBilling(…) !== "max"` (`src/models.ts`), so any
-non-Max model is dropped regardless of whether it has an explicit rate — which is
-why `billing = 'unknown'` no longer occurs for this source.
+The `claude-code` collector keeps rows billed as `max` **or** `iu-direct`, and
+drops everything else. Every other model that can appear in a claude-code
+session — DeepSeek, Kimi-K2.6, GPT, or `-eu` EU-routed Claude — reached the
+model through the IU LiteLLM bridge and is already counted per-request by the
+`litellm` source; admitting it here would double-count bridge traffic. The
+guard is in `parseLine()`: `classifyBilling(…)` must return `"max"` or
+`"iu-direct"`, everything else (`"iu"`) is dropped. `billing = 'unknown'` never
+occurs for this source.
+
+A bare `claude-*` model (no `-eu` suffix) can come from either the `c` (Max)
+or `ca` (IU-direct) launcher — the model name alone doesn't distinguish them,
+and that's true for a subagent as much as the top-level turn: a subagent
+inherits its parent session's `ANTHROPIC_BASE_URL` and can run a different
+model (e.g. `Explore` on Haiku inside a `ca` session), sharing that session's
+`sessionId`. `classifyBilling()` (`src/models.ts`) resolves this with a real
+signal instead of guessing from the model name: `dotfiles/hooks/notify.ts`
+logs `{ event: "session_env", session, base_url }` once per `SessionStart` to
+`~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3 days), and `getSessionBaseUrl()`
+joins a record's `sessionId` against that log — a non-empty `base_url` means
+`iu-direct`, empty means `max`, and a missing/expired entry defaults to `max`
+(going-forward correctness matters here, not historical precision).
+
+Backgrounded subagents (the TUI's "Backgrounded agent") don't write into the
+parent's flat transcript file at all — Claude Code gives them their own file
+under `<project-dir>/<sessionId>/subagents/agent-<id>.jsonl`, same `sessionId`
+inside. `listJsonl()` in `src/collectors/claude-code.ts` walks into every
+session directory's `subagents/` subfolder to pick these up too; skipping this
+silently dropped an entire category of usage (1069 historical files, 207MB,
+across all projects before this was added — backfilled by the next `ingest`
+run automatically, no `--full` needed since those files had never been seen).
+
+Run `billing-audit` (`make billing-audit`) to verify this end to end: it
+groups `usage_record` by session, lists every distinct model and billing value
+seen in that session (more than one distinct `billing` per session should
+never happen — flagged as `MULTI-BILLING`), and cross-checks the stored
+`billing` against a live re-read of the `session_env` log, flagging
+`MISMATCH` when they disagree (only meaningful while the log is still inside
+its 3-day retention window).
 
 ### LiteLLM bridge
 

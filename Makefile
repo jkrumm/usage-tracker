@@ -1,4 +1,4 @@
-.PHONY: help install ingest backfill stats sources typecheck install-agent uninstall-agent logs
+.PHONY: help install ingest backfill stats sources billing-audit typecheck install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 
@@ -22,6 +22,9 @@ sync: ## Push unsynced rows to the Argo API
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources
+
+billing-audit: ## Per-session claude-code billing check vs. the live session_env log
+	bun run src/cli.ts billing-audit $(if $(SINCE),--since $(SINCE)) $(if $(SESSION),--session $(SESSION))
 
 typecheck: ## Type-check with tsc
 	bun run tsc --noEmit
