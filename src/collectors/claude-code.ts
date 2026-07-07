@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { classifyBilling } from "../models.ts";
+import { isBridgeRouted } from "../models.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
 
 // Claude Code writes one JSONL file per session under ~/.claude/projects/.
@@ -83,10 +83,9 @@ function parseLine(line: string): UsageRecord | null {
   const model = obj.message?.model ?? null;
   // Keep Max-subscription Claude sessions AND IU-direct sessions (ca launcher
   // going direct to the IU Anthropic endpoint — no bridge, so no litellm
-  // double-count). Skip bridge-routed sessions ("iu"): those are already
-  // counted per-request by the litellm source. "unknown" never occurs here.
-  const billing = classifyBilling("claude-code", model, obj.sessionId);
-  if (billing !== "max" && billing !== "iu-direct") return null;
+  // double-count). Skip bridge-routed sessions: those are already counted
+  // per-request by the litellm source.
+  if (isBridgeRouted(model)) return null;
 
   const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
   if (!sourceId) return null;

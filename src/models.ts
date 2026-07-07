@@ -76,15 +76,28 @@ export function normalizeModel(raw: string | null): string | null {
 }
 
 /**
+ * True when a raw claude-code model reached the API through the IU LiteLLM
+ * bridge rather than a direct connection — the litellm source already counts
+ * these per-request, so the claude-code collector must skip them to avoid
+ * double-counting.
+ */
+export function isBridgeRouted(rawModel: string | null): boolean {
+  const r = (rawModel ?? "").toLowerCase();
+  return !r.startsWith("claude") || r.endsWith("-eu");
+}
+
+/**
  * Decide who actually pays for a record. Classification runs on the *raw* model
  * (before normalization) because the bridge's `-eu` suffix is the only signal
  * separating an IU-routed EU Claude worker from a Max-subscription Claude call.
  *
- *   "max"       — Max subscription (c launcher, api.anthropic.com)
- *   "iu"        — IU LiteLLM bridge (sideclaw workers, claude_bridge); skip in
- *                 claude-code collector (litellm source already counted it)
- *   "iu-direct" — IU Anthropic endpoint, direct (ca launcher); no bridge → no
- *                 litellm double-count → KEEP in claude-code collector
+ *   "max" — Max subscription (c launcher, api.anthropic.com)
+ *   "iu"  — IU LiteLLM bridge (sideclaw workers, claude_bridge) — skip in
+ *           claude-code collector (litellm source already counted it) — OR
+ *           the IU Anthropic endpoint, direct (ca launcher), no bridge
+ *           involved — KEEP in claude-code collector. Both are real IU spend;
+ *           the routing difference is an internal dedup signal (`isBridgeRouted`),
+ *           not a billing distinction.
  *
  * A bare `claude-*` model (no `-eu` suffix) can come from either `c` (Max) or
  * `ca` (IU-direct) — the model name alone doesn't distinguish them, and that's
@@ -101,16 +114,9 @@ export function classifyBilling(
   rawModel: string | null,
   sessionId?: string | null,
 ): Billing {
-  const r = (rawModel ?? "").toLowerCase();
-
   if (source === "claude-code") {
-    // Bridge-routed models: non-claude (DeepSeek/Kimi/GPT) or Claude with an
-    // -eu suffix → reached the model through the IU LiteLLM bridge. Already
-    // counted per-request by the litellm source → skip in claude-code collector.
-    if (!r.startsWith("claude") || r.endsWith("-eu")) return "iu";
-
-    // Bare claude-* model, no -eu suffix → resolve via the session's real base URL.
-    return getSessionBaseUrl(sessionId) ? "iu-direct" : "max";
+    if (isBridgeRouted(rawModel)) return "iu";
+    return getSessionBaseUrl(sessionId) ? "iu" : "max";
   }
 
   // hermes / feuer / opencode all route through the IU LiteLLM bridge.

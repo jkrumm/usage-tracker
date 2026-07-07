@@ -9,7 +9,7 @@ plan is to sync it to Argo and build the dashboard there.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
-| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) | message | `requestId` | working (Max + IU-direct, see below) |
+| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) | message | `requestId` | working (Max + IU-direct, both billed `iu`, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
@@ -21,13 +21,14 @@ computes one comparable cost for every row from its own pricing table
 
 - `max` — Claude Code orchestrator on the Max subscription. Cost is the
   list-price *value* consumed, not a real bill.
-- `iu` — routed through the IU LiteLLM bridge (Kimi-K2.6 etc.). Real per-token spend.
-- `iu-direct` — Claude Code going straight to the IU Anthropic endpoint (the
-  `ca` launcher), no bridge involved. Real per-token spend, same as `iu` but
-  never touches the litellm source (see below).
+- `iu` — real per-token IU spend, whether routed through the IU LiteLLM bridge
+  (Kimi-K2.6 etc.) or Claude Code going straight to the IU Anthropic endpoint
+  (the `ca` launcher, no bridge involved — see below). IU pays either way, so
+  both collapse into one billing class; the routing distinction still matters
+  internally (dedup against the litellm source) but isn't a billing fact.
 
-So `stats --by billing` answers "how much Max value am I burning" and "what am
-I actually paying IU" (`iu` + `iu-direct` combined) in one view.
+So `stats --by billing` answers "how much Max value am I burning" vs "what am
+I actually paying IU" in one view.
 
 Every row is also tagged with the `machine` that produced it (the macOS hardware
 model + chip, e.g. `Mac mini (M2 Pro)`) so multiple laptops' DBs stay
@@ -84,14 +85,14 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 
 ### Claude Code billing classification
 
-The `claude-code` collector keeps rows billed as `max` **or** `iu-direct`, and
-drops everything else. Every other model that can appear in a claude-code
-session — DeepSeek, Kimi-K2.6, GPT, or `-eu` EU-routed Claude — reached the
-model through the IU LiteLLM bridge and is already counted per-request by the
-`litellm` source; admitting it here would double-count bridge traffic. The
-guard is in `parseLine()`: `classifyBilling(…)` must return `"max"` or
-`"iu-direct"`, everything else (`"iu"`) is dropped. `billing = 'unknown'` never
-occurs for this source.
+The `claude-code` collector keeps Claude-native rows (Max **or** IU-direct,
+both billed `iu`/`max`) and drops everything else. Every other model that can
+appear in a claude-code session — DeepSeek, Kimi-K2.6, GPT, or `-eu`
+EU-routed Claude — reached the model through the IU LiteLLM bridge and is
+already counted per-request by the `litellm` source; admitting it here would
+double-count bridge traffic. The guard is in `parseLine()`: `isBridgeRouted(…)`
+(`src/models.ts`) returns true for any of those, and the row is dropped.
+`billing = 'unknown'` never occurs for this source.
 
 A bare `claude-*` model (no `-eu` suffix) can come from either the `c` (Max)
 or `ca` (IU-direct) launcher — the model name alone doesn't distinguish them,
@@ -103,8 +104,8 @@ signal instead of guessing from the model name: `dotfiles/hooks/notify.ts`
 logs `{ event: "session_env", session, base_url }` once per `SessionStart` to
 `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3 days), and `getSessionBaseUrl()`
 joins a record's `sessionId` against that log — a non-empty `base_url` means
-`iu-direct`, empty means `max`, and a missing/expired entry defaults to `max`
-(going-forward correctness matters here, not historical precision).
+`iu` (direct, `ca`), empty means `max`, and a missing/expired entry defaults
+to `max` (going-forward correctness matters here, not historical precision).
 
 Backgrounded subagents (the TUI's "Backgrounded agent") don't write into the
 parent's flat transcript file at all — Claude Code gives them their own file

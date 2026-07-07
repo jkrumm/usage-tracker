@@ -94,7 +94,7 @@ export interface BillingAuditRow {
   costUsd: number | null;
   firstTs: string;
   lastTs: string;
-  liveLabel: "expired/missing" | "max (c)" | "iu-direct (ca)";
+  liveLabel: "expired/missing" | "max (c)" | "iu (ca)";
   multiBilling: boolean;
   mismatch: boolean;
 }
@@ -149,9 +149,9 @@ export function sessionBillingAudit(
   return rows.map((row) => {
     const liveBaseUrl = getSessionBaseUrl(row.sessionId);
     const liveLabel: BillingAuditRow["liveLabel"] =
-      liveBaseUrl === undefined ? "expired/missing" : liveBaseUrl ? "iu-direct (ca)" : "max (c)";
+      liveBaseUrl === undefined ? "expired/missing" : liveBaseUrl ? "iu (ca)" : "max (c)";
     const billingValues = (row.billings ?? "").split(",").filter(Boolean);
-    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "iu-direct" : "max";
+    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "iu" : "max";
     return {
       sessionId: row.sessionId,
       records: row.records,
