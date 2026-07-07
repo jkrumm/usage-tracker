@@ -128,6 +128,14 @@ async function listJsonl(root: string): Promise<string[]> {
     const entries = await readdir(projectDir, { withFileTypes: true });
     for (const e of entries) {
       if (e.isFile() && e.name.endsWith(".jsonl")) out.push(join(projectDir, e.name));
+      if (e.isDirectory()) {
+        const subagentsDir = join(projectDir, e.name, "subagents");
+        if (!existsSync(subagentsDir)) continue;
+        const subEntries = await readdir(subagentsDir, { withFileTypes: true });
+        for (const s of subEntries) {
+          if (s.isFile() && s.name.endsWith(".jsonl")) out.push(join(subagentsDir, s.name));
+        }
+      }
     }
   }
   return out;
