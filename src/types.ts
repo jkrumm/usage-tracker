@@ -5,7 +5,7 @@
 // one record per session — but every record normalizes to the same shape so a
 // single table and a single set of queries cover all of them.
 
-export type Billing = "max" | "iu" | "anthropic-api" | "unknown";
+export type Billing = "max" | "iu" | "iu-direct" | "anthropic-api" | "unknown";
 export type Workspace = "work" | "private";
 export type Grain = "message" | "session";
 export type Outcome = "ok" | "error";

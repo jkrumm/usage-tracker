@@ -120,7 +120,11 @@ export function upsertRecords(
         $project: r.project,
         $workspace: r.workspace ?? defaultWorkspace,
         $sub_tool: r.subTool ?? null,
-        $billing: classifyBilling(source, r.model),
+        $billing: classifyBilling(
+          source,
+          r.model,
+          typeof r.raw?.sessionId === "string" ? r.raw.sessionId : undefined,
+        ),
         $machine: machine,
         $outcome: r.outcome ?? "ok",
         $input: r.inputTokens,
