@@ -11,7 +11,6 @@ interface StatRow {
   records: number;
   input: number;
   output: number;
-  cacheRead: number;
   cacheWrite: number;
   reasoning: number;
   costUsd: number | null;
@@ -29,6 +28,14 @@ const GROUP_EXPR: Record<GroupBy, string> = {
 export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {
   // Error rows carry no tokens and would only dilute counts — keep token/cost
   // aggregates to successful requests; the error rate lives in `sources`.
+  //
+  // cache_read_tokens is deliberately NOT summed here: Anthropic reports it as
+  // the full accumulated prior context re-read from cache on *every* turn, not
+  // a delta, so summing it across many rows re-counts the same underlying
+  // tokens repeatedly and inflates the total. cache_write_tokens (cache
+  // creation) is genuinely incremental per turn, so it's safe to sum. cost_usd
+  // is unaffected — it's computed per-row with cache_read's own cheap rate
+  // before being summed, so dollar totals stay correct.
   const conds = ["outcome = 'ok'"];
   if (opts.sinceDays) {
     conds.push(`ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
@@ -40,7 +47,6 @@ export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): 
               count(*)                  AS records,
               sum(input_tokens)         AS input,
               sum(output_tokens)        AS output,
-              sum(cache_read_tokens)    AS cacheRead,
               sum(cache_write_tokens)   AS cacheWrite,
               sum(reasoning_tokens)     AS reasoning,
               sum(cost_usd)             AS costUsd
@@ -172,7 +178,7 @@ export function sessionBillingAudit(
 export function formatStats(rows: StatRow[], by: GroupBy): string {
   if (rows.length === 0) return "(no data — run `ingest` first)";
 
-  const header = [pad(by, 22), r("records", 9), r("input", 13), r("output", 12), r("cacheR", 13), r("cacheW", 12), r("cost $", 11)];
+  const header = [pad(by, 22), r("records", 9), r("input", 13), r("output", 12), r("cacheW", 12), r("cost $", 11)];
   const lines = [header.join("  ")];
   lines.push("-".repeat(header.join("  ").length));
 
@@ -185,7 +191,6 @@ export function formatStats(rows: StatRow[], by: GroupBy): string {
         r(num(row.records), 9),
         r(num(row.input), 13),
         r(num(row.output), 12),
-        r(num(row.cacheRead), 13),
         r(num(row.cacheWrite), 12),
         r(row.costUsd == null ? "n/a" : usd(row.costUsd), 11),
       ].join("  "),
@@ -193,7 +198,7 @@ export function formatStats(rows: StatRow[], by: GroupBy): string {
   }
   lines.push("-".repeat(header.join("  ").length));
   lines.push(
-    [pad("TOTAL", 22), r("", 9), r("", 13), r("", 12), r("", 13), r("", 12), r(usd(tCost), 11)].join("  "),
+    [pad("TOTAL", 22), r("", 9), r("", 13), r("", 12), r("", 12), r(usd(tCost), 11)].join("  "),
   );
   return lines.join("\n");
 }
