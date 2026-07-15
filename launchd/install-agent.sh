@@ -16,12 +16,12 @@ fi
 ARGO_URL="https://argo.jkrumm.com/api"
 ARGO_TOKEN=""
 
-if command -v op >/dev/null 2>&1; then
-  if ! ARGO_TOKEN=$(op read "op://common/api/SECRET" --account tkrumm 2>/dev/null); then
-    echo "warning: could not read ARGO_TOKEN from 1Password — sync will be disabled" >&2
+if command -v secrets-run >/dev/null 2>&1; then
+  if ! ARGO_TOKEN=$(secrets-run read "op://common/api/SECRET" 2>/dev/null); then
+    echo "warning: could not read ARGO_TOKEN via secrets-run — sync will be disabled" >&2
   fi
 else
-  echo "warning: op CLI not found — ARGO_TOKEN not set; sync will be disabled" >&2
+  echo "warning: secrets-run not found — ARGO_TOKEN not set; sync will be disabled" >&2
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
