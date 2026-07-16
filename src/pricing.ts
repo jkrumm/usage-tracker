@@ -65,6 +65,15 @@ export const PRICING: Record<string, Rate> = {
   // rate; sideclaw doesn't send them today.
   "gpt-image-2": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
+  // GPT-5.6 Terra (OpenAI list prices, GA 2026-07-09) — sideclaw's `review`
+  // adversary critic, which runs it at reasoning_effort "high". cacheWrite =
+  // 1.25x input, cacheRead = 90% off input, both per OpenAI's published rates.
+  // Reasoning dominates this model's output: a ~170-token critique carries ~4.3k
+  // thinking tokens. OpenAI folds that count inside completion_tokens, so
+  // sideclaw splits it back out (see its normalizeUsage) and reports output and
+  // reasoning separately. Both bill at `output` here, and they sum to the
+  // vendor's completion_tokens — so the spend lands once, not twice.
+  "gpt-5.6-terra": { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
