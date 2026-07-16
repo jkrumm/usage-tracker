@@ -5,6 +5,7 @@ import { claudeCodeCollector } from "./claude-code.ts";
 import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { opencodeCollector } from "./opencode.ts";
+import { sideclawIuCollector } from "./sideclaw-iu.ts";
 
 // The registry. Adding a source = write a collector and append it here. Paths
 // are overridable via env so the registry stays machine-agnostic.
@@ -31,6 +32,7 @@ export const collectors: Collector[] = [
   }),
   opencodeCollector,
   litellmCollector,
+  sideclawIuCollector,
 ];
 
 export function findCollector(source: string): Collector | undefined {

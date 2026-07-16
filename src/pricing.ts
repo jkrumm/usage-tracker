@@ -51,6 +51,19 @@ export const PRICING: Record<string, Rate> = {
   // OpenAI / Google list prices, verified May 2026.
   "gpt-5-mini": { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0.25 },
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
+  // Gemini 3.5 Flash standard tier (ai.google.dev/gemini-api/docs/pricing, July
+  // 2026) — sideclaw's vision model. Google bills thinking tokens at the output
+  // rate, which is what computeCost already does with `reasoning`; those tokens
+  // sit outside candidatesTokenCount, so sideclaw derives them rather than
+  // reading a field (see its normalizeUsage). Batch/Flex are half these rates
+  // and Priority is 1.8x; only standard is tracked.
+  "gemini-3.5-flash": { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
+  // gpt-image-2 is per-token, not flat per-image. It emits image output tokens
+  // ($30/M) and consumes text prompt tokens ($5/M) — mapped to output/input
+  // here because sideclaw only does text->image generation. Image *input*
+  // tokens (edits/reference images) bill at $8/M and would need a separate
+  // rate; sideclaw doesn't send them today.
+  "gpt-image-2": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
