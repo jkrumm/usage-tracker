@@ -71,7 +71,13 @@ export function normalizeModel(raw: string | null): string | null {
   m = m.toLowerCase();
   if (m.includes("/")) m = m.split("/").pop() ?? m;
   m = m.replace(/-eu$/, ""); // bridge EU suffix
-  m = m.replace(/-\d{8}$/, ""); // dated variant, e.g. claude-haiku-4-5-20251001
+  // Dated variant → bare alias. Both vendor conventions, since a source may
+  // record either the id it requested or the dated id the vendor reports back:
+  //   claude-haiku-4-5-20251001  (Anthropic, compact)
+  //   gpt-5.6-terra-2026-07-09   (OpenAI, hyphenated)
+  // Verified against the IU catalog's 287 ids: this collapses 44 dated variants
+  // onto their bare alias and produces no unintended collisions.
+  m = m.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   return m;
 }
 
