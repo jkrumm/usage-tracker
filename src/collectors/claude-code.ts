@@ -27,6 +27,10 @@ interface AssistantLine {
       output_tokens?: number;
       cache_read_input_tokens?: number;
       cache_creation_input_tokens?: number;
+      cache_creation?: {
+        ephemeral_5m_input_tokens?: number;
+        ephemeral_1h_input_tokens?: number;
+      };
       service_tier?: string;
     };
   };
@@ -100,6 +104,7 @@ function parseLine(line: string): UsageRecord | null {
     outputTokens: usage.output_tokens ?? 0,
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
+    cacheWrite1hTokens: usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
     reasoningTokens: 0,
     raw: {
       sessionId: obj.sessionId,

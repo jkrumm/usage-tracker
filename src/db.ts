@@ -56,6 +56,11 @@ function migrate(db: Database): void {
     db.exec("ALTER TABLE usage_record ADD COLUMN workspace TEXT");
     db.exec("CREATE INDEX IF NOT EXISTS idx_usage_workspace ON usage_record (workspace)");
   }
+  if (!cols.has("cache_write_1h_tokens")) {
+    db.exec(
+      "ALTER TABLE usage_record ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0",
+    );
+  }
 }
 
 export interface UpsertSummary {
@@ -66,11 +71,11 @@ export interface UpsertSummary {
 const UPSERT_SQL = `
 INSERT INTO usage_record
   (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, machine, outcome,
-   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, reasoning_tokens, duration_ms,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
   ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $machine, $outcome,
-   $input, $output, $cache_read, $cache_write, $reasoning, $duration_ms,
+   $input, $output, $cache_read, $cache_write, $cache_write_1h, $reasoning, $duration_ms,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
@@ -79,6 +84,7 @@ ON CONFLICT (source, source_id) DO UPDATE SET
   billing=excluded.billing, machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
+  cache_write_1h_tokens=excluded.cache_write_1h_tokens,
   reasoning_tokens=excluded.reasoning_tokens, duration_ms=excluded.duration_ms,
   cost_usd=excluded.cost_usd, cost_source=excluded.cost_source, raw=excluded.raw,
   ingested_at=datetime('now');
@@ -108,6 +114,7 @@ export function upsertRecords(
         output: r.outputTokens,
         cacheRead: r.cacheReadTokens,
         cacheWrite: r.cacheWriteTokens,
+        cacheWrite1h: r.cacheWrite1hTokens ?? 0,
         reasoning: r.reasoningTokens,
       });
       stmt.run({
@@ -131,6 +138,7 @@ export function upsertRecords(
         $output: r.outputTokens,
         $cache_read: r.cacheReadTokens,
         $cache_write: r.cacheWriteTokens,
+        $cache_write_1h: r.cacheWrite1hTokens ?? 0,
         $reasoning: r.reasoningTokens,
         $duration_ms: r.durationMs ?? null,
         $cost_usd: cost.usd,

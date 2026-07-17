@@ -11,9 +11,11 @@
 // and Opus 4.8 added June 2026, Claude 5 family (Sonnet 5, Fable 5) July 2026
 // (see inline notes). Two caveats
 // remain: (1) IU's actual per-token EU rates may differ from public list prices
-// for the Claude/Gemini models routed through the bridge; (2) cache-write uses
-// the 1.25x 5-minute multiplier and does not yet split the 1-hour tier. Editing
-// values is safe — the model key is the only thing collectors depend on.
+// for the Claude/Gemini models routed through the bridge; (2) cache-write bills
+// at the 1.25x 5-minute multiplier by default, split out to the 2x 1-hour
+// multiplier when a source reports the ephemeral_1h/5m breakdown — sources that
+// don't report the split still fall back to the 5m rate for the whole amount.
+// Editing values is safe — the model key is the only thing collectors depend on.
 
 export interface Rate {
   /** Uncached input tokens. */
@@ -22,23 +24,28 @@ export interface Rate {
   output: number;
   /** Cache-read (cached input) tokens. */
   cacheRead: number;
-  /** Cache-write (cache creation) tokens. */
+  /** Cache-write (cache creation) tokens, 5-minute TTL. */
   cacheWrite: number;
+  /**
+   * Cache-write tokens at the 1-hour TTL (2x input for Anthropic). Omit for
+   * vendors with no 1h tier — computeCost falls back to `cacheWrite`.
+   */
+  cacheWrite1h?: number;
 }
 
 export const PRICING: Record<string, Rate> = {
   // Anthropic list prices, verified May 2026 (platform.claude.com pricing).
-  // cacheWrite = 1.25x input (standard 5-minute cache-creation multiplier; the
-  // 1-hour tier is 2x but is not split out here — a future refinement).
-  "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  // cacheWrite = 1.25x input (standard 5-minute cache-creation multiplier);
+  // cacheWrite1h = 2x input (1-hour cache-creation multiplier).
+  "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
+  "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50);
   // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro through
   // 2026-08-31 is not tracked (these are Max value, not a real bill).
-  "claude-fable-5": { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  "claude-fable-5": { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5, cacheWrite1h: 20 },
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
+  "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
   // IU bridge rate (Feuer agent config — authoritative for this setup).
   "kimi-k2.6": { input: 0.95, output: 4.0, cacheRead: 0.16, cacheWrite: 0.95 },
   // DeepSeek V4 (IU unified endpoint, EU-resident) — Hermes brain runs Pro, its
@@ -83,6 +90,8 @@ export interface TokenCounts {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Subset of cacheWrite created at the 1h TTL (not additive). */
+  cacheWrite1h: number;
   reasoning: number;
 }
 
@@ -96,11 +105,15 @@ export function computeCost(modelNorm: string | null, t: TokenCounts): CostResul
   const rate = modelNorm ? PRICING[modelNorm] : undefined;
   if (!rate) return { usd: null, source: "none" };
 
+  const cw1h = Math.min(Math.max(t.cacheWrite1h, 0), t.cacheWrite);
+  const cw5m = t.cacheWrite - cw1h;
+
   const usd =
     (t.input * rate.input +
       t.output * rate.output +
       t.cacheRead * rate.cacheRead +
-      t.cacheWrite * rate.cacheWrite +
+      cw5m * rate.cacheWrite +
+      cw1h * (rate.cacheWrite1h ?? rate.cacheWrite) +
       t.reasoning * rate.output) /
     1_000_000;
 

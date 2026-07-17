@@ -42,6 +42,12 @@ export interface UsageRecord {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * Subset of cacheWriteTokens created at the 1-hour TTL (vs. the default
+   * 5-minute TTL). Omit/0 means "treat all cache-write as 5m", which preserves
+   * current behavior for collectors that can't report the split.
+   */
+  cacheWrite1hTokens?: number;
   reasoningTokens: number;
   /** Request/session latency in milliseconds when the source reports it. */
   durationMs?: number | null;

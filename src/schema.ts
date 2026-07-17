@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   output_tokens      INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0, -- subset of cache_write_tokens at the 1h TTL
   reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
   duration_ms        INTEGER,                      -- request/session latency when the source reports it
 
