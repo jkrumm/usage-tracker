@@ -123,24 +123,20 @@ function parseOffsets(cursor: string | null): Offsets {
   }
 }
 
+// Transcripts nest to an open-ended depth: a session's own file sits at the
+// project root, its subagents one level down, and a workflow's agents another
+// two (`<session>/subagents/workflows/wf_*/agent-*.jsonl`). Walking the tree
+// rather than matching known layouts keeps a future nesting from silently
+// dropping out of the numbers — which is exactly how workflow agents went
+// uncounted. Non-transcript .jsonl files in the tree (a workflow's
+// journal.jsonl) carry no assistant/usage lines, so parseLine skips them.
 async function listJsonl(root: string): Promise<string[]> {
   const out: string[] = [];
-  const dirs = await readdir(root, { withFileTypes: true });
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const projectDir = join(root, d.name);
-    const entries = await readdir(projectDir, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.isFile() && e.name.endsWith(".jsonl")) out.push(join(projectDir, e.name));
-      if (e.isDirectory()) {
-        const subagentsDir = join(projectDir, e.name, "subagents");
-        if (!existsSync(subagentsDir)) continue;
-        const subEntries = await readdir(subagentsDir, { withFileTypes: true });
-        for (const s of subEntries) {
-          if (s.isFile() && s.name.endsWith(".jsonl")) out.push(join(subagentsDir, s.name));
-        }
-      }
-    }
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const e of entries) {
+    const path = join(root, e.name);
+    if (e.isDirectory()) out.push(...(await listJsonl(path)));
+    else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(path);
   }
   return out;
 }
