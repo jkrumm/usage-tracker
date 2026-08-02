@@ -39,6 +39,9 @@ export const PRICING: Record<string, Rate> = {
   // cacheWrite1h = 2x input (1-hour cache-creation multiplier).
   "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
+  // Opus 5 (August 2026) ships at the Opus 4.8 rate, 1M context included at
+  // standard pricing — no long-context premium.
+  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50);
   // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro through
   // 2026-08-31 is not tracked (these are Max value, not a real bill).
@@ -95,15 +98,53 @@ export interface TokenCounts {
   reasoning: number;
 }
 
+/**
+ * Per-tier fallback rates, applied when an Anthropic model has no exact entry
+ * above. Anthropic has held each tier's list price flat across releases (Opus
+ * 4.7/4.8/5 all $5/$25; Sonnet 4.6/5 both $3/$15), so a new model lands at its
+ * tier's rate far more often than not — and a slightly-stale rate beats the
+ * silent zero that an unpriced model used to produce. Ordered: the first
+ * matching tier wins, so keep the more specific names first. Exact entries in
+ * PRICING always take precedence; add one there the moment a tier's price
+ * actually diverges.
+ */
+const FAMILY_PRICING: ReadonlyArray<readonly [tier: string, rate: Rate]> = [
+  ["fable", { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5, cacheWrite1h: 20 }],
+  ["mythos", { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5, cacheWrite1h: 20 }],
+  ["opus", { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 }],
+  ["sonnet", { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 }],
+  ["haiku", { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 }],
+];
+
 export interface CostResult {
   usd: number | null;
-  source: "computed" | "none";
+  /**
+   * "computed" — exact rate; "family" — Anthropic tier fallback (approximate,
+   * a new model at its tier's list price); "none" — unpriced, cost is null.
+   */
+  source: "computed" | "family" | "none";
+}
+
+/**
+ * Resolve a model to a rate: exact entry first, then the Anthropic tier
+ * fallback. The `claude-` guard keeps the tier match off third-party ids that
+ * happen to contain a tier word.
+ */
+function resolveRate(modelNorm: string): { rate: Rate; source: "computed" | "family" } | null {
+  const exact = PRICING[modelNorm];
+  if (exact) return { rate: exact, source: "computed" };
+  if (!modelNorm.startsWith("claude-")) return null;
+  for (const [tier, rate] of FAMILY_PRICING) {
+    if (modelNorm.includes(tier)) return { rate, source: "family" };
+  }
+  return null;
 }
 
 /** Compute cost for a model. Returns null when the model has no known rate. */
 export function computeCost(modelNorm: string | null, t: TokenCounts): CostResult {
-  const rate = modelNorm ? PRICING[modelNorm] : undefined;
-  if (!rate) return { usd: null, source: "none" };
+  const resolved = modelNorm ? resolveRate(modelNorm) : null;
+  if (!resolved) return { usd: null, source: "none" };
+  const { rate } = resolved;
 
   const cw1h = Math.min(Math.max(t.cacheWrite1h, 0), t.cacheWrite);
   const cw5m = t.cacheWrite - cw1h;
@@ -117,5 +158,5 @@ export function computeCost(modelNorm: string | null, t: TokenCounts): CostResul
       t.reasoning * rate.output) /
     1_000_000;
 
-  return { usd, source: "computed" };
+  return { usd, source: resolved.source };
 }

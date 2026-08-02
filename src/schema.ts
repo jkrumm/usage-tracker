@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   duration_ms        INTEGER,                      -- request/session latency when the source reports it
 
   cost_usd           REAL,                         -- computed from pricing.ts; NULL if model unpriced
-  cost_source        TEXT    NOT NULL DEFAULT 'none', -- 'computed' | 'none'
+  cost_source        TEXT    NOT NULL DEFAULT 'none', -- 'computed' | 'family' | 'none'
 
   raw                TEXT,                         -- JSON: source-specific extras
   ingested_at        TEXT    NOT NULL,

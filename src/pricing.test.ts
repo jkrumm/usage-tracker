@@ -81,3 +81,35 @@ describe("computeCost", () => {
     expect(result).toEqual({ usd: null, source: "none" });
   });
 });
+
+// The tier fallback exists so an unreleased Claude model costs something
+// approximate instead of silently zero — which is how a whole Opus generation
+// slipped through uncosted. These pin which models it may and may not catch.
+describe("computeCost tier fallback", () => {
+  const oneMillionIn = {
+    input: 1_000_000,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheWrite1h: 0,
+    reasoning: 0,
+  };
+
+  test("an unlisted claude model bills at its tier's rate", () => {
+    expect(computeCost("claude-opus-6", oneMillionIn)).toEqual({ usd: 5, source: "family" });
+    expect(computeCost("claude-sonnet-6", oneMillionIn)).toEqual({ usd: 3, source: "family" });
+    expect(computeCost("claude-haiku-5", oneMillionIn)).toEqual({ usd: 1, source: "family" });
+    expect(computeCost("claude-fable-6", oneMillionIn)).toEqual({ usd: 10, source: "family" });
+  });
+
+  test("an exact rate wins over the tier fallback", () => {
+    // haiku-4-5 lists at 1/M input — same as its tier, so assert the source,
+    // which is what separates a known rate from an assumed one.
+    expect(computeCost("claude-haiku-4-5", oneMillionIn).source).toBe("computed");
+    expect(computeCost("claude-opus-5", oneMillionIn)).toEqual({ usd: 5, source: "computed" });
+  });
+
+  test("a non-claude model containing a tier word does not fall back", () => {
+    expect(computeCost("opus-clone-v1", oneMillionIn)).toEqual({ usd: null, source: "none" });
+  });
+});
