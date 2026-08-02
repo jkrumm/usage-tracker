@@ -5,8 +5,8 @@
     "": {
       "name": "usage-tracker",
       "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "^5",
+        "@types/bun": "1.3.14",
+        "typescript": "5.9.3",
       },
     },
   },
