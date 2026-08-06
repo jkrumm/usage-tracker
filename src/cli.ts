@@ -38,6 +38,10 @@ ENV
   ARGO_TOKEN     Bearer token for Argo sync (if absent, sync is silently disabled)
   HERMES_DB      Override Hermes state.db path
   FEUER_DB       Override Feuer state.db path
+  USAGE_IUMAC_HOST     ssh alias for the MacBook mirror (default "iumac")
+  USAGE_IUMAC_MACHINE  Override the mirrored MacBook's machine label
+  USAGE_REMOTE_DIR     Mirror root (default ~/.local/share/usage-tracker/remote)
+  USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `;
 
 function flag(args: string[], name: string): string | undefined {

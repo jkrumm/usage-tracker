@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { normalizeModel } from "./models.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getSessionBaseUrl, normalizeModel, resetSessionBaseUrlsCacheForTest } from "./models.ts";
 import { PRICING } from "./pricing.ts";
+import { iumacLogsDir } from "./remote.ts";
 
 // normalizeModel is the join between a source's raw model string and the
 // PRICING table: miss here and the record silently prices as unknown (usd:
@@ -79,5 +83,52 @@ describe("normalizeModel", () => {
       expect(key).not.toBeNull();
       expect(PRICING[key as string]).toBeDefined();
     }
+  });
+});
+
+// getSessionBaseUrl joins classifyBilling's sessionId lookup against
+// session_env lines scanned from *two* dirs — this machine's own log dir and
+// the iumac mirror — so a MacBook-only session still resolves. Both dirs are
+// env-overridable for tests (USAGE_CLAUDE_LOGS_DIR, USAGE_REMOTE_DIR) so
+// nothing here touches the real ~/.claude/logs.
+
+describe("sessionLogDirs / loadSessionBaseUrls merge", () => {
+  let localDir: string;
+  let remoteDir: string;
+
+  beforeEach(() => {
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
+    remoteDir = mkdtempSync(join(tmpdir(), "usage-tracker-remote-"));
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
+    process.env.USAGE_REMOTE_DIR = remoteDir;
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    rmSync(localDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  test("scans and merges session_env lines from both the local and mirrored log dirs", () => {
+    writeFileSync(
+      join(localDir, "2026-08-06.jsonl"),
+      `${JSON.stringify({ event: "session_env", data: { session: "local-session", base_url: null } })}\n`,
+    );
+
+    const mirrorLogsDir = iumacLogsDir();
+    mkdirSync(mirrorLogsDir, { recursive: true });
+    writeFileSync(
+      join(mirrorLogsDir, "2026-08-06.jsonl"),
+      `${JSON.stringify({
+        event: "session_env",
+        data: { session: "mirror-session", base_url: "https://iu-endpoint.example" },
+      })}\n`,
+    );
+
+    expect(getSessionBaseUrl("local-session")).toBeNull();
+    expect(getSessionBaseUrl("mirror-session")).toBe("https://iu-endpoint.example");
   });
 });

@@ -1,4 +1,4 @@
-.PHONY: help install ingest backfill stats sources billing-audit typecheck install-agent uninstall-agent logs
+.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit typecheck install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 
@@ -13,6 +13,9 @@ ingest: ## Run incremental ingest across all sources
 
 backfill: ## Full re-scan of every source (ignores watermarks)
 	bun run src/cli.ts ingest --full
+
+ingest-iumac: ## Force-refresh the iumac mirror and run claude-code ingest only
+	bun run src/cli.ts ingest --source claude-code
 
 stats: ## Token + cost report (override: make stats BY=model SINCE=7)
 	bun run src/cli.ts stats $(if $(BY),--by $(BY)) $(if $(SINCE),--since $(SINCE))

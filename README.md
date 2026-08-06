@@ -9,7 +9,7 @@ plan is to sync it to Argo and build the dashboard there.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
-| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) | message | `requestId` | working (Max + IU-direct, both billed `iu`, see below) |
+| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max + IU-direct, both billed `iu`, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
@@ -124,6 +124,57 @@ never happen — flagged as `MULTI-BILLING`), and cross-checks the stored
 `MISMATCH` when they disagree (only meaningful while the log is still inside
 its 3-day retention window).
 
+### MacBook (iumac) mirror
+
+The `claude-code` collector walks two roots, not one: this machine's own
+`~/.claude/projects`, and a local rsync mirror of the owner's MacBook
+(`~/.claude/projects` + `~/.claude/logs` over the `iumac` ssh alias). It's
+still a single collector and a single `source = "claude-code"` — a second
+collector sharing that name would collide on its `collector_state` cursor row,
+and the cursor is a `Record<absolutePath, offset>` anyway, so mirrored files
+are simply new keys in the same map. Rows are told apart by the `machine`
+column instead (see "Machine attribution" below); every other report
+(`billing-audit`, `sourceStatus`, `stats`) keeps working unchanged.
+
+Everything host-specific lives in `src/remote.ts`:
+
+- **Mirror location**: `${USAGE_REMOTE_DIR:-~/.local/share/usage-tracker/remote}/iumac/{projects,logs}/`,
+  refreshed by two `rsync -a --delete` runs (transcripts/logs only, via
+  `--include=*.jsonl`) at the top of every `collect()`.
+- **Env vars**: `USAGE_IUMAC_HOST` (default `iumac`), `USAGE_IUMAC_MACHINE`
+  (override the machine label instead of probing for it), `USAGE_REMOTE_DIR`
+  (override the mirror root), `USAGE_IUMAC_DISABLE=1` (hard off switch — no
+  ssh/rsync call at all).
+- **Machine attribution**: mirrored rows get an explicit `machine` (see
+  `UsageRecord.machine` in `types.ts`), resolved once per run with precedence
+  `USAGE_IUMAC_MACHINE` env > a label cached at `<mirror>/machine` from a
+  previous probe > a fresh `system_profiler`-over-ssh probe (cached to disk on
+  success) > the literal `"iumac"` if the probe fails. Local rows leave
+  `machine` unset so `upsertRecords` stamps the local host as usual.
+- **Graceful degradation**: a dead or asleep MacBook never blocks or errors
+  the collector. `syncIumac()` never throws; a failed sync is logged as a
+  warning and the run still ingests whatever the local root has. The run is
+  only reported `skipped` (with the sync failure as its note) when *neither*
+  root produced a single record — if local records came in, the run is `ok`
+  and the failure only reaches the log.
+- **Trust boundary**: this is the first source of cross-host data in the
+  pipeline — every prior row originated on this machine, but a mirrored row's
+  transcript fields and `machine` label were produced on iumac and reached the
+  DB over ssh/rsync into a mirror this tracker treats as trusted input. Those
+  rows sync onward to Argo like any other row. Accepted as part of
+  consolidating both machines' usage into one view, not treated as a problem.
+- **Historical billing caveat**: `classifyBilling()` (see above) now scans the
+  mirrored `<mirror>/logs` alongside the local `session_env` log, so
+  going-forward MacBook sessions classify correctly. A first backfill will
+  still classify most of the MacBook's *historical* sessions as `max` by
+  default — `hooks/notify.ts` prunes `session_env` lines after 3 days, so
+  those lines are already gone on the source machine by the time the mirror
+  first pulls its history. This is a known, accepted limitation, not a bug.
+
+`make ingest-iumac` force-refreshes the mirror and runs the `claude-code`
+collector on its own (`ingest --source claude-code`) — useful to check the
+mirror without waiting for the next full ingest.
+
 ### LiteLLM bridge
 
 The litellm source reads a newline-delimited JSON log written by a LiteLLM
@@ -167,9 +218,18 @@ dilute token/cost totals; the error rate surfaces in `make sources` as `err%`.
 
 The DB is local per machine; the eventual Argo sync merges several laptops' DBs
 into one view. So every row is tagged at ingest time with the host that produced
-it. The label is derived once per run: `USAGE_MACHINE` if set, else the macOS
-hardware model + chip via `system_profiler` (e.g. `Mac mini (M2 Pro)`), falling
-back to the hostname. Group by it with `make stats BY=machine`.
+it. For almost every collector the label is derived once per *batch* (run) from
+`currentMachine()`: `USAGE_MACHINE` if set, else the macOS hardware model +
+chip via `system_profiler` (e.g. `Mac mini (M2 Pro)`), falling back to the
+hostname.
+
+`claude-code` is the one exception: since it spans two hosts in a single run
+(this machine + the iumac mirror, see "MacBook (iumac) mirror" above), the
+label is set *per record* instead — `UsageRecord.machine` on the record wins
+over the batch-derived `currentMachine()` when present (`upsertRecords` in
+`db.ts` does `r.machine ?? batchMachine`), so mirrored rows carry the MacBook's
+label and local rows still fall through to the batch machine. Group by it with
+`make stats BY=machine`.
 
 ### Feuer access
 

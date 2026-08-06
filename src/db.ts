@@ -103,7 +103,13 @@ export function upsertRecords(
 ): UpsertSummary {
   const before = countRows(db, source);
   const stmt = db.prepare(UPSERT_SQL);
-  const machine = currentMachine();
+  // One currentMachine() call per batch, not per record — a batch is one
+  // collector run on one host. A record can still override it (r.machine ??
+  // batchMachine below): the claude-code collector spans two hosts (local +
+  // the iumac mirror) inside a single run, so per-record is the only place
+  // that distinction can be made. No schema change needed — `machine` already
+  // exists on usage_record.
+  const batchMachine = currentMachine();
   const defaultWorkspace = opts.defaultWorkspace ?? null;
 
   const tx = db.transaction((rows: UsageRecord[]) => {
@@ -132,7 +138,7 @@ export function upsertRecords(
           r.model,
           typeof r.raw?.sessionId === "string" ? r.raw.sessionId : undefined,
         ),
-        $machine: machine,
+        $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",
         $input: r.inputTokens,
         $output: r.outputTokens,

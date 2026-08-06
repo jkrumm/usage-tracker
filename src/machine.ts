@@ -29,15 +29,23 @@ function macModel(): string | null {
   try {
     const proc = Bun.spawnSync(["system_profiler", "SPHardwareDataType"]);
     if (proc.exitCode !== 0) return null;
-    const out = proc.stdout.toString();
-    const name = /Model Name:\s*(.+)/.exec(out)?.[1]?.trim();
-    const chip = /Chip:\s*(.+)/
-      .exec(out)?.[1]
-      ?.trim()
-      .replace(/^Apple\s+/, "");
-    if (name && chip) return `${name} (${chip})`;
-    return name ?? null;
+    return parseMacModel(proc.stdout.toString());
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse `system_profiler SPHardwareDataType` output into a "Model (Chip)"
+ * label. Exported so remote.ts can reuse it verbatim against iumac's probe
+ * output instead of re-implementing the regex pair.
+ */
+export function parseMacModel(out: string): string | null {
+  const name = /Model Name:\s*(.+)/.exec(out)?.[1]?.trim();
+  const chip = /Chip:\s*(.+)/
+    .exec(out)?.[1]
+    ?.trim()
+    .replace(/^Apple\s+/, "");
+  if (name && chip) return `${name} (${chip})`;
+  return name ?? null;
 }

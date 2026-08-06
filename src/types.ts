@@ -49,6 +49,13 @@ export interface UsageRecord {
    */
   cacheWrite1hTokens?: number;
   reasoningTokens: number;
+  /**
+   * Set only when the record came from another host (e.g. the claude-code
+   * collector's iumac mirror); otherwise the local machine is stamped
+   * centrally by upsertRecords from currentMachine(). Per-record, not
+   * per-collector, because one collector (claude-code) now spans two hosts.
+   */
+  machine?: string | null;
   /** Request/session latency in milliseconds when the source reports it. */
   durationMs?: number | null;
   /**

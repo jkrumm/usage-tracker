@@ -1,44 +1,79 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { iumacLogsDir } from "./remote.ts";
 import type { Billing } from "./types.ts";
 
 // claude-code's transcripts don't record which ANTHROPIC_BASE_URL produced a
 // message, so `hooks/notify.ts` logs it once per SessionStart to the same
 // structured log dir it already writes to. Loaded lazily and cached for the
 // life of the process (ingest is a short-lived one-shot run).
-const SESSION_LOG_DIR = join(homedir(), ".claude", "logs");
 let sessionBaseUrls: Map<string, string | null> | null = null;
+
+/**
+ * This machine's own session_env log dir. A function, not a frozen constant,
+ * so tests can override it via USAGE_CLAUDE_LOGS_DIR without touching the
+ * real ~/.claude/logs — same lazy-env pattern claude-code.ts uses for its
+ * local transcripts root.
+ */
+function localSessionLogDir(): string {
+  return process.env.USAGE_CLAUDE_LOGS_DIR?.trim() || join(homedir(), ".claude", "logs");
+}
+
+/**
+ * Test-only: clear the module-level session_env cache so a test can control
+ * loadSessionBaseUrls' inputs deterministically. Never called from
+ * production code.
+ */
+export function resetSessionBaseUrlsCacheForTest(): void {
+  sessionBaseUrls = null;
+}
+
+// iumac sessions never wrote into this machine's log dir, so a MacBook
+// sessionId is absent unless its mirrored logs (synced by remote.ts) are also
+// scanned here. Known limitation this doesn't fix: `hooks/notify.ts` prunes
+// entries after 3 days, so a first backfill of iumac's *historical* sessions
+// will still classify most of them "max" by default — those log lines are
+// already gone on the source machine by the time the mirror first syncs them.
+// Only going-forward classification is expected to be accurate.
+function sessionLogDirs(): string[] {
+  const dirs = [localSessionLogDir()];
+  const mirror = iumacLogsDir();
+  if (existsSync(mirror)) dirs.push(mirror);
+  return dirs;
+}
 
 function loadSessionBaseUrls(): Map<string, string | null> {
   const map = new Map<string, string | null>();
-  if (!existsSync(SESSION_LOG_DIR)) return map;
-  try {
-    for (const file of readdirSync(SESSION_LOG_DIR)) {
-      if (!file.endsWith(".jsonl")) continue;
-      let text: string;
-      try {
-        text = readFileSync(join(SESSION_LOG_DIR, file), "utf-8");
-      } catch {
-        continue;
-      }
-      for (const line of text.split("\n")) {
-        if (!line) continue;
+  for (const dir of sessionLogDirs()) {
+    if (!existsSync(dir)) continue;
+    try {
+      for (const file of readdirSync(dir)) {
+        if (!file.endsWith(".jsonl")) continue;
+        let text: string;
         try {
-          const entry = JSON.parse(line) as {
-            event?: string;
-            data?: { session?: string; base_url?: string | null };
-          };
-          if (entry.event === "session_env" && entry.data?.session) {
-            map.set(entry.data.session, entry.data.base_url ?? null);
-          }
+          text = readFileSync(join(dir, file), "utf-8");
         } catch {
           continue;
         }
+        for (const line of text.split("\n")) {
+          if (!line) continue;
+          try {
+            const entry = JSON.parse(line) as {
+              event?: string;
+              data?: { session?: string; base_url?: string | null };
+            };
+            if (entry.event === "session_env" && entry.data?.session) {
+              map.set(entry.data.session, entry.data.base_url ?? null);
+            }
+          } catch {
+            continue;
+          }
+        }
       }
+    } catch {
+      // never fail classification on a log-dir read error
     }
-  } catch {
-    // never fail classification on a log-dir read error
   }
   return map;
 }
