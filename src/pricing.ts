@@ -83,7 +83,22 @@ export const PRICING: Record<string, Rate> = {
   // sideclaw splits it back out (see its normalizeUsage) and reports output and
   // reasoning separately. Both bill at `output` here, and they sum to the
   // vendor's completion_tokens — so the spend lands once, not twice.
-  "gpt-5.6-terra": { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
+  // Corrected 2026-08-20 from $2.50/$15.00 (the launch price) — OpenAI's
+  // 2026-07-30 cut moved Terra to $2.00/$12.00, confirmed live against
+  // openrouter.ai/api/v1/models. $2.50/$15.00 is now gpt-5.6-sol's rate, which
+  // is how the stale figure kept looking plausible.
+  "gpt-5.6-terra": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.5 },
+  // GPT-5.6 Luna (OpenAI list prices; Azure OpenAI matches exactly, effective
+  // 2026-08-01) — Hermes's brain, research-gateway's lead/worker, and argo's
+  // AI-gateway default since 2026-08-10. OpenAI cut this model 80% on
+  // 2026-07-30, so the $1.00/$6.00 launch price still shown on many pages
+  // (including some August-dated ones) is stale. Rates below are short context
+  // (<=272k); a request over that doubles input and multiplies output by 1.5.
+  // cacheRead = 90% off input, cacheWrite = 1.25x input, both published.
+  // Reasoning tokens bill at `output`. NOTE: $0.10/$0.60 is the *batch* rate
+  // (50% off) for this model, not a later price cut — do not "correct" these
+  // numbers down to it.
+  "gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };

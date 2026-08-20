@@ -66,7 +66,8 @@ describe("computeCost", () => {
       cacheWrite1h: 1_000_000,
       reasoning: 0,
     });
-    expect(result).toEqual({ usd: 3.125, source: "computed" });
+    // gpt-5.6-terra's cacheWrite rate (1.25x its $2.00 input) — see pricing.ts.
+    expect(result).toEqual({ usd: 2.5, source: "computed" });
   });
 
   test("unpriced model returns null cost", () => {
