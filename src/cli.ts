@@ -10,6 +10,7 @@ import {
   stats,
   type GroupBy,
 } from "./report.ts";
+import { formatReprice, reprice } from "./reprice.ts";
 import { sync } from "./sync.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
@@ -22,6 +23,9 @@ COMMANDS
     --full               Ignore watermarks and re-scan everything
     --source <name>      Only run one collector (claude-code|hermes|feuer|opencode)
   sync                   Push eligible usage_record rows to the Argo API
+  reprice                Re-cost stored rows against the current pricing table
+    --model <norm>       Only this model_norm
+    --dry-run            Report what would change without writing
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
     --since <N>          Only the last N days
@@ -79,6 +83,15 @@ async function main(): Promise<number> {
     if (cmd === "sync") {
       const { pushed, batches } = await sync(db);
       process.stdout.write(`sync: ${pushed} records pushed in ${batches} batch${batches === 1 ? "" : "es"}\n`);
+      return 0;
+    }
+
+    if (cmd === "reprice") {
+      const result = reprice(db, {
+        model: flag(rest, "--model"),
+        dryRun: rest.includes("--dry-run"),
+      });
+      process.stdout.write(`${formatReprice(result)}\n`);
       return 0;
     }
 

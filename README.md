@@ -41,6 +41,8 @@ make install            # bun install
 make backfill           # first run: full scan of all sources
 make ingest             # incremental (what the LaunchAgent runs)
 make sync               # push unsynced rows to Argo API
+make reprice DRYRUN=1   # preview re-costing stored rows at the current rates
+make reprice            # apply it (clears synced_at so `sync` re-pushes)
 make stats              # cost + tokens by source
 make stats BY=model     # by model      (also: billing, day, machine, sub_tool)
 make stats BY=day SINCE=7

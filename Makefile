@@ -23,6 +23,9 @@ stats: ## Token + cost report (override: make stats BY=model SINCE=7)
 sync: ## Push unsynced rows to the Argo API
 	bun run src/cli.ts sync
 
+reprice: ## Re-cost stored rows against the current pricing table (DRYRUN=1, MODEL=<norm>)
+	bun run src/cli.ts reprice $(if $(MODEL),--model $(MODEL)) $(if $(DRYRUN),--dry-run)
+
 sources: ## Per-collector status
 	bun run src/cli.ts sources
 
