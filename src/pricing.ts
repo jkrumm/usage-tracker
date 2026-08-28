@@ -9,12 +9,19 @@
 // Rates verified May 2026 against published list prices (Anthropic, OpenAI,
 // Google) and the Feuer agent's configured IU rate for Kimi-K2.6; DeepSeek V4
 // and Opus 4.8 added June 2026, Claude 5 family (Sonnet 5, Fable 5) July 2026
-// (see inline notes). Two caveats
-// remain: (1) IU's actual per-token EU rates may differ from public list prices
-// for the Claude/Gemini models routed through the bridge; (2) cache-write bills
-// at the 1.25x 5-minute multiplier by default, split out to the 2x 1-hour
-// multiplier when a source reports the ephemeral_1h/5m breakdown — sources that
-// don't report the split still fall back to the 5m rate for the whole amount.
+// (see inline notes). The Requesty-routed non-Claude models (DeepSeek and the
+// August 2026 batch below) are measured directly against the IU unified
+// endpoint's own reported `usage.cost`, 2026-08-28 — solved by least squares
+// across four request shapes per model with a 0.0% residual, and confirmed
+// route-independent (/openai and /anthropic both agree). Those rates are
+// exact, not estimates. Two caveats remain for everything else: (1) the
+// Claude/Gemini models route to AWS Bedrock eu-west-1 / Azure Sweden and the
+// gateway reports no cost field for them, so their entries stay public-list-
+// price proxies of unknown accuracy against IU's actual EU per-token rate;
+// (2) cache-write bills at the 1.25x 5-minute multiplier by default, split out
+// to the 2x 1-hour multiplier when a source reports the ephemeral_1h/5m
+// breakdown — sources that don't report the split still fall back to the 5m
+// rate for the whole amount.
 // Editing values is safe — the model key is the only thing collectors depend on.
 
 export interface Rate {
@@ -51,13 +58,35 @@ export const PRICING: Record<string, Rate> = {
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
   // IU bridge rate (Feuer agent config — authoritative for this setup).
   "kimi-k2.6": { input: 0.95, output: 4.0, cacheRead: 0.16, cacheWrite: 0.95 },
-  // DeepSeek V4 (IU unified endpoint, EU-resident) — Hermes brain runs Pro, its
-  // auxiliaries run Flash/Pro. Rates from modelpick's
-  // scraped aggregators (OpenRouter + ArtificialAnalysis, 2026-06-02); cacheRead/Write
-  // follow the table's non-Claude convention (0.1x / 1.0x input). Same public-list
-  // caveat as the other IU-routed models — actual EU per-token rate may differ.
-  "deepseek-v4-pro": { input: 0.435, output: 0.87, cacheRead: 0.0435, cacheWrite: 0.435 },
-  "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.014, cacheWrite: 0.14 },
+  // DeepSeek V4 (IU unified endpoint, EU-resident, Requesty-routed) — Hermes
+  // brain runs Pro, its auxiliaries run Flash/Pro. Rates measured directly
+  // against the gateway's own `usage.cost` 2026-08-28 (see the file header) —
+  // corrected from modelpick's scraped OpenRouter/ArtificialAnalysis list
+  // prices, which undercosted every stored row by roughly 3x (Pro) and
+  // 3.1x/4.7x input/output (Flash). cacheWrite = input: the gateway never
+  // reports a cache-creation field for these models, so a cache write bills
+  // as ordinary input.
+  "deepseek-v4-pro": { input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 1.32 },
+  "deepseek-v4-flash": { input: 0.44, output: 1.32, cacheRead: 0.014, cacheWrite: 0.44 },
+  // The following ten (glm-5.3-flash through qwen3.7-max) are the rest of the
+  // IU unified endpoint's Requesty-routed catalog, measured the same way and
+  // on the same date — see the file header for the method. cacheWrite = input
+  // throughout, same reason as DeepSeek above.
+  "glm-5.3-flash": { input: 0.075, output: 0.25, cacheRead: 0.015, cacheWrite: 0.075 },
+  // No caching observed on the gateway for this model — cacheRead = input is a
+  // deliberate "caching does not work on this model" encoding, not a missing
+  // measurement.
+  "nvidia-nemotron-3-super-120b-a12b": { input: 0.1, output: 0.5, cacheRead: 0.1, cacheWrite: 0.1 },
+  hy3: { input: 0.14, output: 0.58, cacheRead: 0.035, cacheWrite: 0.14 },
+  "minimax-m3": { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.3 },
+  "nemotron-3-ultra": { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: 0.6 },
+  "kimi-k2.7-code": { input: 0.95, output: 4.0, cacheRead: 0.19, cacheWrite: 0.95 },
+  "mimo-v2.5-pro": { input: 1.0, output: 3.0, cacheRead: 0.2, cacheWrite: 1.0 },
+  "glm-5.1": { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  "glm-5.2": { input: 1.4, output: 4.4, cacheRead: 0.14, cacheWrite: 1.4 },
+  // No caching observed on the gateway for this model — same deliberate
+  // cacheRead = input encoding as nvidia-nemotron-3-super-120b-a12b above.
+  "qwen3.7-max": { input: 2.5, output: 7.5, cacheRead: 2.5, cacheWrite: 2.5 },
   // OpenAI / Google list prices, verified May 2026.
   "gpt-5-mini": { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0.25 },
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },

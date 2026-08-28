@@ -71,6 +71,30 @@ describe("normalizeModel", () => {
     expect(normalizeModel("iu/claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
   });
 
+  test("resolves the IU unified endpoint's Requesty-routed gateway ids onto their PRICING key", () => {
+    // The gateway's casing is inconsistent (some ids ship title-cased, some
+    // lower-case) — normalizeModel's plain lowercase must still land each one
+    // on the exact PRICING key added for it.
+    const gatewayIdToKey: Record<string, string> = {
+      "glm-5.3-flash": "glm-5.3-flash",
+      "glm-5.2": "glm-5.2",
+      "GLM-5.1": "glm-5.1",
+      hy3: "hy3",
+      "kimi-k2.7-code": "kimi-k2.7-code",
+      "minimax-m3": "minimax-m3",
+      "MiMo-V2.5-Pro": "mimo-v2.5-pro",
+      "nemotron-3-ultra": "nemotron-3-ultra",
+      "NVIDIA-Nemotron-3-Super-120B-A12B": "nvidia-nemotron-3-super-120b-a12b",
+      "qwen3.7-max": "qwen3.7-max",
+      "DeepSeek-V4-Flash": "deepseek-v4-flash",
+      "DeepSeek-V4-Pro": "deepseek-v4-pro",
+    };
+    for (const [gatewayId, key] of Object.entries(gatewayIdToKey)) {
+      expect(normalizeModel(gatewayId)).toBe(key);
+      expect(PRICING[key]).toBeDefined();
+    }
+  });
+
   test("resolves the dated ids of priced models onto a real PRICING key", () => {
     // The regression that matters: a dated id must reach a rate, not price as null.
     for (const dated of [
