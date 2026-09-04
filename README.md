@@ -11,9 +11,9 @@ plan is to sync it to Argo and build the dashboard there.
 |-|-|-|-|-|
 | `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max + IU-direct, both billed `iu`, see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
-| `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | working |
+| `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | historical rows only — OpenCode was removed 2026-09-04; the collector reports not-present |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
-| `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | working |
+| `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | historical rows only — the local LiteLLM proxy was removed 2026-09-04; the collector reports not-present |
 
 Each source records tokens; almost none records reliable cost. So the tracker
 computes one comparable cost for every row from its own pricing table
@@ -177,7 +177,11 @@ Everything host-specific lives in `src/remote.ts`:
 collector on its own (`ingest --source claude-code`) — useful to check the
 mirror without waiting for the next full ingest.
 
-### LiteLLM bridge
+### LiteLLM bridge (retired)
+
+The local LiteLLM proxy and its logger were removed on 2026-09-04; the collector
+stays so the rows it ingested remain queryable. What follows describes how those
+rows were produced.
 
 The litellm source reads a newline-delimited JSON log written by a LiteLLM
 `CustomLogger` callback (`dotfiles/config/litellm/usage_logger.py`) — one line
