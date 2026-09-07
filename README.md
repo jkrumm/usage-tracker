@@ -9,8 +9,9 @@ plan is to sync it to Argo and build the dashboard there.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
-| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max + IU-direct, both billed `iu`, see below) |
+| `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max and IU-direct, every model id, billed by the session's base URL — see below) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
+| `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — sideclaw's direct IU calls (`read_image`, `read_drawing`, `generate_image`, the `review` critic) | message | `request_id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | historical rows only — OpenCode was removed 2026-09-04; the collector reports not-present |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | historical rows only — the local LiteLLM proxy was removed 2026-09-04; the collector reports not-present |
@@ -21,11 +22,9 @@ computes one comparable cost for every row from its own pricing table
 
 - `max` — Claude Code orchestrator on the Max subscription. Cost is the
   list-price *value* consumed, not a real bill.
-- `iu` — real per-token IU spend, whether routed through the IU LiteLLM bridge
-  (Kimi-K2.6 etc.) or Claude Code going straight to the IU Anthropic endpoint
-  (the `ca` launcher, no bridge involved — see below). IU pays either way, so
-  both collapse into one billing class; the routing distinction still matters
-  internally (dedup against the litellm source) but isn't a billing fact.
+- `iu` — real per-token IU spend against the IU unified endpoint: Claude Code
+  on the `ca` launcher or sideclaw's `iu` lane (any served id, Claude or not),
+  sideclaw's direct calls, and the agent daemons.
 
 So `stats --by billing` answers "how much Max value am I burning" vs "what am
 I actually paying IU" in one view.
@@ -50,8 +49,14 @@ make sources            # per-collector status, error rate, last run, last note
 make billing-audit      # per-session claude-code billing vs. the live session_env log
 make billing-audit SESSION=<id> SINCE=7
 make install-agent      # 15-min incremental ingest via LaunchAgent
-make logs               # tail agent logs
+make logs               # tail ~/Library/Logs/usage-tracker.{log,err}
 ```
+
+Every ingest ends with one summary line on stdout (so it is the last line of
+`usage-tracker.log`), e.g.
+`run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … sync=12`
+— a grep-able summary for humans. It is not the liveness signal: the devhost
+heartbeat reads the log's mtime, which the per-source lines above already move.
 
 DB path defaults to `~/.local/share/usage-tracker/usage.db` (override `USAGE_DB`).
 
@@ -70,7 +75,10 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
   normalization, billing classification and pricing live centrally so a new
   source never re-implements them.
 - Upsert is keyed on `(source, source_id)` and is idempotent — re-ingesting a
-  session whose token counts grew simply updates the row.
+  session whose token counts grew simply updates the row. The update only fires
+  when a column actually differs (row-value `IS NOT`), so `ingested_at` moves on
+  real change only and the Argo sync stays a delta even though hermes/feuer
+  re-read their whole table every run.
 - Per-source watermarks live in `collector_state`. Claude Code resumes by byte
   offset per file (advancing only past complete lines); the small agent DBs are
   re-read whole each run and reconciled by upsert.
@@ -87,27 +95,35 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 
 ### Claude Code billing classification
 
-The `claude-code` collector keeps Claude-native rows (Max **or** IU-direct,
-both billed `iu`/`max`) and drops everything else. Every other model that can
-appear in a claude-code session — DeepSeek, Kimi-K2.6, GPT, or `-eu`
-EU-routed Claude — reached the model through the IU LiteLLM bridge and is
-already counted per-request by the `litellm` source; admitting it here would
-double-count bridge traffic. The guard is in `parseLine()`: `isBridgeRouted(…)`
-(`src/models.ts`) returns true for any of those, and the row is dropped.
-`billing = 'unknown'` never occurs for this source.
+The `claude-code` collector keeps every assistant row, whatever the model id —
+a `ca glm-5.3-flash` session or a sideclaw `iu` worker on DeepSeek leaves the
+transcript as its only record. (Until 2026-09-07 the collector dropped every
+non-`claude-*` and `-eu` row, assuming the LiteLLM bridge had logged it; with
+the bridge gone that silently lost ~3.7k `glm-5.3-flash` rows in one week.) The
+one remaining guard is historical: rows before `LITELLM_BRIDGE_CUTOFF`
+(`src/models.ts`, 2026-07-08 — the bridge log's last real request) with a
+bridge-shaped id are still skipped, because the `litellm` source already holds
+them and a `--full` backfill would otherwise double-count. `billing = 'unknown'`
+never occurs for this source.
 
-A bare `claude-*` model (no `-eu` suffix) can come from either the `c` (Max)
-or `ca` (IU-direct) launcher — the model name alone doesn't distinguish them,
-and that's true for a subagent as much as the top-level turn: a subagent
-inherits its parent session's `ANTHROPIC_BASE_URL` and can run a different
-model (e.g. `Explore` on Haiku inside a `ca` session), sharing that session's
-`sessionId`. `classifyBilling()` (`src/models.ts`) resolves this with a real
-signal instead of guessing from the model name: `dotfiles/hooks/notify.ts`
-logs `{ event: "session_env", session, base_url }` once per `SessionStart` to
-`~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3 days), and `getSessionBaseUrl()`
-joins a record's `sessionId` against that log — a non-empty `base_url` means
-`iu` (direct, `ca`), empty means `max`, and a missing/expired entry defaults
-to `max` (going-forward correctness matters here, not historical precision).
+Billing never comes from the model name. A bare `claude-*` model can come from
+either the `c` (Max) or `ca` (IU-direct) launcher, and that's true for a
+subagent as much as the top-level turn: a subagent inherits its parent
+session's `ANTHROPIC_BASE_URL` and can run a different model (e.g. `Explore` on
+Haiku inside a `ca` session), sharing that session's `sessionId`.
+`classifyBilling()` (`src/models.ts`) resolves this with the real signal:
+`dotfiles/hooks/notify.ts` logs `{ event: "session_env", session, base_url }`
+once per `SessionStart` to `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3
+days), and `getSessionBaseUrl()` joins a record's `sessionId` against that log —
+a non-empty `base_url` means `iu`, empty means `max`. When the line is missing
+(expired, or older than the hook) the id decides the only way it can: Max serves
+nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `iu` and a
+bare Claude id defaults to `max` (going-forward correctness matters here, not
+historical precision).
+
+The `-eu` suffix (`claude-sonnet-4-6-eu`) is the IU gateway's EU-routed twin of
+a Claude model, same rate card — `normalizeModel` keeps stripping it because it
+is still live: Hermes fails over to it under throttling.
 
 Backgrounded subagents (the TUI's "Backgrounded agent") don't write into the
 parent's flat transcript file at all — Claude Code gives them their own file
@@ -176,6 +192,17 @@ Everything host-specific lives in `src/remote.ts`:
 `make ingest-iumac` force-refreshes the mirror and runs the `claude-code`
 collector on its own (`ingest --source claude-code`) — useful to check the
 mirror without waiting for the next full ingest.
+
+### Sideclaw direct IU calls (`sideclaw-iu`)
+
+sideclaw's multimodal tools (`read_image`, `read_drawing`, `generate_image`) and
+the `review` adversary critic call the IU OpenAI transport with plain `fetch` —
+no `claude -p` session, so no transcript. sideclaw's `recordIuUsage` appends one
+line per request to `~/.local/share/usage-tracker/sideclaw-iu.jsonl`
+(`{ ts, request_id, tool, model, input_tokens, output_tokens, reasoning_tokens,
+latency_ms, bytes }`); the collector reads it by byte offset and maps `tool` to
+`sub_tool`. Billing is derived centrally (always `iu`), the line's own
+`billing` field is ignored.
 
 ### LiteLLM bridge (retired)
 
@@ -267,7 +294,9 @@ to the Argo endpoint. Argo identifies rows by the `(source, source_id)` pair
 which is our unique key, so re-sending already-pushed rows simply updates them
 on the server with the latest token counts and cost. This makes the sync safe to
 run idempotently and means a row whose tokens grew since its last sync will be
-re-sent and updated on the server.
+re-sent and updated on the server. Because the upsert leaves `ingested_at`
+untouched on an unchanged row (see Design), a quiet run pushes nothing — the
+hermes/feuer full re-reads no longer re-send ~2.5k identical rows every 15 min.
 
 Only two env vars are required:
 
@@ -278,5 +307,6 @@ Only two env vars are required:
 
 If `ARGO_TOKEN` is absent the sync step logs one info line and does nothing —
 not an error, so a machine that only collects locally is still fully functional.
-This is also what happens when a fresh LaunchAgent is installed and `op` is not
-available to retrieve the token at install time.
+This is also what happens when the LaunchAgent's `secrets-run read` cannot
+resolve the token at spawn (`launchd/install-agent.sh` renders the plist; it
+logs to `~/Library/Logs/usage-tracker.{log,err}`, never `/tmp`).

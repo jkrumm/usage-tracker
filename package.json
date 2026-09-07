@@ -1,7 +1,7 @@
 {
   "name": "usage-tracker",
   "version": "0.1.0",
-  "description": "Local SQLite token/cost telemetry across Claude Code, the LiteLLM bridge, Hermes, Feuer and OpenCode",
+  "description": "Local SQLite token/cost telemetry across Claude Code, Hermes, Feuer and sideclaw",
   "private": true,
   "type": "module",
   "module": "src/cli.ts",
