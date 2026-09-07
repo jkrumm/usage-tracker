@@ -97,6 +97,13 @@ export const PRICING: Record<string, Rate> = {
   // reading a field (see its normalizeUsage). Batch/Flex are half these rates
   // and Priority is 1.8x; only standard is tracked.
   "gemini-3.5-flash": { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
+  // Gemini 3.8 Flash — its successor on the IU catalog, not yet used by any
+  // source. Input/output from modelpick's `metric_snapshot` (`price_in` 0.75,
+  // `price_out` 3.75; OpenRouter and ArtificialAnalysis agree, captured
+  // 2026-09-04) — modelpick's cost.ts and pick_probe carry no row for it.
+  // cacheRead = 10% of input and cacheWrite = input follow the 3.5 Flash entry
+  // above; unmeasured against the gateway.
+  "gemini-3.8-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
   // gpt-image-2 is per-token, not flat per-image. It emits image output tokens
   // ($30/M) and consumes text prompt tokens ($5/M) — mapped to output/input
   // here because sideclaw only does text->image generation. Image *input*
