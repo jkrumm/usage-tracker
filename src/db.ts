@@ -87,13 +87,34 @@ ON CONFLICT (source, source_id) DO UPDATE SET
   cache_write_1h_tokens=excluded.cache_write_1h_tokens,
   reasoning_tokens=excluded.reasoning_tokens, duration_ms=excluded.duration_ms,
   cost_usd=excluded.cost_usd, cost_source=excluded.cost_source, raw=excluded.raw,
-  ingested_at=datetime('now');
+  ingested_at=datetime('now')
+WHERE (usage_record.grain, usage_record.ts, usage_record.model, usage_record.model_norm,
+       usage_record.project, usage_record.workspace, usage_record.sub_tool, usage_record.billing,
+       usage_record.machine, usage_record.outcome,
+       usage_record.input_tokens, usage_record.output_tokens, usage_record.cache_read_tokens,
+       usage_record.cache_write_tokens, usage_record.cache_write_1h_tokens,
+       usage_record.reasoning_tokens, usage_record.duration_ms,
+       usage_record.cost_usd, usage_record.cost_source, usage_record.raw)
+  IS NOT
+      (excluded.grain, excluded.ts, excluded.model, excluded.model_norm,
+       excluded.project, excluded.workspace, excluded.sub_tool, excluded.billing,
+       excluded.machine, excluded.outcome,
+       excluded.input_tokens, excluded.output_tokens, excluded.cache_read_tokens,
+       excluded.cache_write_tokens, excluded.cache_write_1h_tokens,
+       excluded.reasoning_tokens, excluded.duration_ms,
+       excluded.cost_usd, excluded.cost_source, excluded.raw);
 `;
 
 /**
  * Upsert a batch of records for one source. Derives model_norm, billing and
  * cost here so collectors stay dumb. Idempotent: re-ingesting the same
  * source_id updates the row (correct for sessions whose token counts grow).
+ *
+ * The conflict branch only fires when something actually differs (the row-value
+ * `IS NOT` above — NULL-safe), so `ingested_at` moves only on a real change.
+ * That is what keeps the Argo sync (`ingested_at > synced_at`) a delta: the
+ * hermes/feuer collectors re-read their whole `sessions` table every run, and
+ * an unconditional update used to re-push ~2.5k unchanged rows each time.
  */
 export function upsertRecords(
   db: Database,

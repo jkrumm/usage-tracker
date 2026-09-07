@@ -64,3 +64,44 @@ describe("upsertRecords machine precedence", () => {
     expect(unsetRow?.machine).toBe("Test Machine (Override)");
   });
 });
+
+// The conflict branch of UPSERT_SQL is guarded by a row-value `IS NOT` so an
+// unchanged re-ingest leaves `ingested_at` alone — otherwise every hermes/feuer
+// run (a full re-read of their `sessions` table) re-pushed the whole table to
+// Argo. Pinned with a back-dated ingested_at: datetime('now') is second-grained,
+// so "did it move" is only observable against a stamp that can't collide.
+
+describe("upsertRecords ingested_at", () => {
+  let dir: string;
+  let db: Database;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-db-test-"));
+    db = openDb(join(dir, "usage.db"));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function ingestedAt(sourceId: string): string | undefined {
+    return db
+      .query<{ ingested_at: string }, [string]>(
+        "SELECT ingested_at FROM usage_record WHERE source = 'hermes' AND source_id = ?",
+      )
+      .get(sourceId)?.ingested_at;
+  }
+
+  test("an identical re-ingest keeps ingested_at; a changed row bumps it", () => {
+    const record = baseRecord({ project: null, raw: { endReason: "done" } });
+    upsertRecords(db, "hermes", [record]);
+    db.exec("UPDATE usage_record SET ingested_at = '2000-01-01 00:00:00'");
+
+    upsertRecords(db, "hermes", [record]);
+    expect(ingestedAt(record.sourceId)).toBe("2000-01-01 00:00:00");
+
+    upsertRecords(db, "hermes", [{ ...record, outputTokens: record.outputTokens + 1 }]);
+    expect(ingestedAt(record.sourceId)).not.toBe("2000-01-01 00:00:00");
+  });
+});
