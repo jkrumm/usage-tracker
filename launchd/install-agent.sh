@@ -19,10 +19,10 @@
 #   - The output is therefore deterministic, so re-running is a true no-op
 #     instead of re-baking whatever the token happened to be that day.
 #
-# The plist content is owned by this script rather than
-# launchd/com.jkrumm.usage-tracker.plist.template: the no-plaintext-token shape
-# is a security invariant, not a layout preference, and a separate template file
-# with an `__ARGO_TOKEN__` slot is exactly how it regressed.
+# The plist content is owned by this script, deliberately with no separate
+# template file: the no-plaintext-token shape is a security invariant, not a
+# layout preference, and a template with an `__ARGO_TOKEN__` slot is exactly
+# how it regressed (the old one also still logged to /tmp).
 #
 # USAGE_TRACKER_PLIST overrides the output path, for rendering to a scratch
 # file. It implies "do not touch launchd" — a dry render that boots the live

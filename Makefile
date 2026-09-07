@@ -43,5 +43,5 @@ uninstall-agent: ## Stop + remove the LaunchAgent
 	rm -f $$HOME/Library/LaunchAgents/$(LABEL).plist
 	@echo "removed $(LABEL)"
 
-logs: ## Tail the LaunchAgent logs
-	tail -f /tmp/usage-tracker.log /tmp/usage-tracker.err
+logs: ## Tail the LaunchAgent logs (~/Library/Logs, never /tmp — macOS sweeps it)
+	tail -f $$HOME/Library/Logs/usage-tracker.log $$HOME/Library/Logs/usage-tracker.err
