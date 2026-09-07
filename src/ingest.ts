@@ -13,6 +13,12 @@ export interface SourceResult {
   note?: string;
 }
 
+export interface IngestSummary {
+  results: SourceResult[];
+  /** Rows pushed to Argo at the end of the run (0 when sync is disabled or failed). */
+  synced: number;
+}
+
 export interface IngestOptions {
   full?: boolean;
   /** Limit the run to a single source. */
@@ -24,7 +30,7 @@ export interface IngestOptions {
  * skipped, and a thrown error is caught and recorded so one broken source never
  * aborts the others.
  */
-export async function runIngest(db: Database, opts: IngestOptions = {}): Promise<SourceResult[]> {
+export async function runIngest(db: Database, opts: IngestOptions = {}): Promise<IngestSummary> {
   const targets = opts.only
     ? allCollectors.filter((c) => c.source === opts.only)
     : allCollectors;
@@ -38,8 +44,10 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     results.push(await runOne(db, c, opts));
   }
 
+  let synced = 0;
   try {
     const { pushed, batches } = await sync(db);
+    synced = pushed;
     if (pushed > 0) {
       log.info(`sync: pushed ${pushed} records in ${batches} batch${batches === 1 ? "" : "es"}`);
     }
@@ -48,7 +56,25 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     log.error(`sync: ${msg}`);
   }
 
-  return results;
+  return { results, synced };
+}
+
+/**
+ * One line per run, the last thing written to the log — a grep-able human
+ * summary, not the liveness signal: the heartbeat reads the log's mtime, which
+ * the per-source lines above already move. Fixed shape, one token per source:
+ *
+ *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … sync=12
+ *
+ * `+new/seen` mirrors the per-source lines above it; a skipped or errored
+ * source shows its status instead of counts.
+ */
+export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
+  const status = summary.results.some((r) => r.status === "error") ? "error" : "ok";
+  const perSource = summary.results.map((r) =>
+    r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
+  );
+  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} sync=${summary.synced}`;
 }
 
 async function runOne(db: Database, c: Collector, opts: IngestOptions): Promise<SourceResult> {

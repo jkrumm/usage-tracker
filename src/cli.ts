@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
-import { runIngest } from "./ingest.ts";
+import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
   formatBillingAudit,
   formatSources,
@@ -21,7 +21,7 @@ USAGE
 COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
-    --source <name>      Only run one collector (claude-code|hermes|feuer|opencode)
+    --source <name>      Only run one collector (claude-code|hermes|feuer|opencode|litellm|sideclaw-iu)
   sync                   Push eligible usage_record rows to the Argo API
   reprice                Re-cost stored rows against the current pricing table
     --model <norm>       Only this model_norm
@@ -65,18 +65,18 @@ async function main(): Promise<number> {
   const db = openDb();
   try {
     if (cmd === "ingest") {
-      const results = await runIngest(db, {
+      const summary = await runIngest(db, {
         full: rest.includes("--full"),
         only: flag(rest, "--source"),
       });
-      for (const r of results) {
+      for (const r of summary.results) {
         const detail = r.note ? ` (${r.note})` : "";
         process.stdout.write(
           `${r.source.padEnd(14)} ${r.status.padEnd(8)} +${r.newRows} new / ${r.processed} seen${detail}\n`,
         );
       }
-      const failed = results.some((r) => r.status === "error");
-      process.stdout.write(`\ndb: ${dbPath()}\n`);
+      const failed = summary.results.some((r) => r.status === "error");
+      process.stdout.write(`\ndb: ${dbPath()}\n${formatRunSummary(summary)}\n`);
       return failed ? 1 : 0;
     }
 
