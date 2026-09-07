@@ -162,11 +162,11 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
   if (obj.message?.model === "<synthetic>") return null; // local, non-API message
 
   const model = obj.message?.model ?? null;
-  // Keep Max-subscription Claude sessions AND IU-direct sessions (ca launcher
-  // going direct to the IU Anthropic endpoint — no bridge, so no litellm
-  // double-count). Skip bridge-routed sessions: those are already counted
-  // per-request by the litellm source.
-  if (isBridgeRouted(model)) return null;
+  // Every id counts — Max, `ca` and sideclaw's `iu` lane all leave the
+  // transcript as their only record. The one exception is the retired LiteLLM
+  // bridge era, where the litellm source already holds the request (see
+  // LITELLM_BRIDGE_CUTOFF); billing is classified centrally in db.ts.
+  if (isBridgeRouted(model, obj.timestamp)) return null;
 
   const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
   if (!sourceId) return null;

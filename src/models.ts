@@ -86,7 +86,7 @@ export function getSessionBaseUrl(sessionId: string | null | undefined): string 
 
 /**
  * Reduce a source's raw model string to a canonical key used for pricing and
- * grouping. Handles OpenCode's JSON-encoded model, the bridge's `-eu` suffix,
+ * grouping. Handles OpenCode's JSON-encoded model, the IU gateway's `-eu` suffix,
  * and provider prefixes like `iu/` or `anthropic/`.
  */
 export function normalizeModel(raw: string | null): string | null {
@@ -105,7 +105,9 @@ export function normalizeModel(raw: string | null): string | null {
 
   m = m.toLowerCase();
   if (m.includes("/")) m = m.split("/").pop() ?? m;
-  m = m.replace(/-eu$/, ""); // bridge EU suffix
+  // The IU gateway's EU-routed twin — same rate card as its parent. Still
+  // live: Hermes fails over to `claude-sonnet-4-6-eu` under throttling.
+  m = m.replace(/-eu$/, "");
   // Dated variant → bare alias. Both vendor conventions, since a source may
   // record either the id it requested or the dated id the vendor reports back:
   //   claude-haiku-4-5-20251001  (Anthropic, compact)
@@ -117,38 +119,60 @@ export function normalizeModel(raw: string | null): string | null {
 }
 
 /**
- * True when a raw claude-code model reached the API through the IU LiteLLM
- * bridge rather than a direct connection — the litellm source already counts
- * these per-request, so the claude-code collector must skip them to avoid
- * double-counting.
+ * The local LiteLLM proxy's last real request. Until then a claude-code
+ * session reaching a non-Anthropic id (DeepSeek, GLM, Kimi, …) or an `-eu`
+ * EU-routed Claude id did so *through* the bridge, and the litellm source
+ * counted that request per-call — so those transcript rows must stay skipped
+ * or a `--full` backfill double-counts them. The proxy itself was deleted
+ * 2026-09-04; its log holds one stray row after this date (a probe), nothing
+ * a transcript could mirror.
  */
-export function isBridgeRouted(rawModel: string | null): boolean {
+export const LITELLM_BRIDGE_CUTOFF = "2026-07-08T00:00:00Z";
+
+/**
+ * True only for the retired-bridge era: a bridge-shaped id (non-`claude-*`, or
+ * `-eu`) with a timestamp before LITELLM_BRIDGE_CUTOFF. After the cutoff every
+ * id reaches the API directly (the `ca` launcher and sideclaw's `iu` lane both
+ * talk to the IU unified endpoint's native Anthropic route, Max serves the rest)
+ * and the transcript is the only record of it, so nothing is skipped.
+ */
+export function isBridgeRouted(rawModel: string | null, ts: string | null | undefined): boolean {
+  if (!ts || ts >= LITELLM_BRIDGE_CUTOFF) return false;
+  return isIuOnlyModel(rawModel);
+}
+
+/**
+ * An id the Max subscription can never serve: anything outside `claude-*`, or
+ * the IU gateway's `-eu` EU-routed twin (Hermes still fails over to
+ * `claude-sonnet-4-6-eu`, which is why normalizeModel keeps stripping it).
+ */
+function isIuOnlyModel(rawModel: string | null): boolean {
   const r = (rawModel ?? "").toLowerCase();
   return !r.startsWith("claude") || r.endsWith("-eu");
 }
 
 /**
- * Decide who actually pays for a record. Classification runs on the *raw* model
- * (before normalization) because the bridge's `-eu` suffix is the only signal
- * separating an IU-routed EU Claude worker from a Max-subscription Claude call.
+ * Decide who actually pays for a record.
  *
- *   "max" — Max subscription (c launcher, api.anthropic.com)
- *   "iu"  — IU LiteLLM bridge (sideclaw workers, claude_bridge) — skip in
- *           claude-code collector (litellm source already counted it) — OR
- *           the IU Anthropic endpoint, direct (ca launcher), no bridge
- *           involved — KEEP in claude-code collector. Both are real IU spend;
- *           the routing difference is an internal dedup signal (`isBridgeRouted`),
- *           not a billing distinction.
+ *   "max" — Max subscription (`c` launcher, api.anthropic.com)
+ *   "iu"  — the IU unified endpoint, per-token: the `ca` launcher, sideclaw's
+ *           `iu` lane (a `claude -p` session with ANTHROPIC_BASE_URL pointed
+ *           at the endpoint's native Anthropic route, any served id), and every
+ *           agent daemon.
  *
- * A bare `claude-*` model (no `-eu` suffix) can come from either `c` (Max) or
- * `ca` (IU-direct) — the model name alone doesn't distinguish them, and that's
- * true for every model, not just the top-level one: a subagent inherits its
- * parent session's `ANTHROPIC_BASE_URL` and can run a different model (e.g.
- * `Explore` on Haiku inside a `ca` session), sharing that session's `sessionId`
- * (subagents don't get their own SessionStart). `sessionId` resolves it against
- * the `session_env` log line `hooks/notify.ts` writes at SessionStart (the real
- * `ANTHROPIC_BASE_URL` signal). Missing/expired log entries default to "max" —
- * precision isn't critical here, only not being obviously wrong.
+ * For claude-code the signal is the session's real `ANTHROPIC_BASE_URL`, never
+ * the model id: `hooks/notify.ts` logs `{ event: "session_env", session,
+ * base_url }` at SessionStart and `getSessionBaseUrl()` joins on `sessionId`.
+ * That holds for subagents too — they inherit the parent's base URL, can run a
+ * different model (`Explore` on Haiku inside a `ca` session) and share its
+ * `sessionId` (no SessionStart of their own). A non-empty base_url is "iu", an
+ * empty one "max".
+ *
+ * When the log line is missing (pruned after 3 days, or the transcript is
+ * older than the hook) the id decides the only way it can: Max serves nothing
+ * but bare `claude-*` ids, so a non-Anthropic or `-eu` id is "iu" and a bare
+ * Claude id defaults to "max" — precision isn't critical here, only not being
+ * obviously wrong.
  */
 export function classifyBilling(
   source: string,
@@ -156,10 +180,12 @@ export function classifyBilling(
   sessionId?: string | null,
 ): Billing {
   if (source === "claude-code") {
-    if (isBridgeRouted(rawModel)) return "iu";
-    return getSessionBaseUrl(sessionId) ? "iu" : "max";
+    const baseUrl = getSessionBaseUrl(sessionId);
+    if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
+    return isIuOnlyModel(rawModel) ? "iu" : "max";
   }
 
-  // hermes / feuer / opencode all route through the IU LiteLLM bridge.
+  // hermes / feuer / opencode / sideclaw-iu all bill per-token against the IU
+  // unified endpoint.
   return "iu";
 }

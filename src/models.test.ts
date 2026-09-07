@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getSessionBaseUrl, normalizeModel, resetSessionBaseUrlsCacheForTest } from "./models.ts";
+import {
+  classifyBilling,
+  getSessionBaseUrl,
+  isBridgeRouted,
+  LITELLM_BRIDGE_CUTOFF,
+  normalizeModel,
+  resetSessionBaseUrlsCacheForTest,
+} from "./models.ts";
 import { PRICING } from "./pricing.ts";
 import { iumacLogsDir } from "./remote.ts";
 
@@ -40,7 +47,7 @@ describe("normalizeModel", () => {
     expect(normalizeModel("MiniMaxAI/MiniMax-M3")).toBe("minimax-m3");
   });
 
-  test("strips the bridge's -eu suffix", () => {
+  test("strips the IU gateway's -eu suffix (Hermes's live failover id)", () => {
     expect(normalizeModel("claude-sonnet-4-6-eu")).toBe("claude-sonnet-4-6");
   });
 
@@ -154,5 +161,66 @@ describe("sessionLogDirs / loadSessionBaseUrls merge", () => {
 
     expect(getSessionBaseUrl("local-session")).toBeNull();
     expect(getSessionBaseUrl("mirror-session")).toBe("https://iu-endpoint.example");
+  });
+});
+
+// The claude-code collector used to drop every non-`claude-*` row on the
+// assumption that the LiteLLM bridge had counted it. The bridge is gone; the
+// transcript is now the only record of a `ca glm-5.3-flash` session, so the
+// id-shape guard is confined to the bridge era and billing comes from the
+// session's real base_url.
+
+describe("isBridgeRouted", () => {
+  test("skips a bridge-shaped id only before the cutoff", () => {
+    expect(isBridgeRouted("glm-5.3-flash", "2026-06-01T00:00:00Z")).toBe(true);
+    expect(isBridgeRouted("claude-sonnet-4-6-eu", "2026-06-01T00:00:00Z")).toBe(true);
+    expect(isBridgeRouted("claude-sonnet-5", "2026-06-01T00:00:00Z")).toBe(false);
+    expect(isBridgeRouted("glm-5.3-flash", LITELLM_BRIDGE_CUTOFF)).toBe(false);
+    expect(isBridgeRouted("glm-5.3-flash", "2026-09-01T03:40:37.841Z")).toBe(false);
+    expect(isBridgeRouted("glm-5.3-flash", undefined)).toBe(false);
+  });
+});
+
+describe("classifyBilling", () => {
+  let localDir: string;
+
+  beforeEach(() => {
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
+    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
+    writeFileSync(
+      join(localDir, "2026-09-07.jsonl"),
+      [
+        { event: "session_env", data: { session: "max-session", base_url: null } },
+        { event: "session_env", data: { session: "iu-session", base_url: "https://iu-endpoint.example/anthropic" } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    rmSync(localDir, { recursive: true, force: true });
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  test("claude-code follows the session's base_url regardless of model id", () => {
+    expect(classifyBilling("claude-code", "claude-sonnet-5", "iu-session")).toBe("iu");
+    expect(classifyBilling("claude-code", "glm-5.3-flash", "iu-session")).toBe("iu");
+    expect(classifyBilling("claude-code", "claude-sonnet-5", "max-session")).toBe("max");
+  });
+
+  test("without a session_env line only a bare claude-* id can be Max", () => {
+    expect(classifyBilling("claude-code", "claude-sonnet-5", "expired-session")).toBe("max");
+    expect(classifyBilling("claude-code", "glm-5.3-flash", "expired-session")).toBe("iu");
+    expect(classifyBilling("claude-code", "claude-sonnet-4-6-eu", "expired-session")).toBe("iu");
+  });
+
+  test("every other source bills iu", () => {
+    expect(classifyBilling("hermes", "gpt-5.6-luna")).toBe("iu");
+    expect(classifyBilling("sideclaw-iu", "gemini-3.5-flash")).toBe("iu");
   });
 });
