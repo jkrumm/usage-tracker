@@ -105,6 +105,46 @@ Everything host-specific lives in `src/remote.ts`:
 collector on its own (`ingest --source claude-code`) — useful to check the
 mirror without waiting for the next full ingest.
 
+### Codex CLI (`codex`)
+
+The OpenAI Codex CLI, launched by dotfiles' `cx` / `cxa` against the IU unified
+endpoint. It writes an append-only rollout JSONL per session under
+`~/.codex/sessions/YYYY/MM/DD/`; three line types matter:
+
+| Line | Carries |
+|-|-|
+| `session_meta` | `session_id`, `cwd` — once, first line |
+| `turn_context` | the `model` for that turn |
+| `token_usage_record` | `response_id` + the usage delta |
+
+Two traps this collector exists to avoid.
+
+**Cumulative totals sit beside the delta.** Each `token_usage_record` carries
+`usage` (this response), `turn_token_usage` and `thread_token_usage` (running
+totals). Only `usage` is read — summing a cumulative block multiplies the bill
+by the turn count.
+
+**OpenAI nests where Anthropic adds.** `cached_input_tokens` and
+`cache_write_input_tokens` are subsets *of* `input_tokens`, and
+`reasoning_output_tokens` a subset of `output_tokens`. This table's contract is
+additive (`pricing.ts` bills input + output + cacheRead + cacheWrite +
+reasoning), so the collector subtracts them back out. The five fields then sum
+to the vendor's own `total_tokens`, which is the invariant the tests pin.
+
+The model lives on `turn_context`, which can sit before the byte offset a later
+run resumes from, so it is carried in the cursor alongside the offset rather
+than re-read — otherwise every resumed session would report a null model and
+price at nothing.
+
+The sqlite files beside `sessions/` (`state_*`, `thread_history_*`, `logs_*`)
+are deliberately not read: `thread_turns` holds no token counts.
+
+Two known gaps. It is **local only** — there is no iumac mirror, so codex runs
+on the MacBook are invisible until one is added (mirror the rsync in
+`remote.ts`). And `pricing.ts` is a flat table, so the long-context (>272k)
+rates OpenAI charges — 2x input, 1.5x output — are not expressed; a very large
+codex run under-reports.
+
 ### Sideclaw direct IU calls (`sideclaw-iu`)
 
 sideclaw's multimodal tools (`read_image`, `read_drawing`, `generate_image`) and

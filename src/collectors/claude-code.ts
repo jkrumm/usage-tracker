@@ -1,11 +1,11 @@
 import { existsSync, statSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isBridgeRouted } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import { walkJsonlFiles } from "./fs-incremental.ts";
 
 // Claude Code writes one JSONL file per session under ~/.claude/projects/.
 // Files are append-only, so we resume each by byte offset (advancing only to the
@@ -127,7 +127,7 @@ async function collectRoot(
   machine: string | null,
   opts: { advanceOffsets: boolean },
 ): Promise<void> {
-  const files = await listJsonl(root);
+  const files = await walkJsonlFiles(root);
   for (const file of files) {
     const size = statSync(file).size;
     const from = offsets[file] ?? 0;
@@ -199,22 +199,4 @@ function parseOffsets(cursor: string | null): Offsets {
   } catch {
     return {};
   }
-}
-
-// Transcripts nest to an open-ended depth: a session's own file sits at the
-// project root, its subagents one level down, and a workflow's agents another
-// two (`<session>/subagents/workflows/wf_*/agent-*.jsonl`). Walking the tree
-// rather than matching known layouts keeps a future nesting from silently
-// dropping out of the numbers — which is exactly how workflow agents went
-// uncounted. Non-transcript .jsonl files in the tree (a workflow's
-// journal.jsonl) carry no assistant/usage lines, so parseLine skips them.
-async function listJsonl(root: string): Promise<string[]> {
-  const out: string[] = [];
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const e of entries) {
-    const path = join(root, e.name);
-    if (e.isDirectory()) out.push(...(await listJsonl(path)));
-    else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(path);
-  }
-  return out;
 }

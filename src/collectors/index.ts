@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
+import { codexCollector } from "./codex.ts";
 import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { opencodeCollector } from "./opencode.ts";
@@ -11,6 +12,7 @@ import { sideclawIuCollector } from "./sideclaw-iu.ts";
 // are overridable via env so the registry stays machine-agnostic.
 export const collectors: Collector[] = [
   claudeCodeCollector,
+  codexCollector,
   hermesAgentCollector({
     source: "hermes",
     dbPath: process.env.HERMES_DB ?? join(homedir(), ".hermes", "state.db"),

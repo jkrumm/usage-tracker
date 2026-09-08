@@ -11,14 +11,16 @@ function seed(costUsd: number | null, costSource: string, model = "gpt-5.6-luna"
       (source, source_id, grain, ts, model, model_norm, billing,
        input_tokens, output_tokens, cost_usd, cost_source, ingested_at, synced_at)
      VALUES ('hermes','a','message','2026-08-01T00:00:00Z',$model,$model,'iu',
-             1000000, 1000000, $cost, $source, '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z')`,
+             100000, 100000, $cost, $source, '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z')`,
   ).run({ $model: model, $cost: costUsd, $source: costSource });
   return db;
 }
 
 describe("reprice", () => {
   test("rewrites a row priced at a stale rate and clears synced_at", () => {
-    const db = seed(0.7, "computed"); // old luna rate: 1M in + 1M out at $0.10/$0.60
+    // 100k in + 100k out — deliberately under pricing.ts's 272k long-context
+    // threshold, so this exercises reprice and not the surcharge schedule.
+    const db = seed(0.07, "computed"); // old luna rate: $0.10/$0.60
     const result = reprice(db);
 
     expect(result.changed).toBe(1);
@@ -27,13 +29,13 @@ describe("reprice", () => {
         "SELECT cost_usd, synced_at FROM usage_record",
       )
       .get();
-    expect(row?.cost_usd).toBeCloseTo(1.4, 10); // $0.20 in + $1.20 out
+    expect(row?.cost_usd).toBeCloseTo(0.14, 10); // $0.20 in + $1.20 out
     expect(row?.synced_at).toBeNull();
     db.close();
   });
 
   test("leaves an already-correct row alone, synced_at included", () => {
-    const db = seed(1.4, "computed");
+    const db = seed(0.14, "computed");
     const result = reprice(db);
 
     expect(result.changed).toBe(0);

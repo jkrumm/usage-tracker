@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { computeCost } from "./pricing.ts";
+import type { TokenCounts } from "./pricing.ts";
 
 // computeCost is where the 5m/1h cache-write split actually lands: miss the
 // clamp or the tier lookup and cost either double-counts, goes negative, or
@@ -62,12 +63,83 @@ describe("computeCost", () => {
       input: 0,
       output: 0,
       cacheRead: 0,
-      cacheWrite: 1_000_000,
-      cacheWrite1h: 1_000_000,
+      cacheWrite: 100_000,
+      cacheWrite1h: 100_000,
       reasoning: 0,
     });
     // gpt-5.6-terra's cacheWrite rate (1.25x its $2.00 input) — see pricing.ts.
-    expect(result).toEqual({ usd: 2.5, source: "computed" });
+    // 100k, not 1M: a 1M-token prompt would correctly trip the long-context
+    // schedule below and stop testing the 1h fallback.
+    expect(result).toEqual({ usd: 0.25, source: "computed" });
+  });
+
+  // The rate cards the codex collector depends on. Pinned because the stale
+  // Terra figures survived for months precisely because nothing asserted them.
+  test.each([
+    ["gpt-5.6-sol", 4.0, 20.0, 0.4, 5.0],
+    ["gpt-6-astra", 10.0, 50.0, 1.0, 12.5],
+  ])("%s bills at its published short-context rate", (model, input, output, read, write) => {
+    const per = (counts: Partial<TokenCounts>) =>
+      computeCost(model as string, {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cacheWrite1h: 0,
+        reasoning: 0,
+        ...counts,
+      }).usd;
+
+    expect(per({ input: 1000 })).toBeCloseTo((input as number) / 1000, 10);
+    expect(per({ output: 1000 })).toBeCloseTo((output as number) / 1000, 10);
+    expect(per({ cacheRead: 1000 })).toBeCloseTo((read as number) / 1000, 10);
+    expect(per({ cacheWrite: 1000 })).toBeCloseTo((write as number) / 1000, 10);
+    // Reasoning bills at the output rate, never as a separate line.
+    expect(per({ reasoning: 1000 })).toBeCloseTo((output as number) / 1000, 10);
+  });
+
+  test("switches to the long-context schedule above 272k prompt tokens", () => {
+    const counts = (input: number): TokenCounts => ({
+      input,
+      output: 1_000,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+    });
+
+    // 272k exactly is still short context; one token more is not.
+    const short = computeCost("gpt-6-astra", counts(272_000)).usd!;
+    const long = computeCost("gpt-6-astra", counts(272_001)).usd!;
+
+    expect(short).toBeCloseTo((272_000 * 10.0 + 1_000 * 50.0) / 1e6, 10);
+    expect(long).toBeCloseTo((272_001 * 20.0 + 1_000 * 75.0) / 1e6, 10);
+  });
+
+  test("counts cache tokens toward the long-context threshold", () => {
+    // The vendor measures the boundary on the whole prompt, so a mostly-cached
+    // 300k prompt is long context even though `input` alone is tiny.
+    const result = computeCost("gpt-5.6-sol", {
+      input: 1_000,
+      output: 0,
+      cacheRead: 299_000,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+    });
+    expect(result.usd).toBeCloseTo((1_000 * 8.0 + 299_000 * 0.8) / 1e6, 10);
+  });
+
+  test("a model with no long schedule prices identically at any size", () => {
+    const big = computeCost("claude-opus-5", {
+      input: 5_000_000,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+    });
+    expect(big.usd).toBeCloseTo(25, 10); // 5M x $5/M, no surcharge
   });
 
   test("unpriced model returns null cost", () => {

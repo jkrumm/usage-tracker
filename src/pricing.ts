@@ -38,7 +38,20 @@ export interface Rate {
    * vendors with no 1h tier — computeCost falls back to `cacheWrite`.
    */
   cacheWrite1h?: number;
+  /**
+   * A second, dearer schedule for prompts above `threshold` INPUT tokens.
+   * OpenAI's GPT-5.6+/GPT-6 models charge 2x input and 1.5x output once a
+   * prompt passes 272k; Anthropic's models here have one schedule at every
+   * size, so they omit this and are priced identically to before.
+   *
+   * The threshold is measured against the vendor's own input total — uncached
+   * + cache-read + cache-write — not the additive sum including output.
+   */
+  long?: { threshold: number; rate: Rate };
 }
+
+/** OpenAI's published long-context boundary for GPT-5.6+ and GPT-6. */
+const LONG_CONTEXT = 272_000;
 
 export const PRICING: Record<string, Rate> = {
   // Anthropic list prices, verified May 2026 (platform.claude.com pricing).
@@ -121,9 +134,16 @@ export const PRICING: Record<string, Rate> = {
   // vendor's completion_tokens — so the spend lands once, not twice.
   // Corrected 2026-08-20 from $2.50/$15.00 (the launch price) — OpenAI's
   // 2026-07-30 cut moved Terra to $2.00/$12.00, confirmed live against
-  // openrouter.ai/api/v1/models. $2.50/$15.00 is now gpt-5.6-sol's rate, which
-  // is how the stale figure kept looking plausible.
-  "gpt-5.6-terra": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.5 },
+  // openrouter.ai/api/v1/models. $2.50/$15.00 was gpt-5.6-sol's launch rate,
+  // which is how the stale figure kept looking plausible; Sol is $4.00/$20.00
+  // now and has its own row below.
+  "gpt-5.6-terra": {
+    input: 2.0,
+    output: 12.0,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
+    long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 18.0, cacheRead: 0.4, cacheWrite: 5.0 } },
+  },
   // GPT-5.6 Luna (OpenAI list prices; Azure OpenAI matches exactly, effective
   // 2026-08-01) — Hermes's brain, research-gateway's lead/worker, and argo's
   // AI-gateway default since 2026-08-10. OpenAI cut this model 80% on
@@ -134,7 +154,38 @@ export const PRICING: Record<string, Rate> = {
   // Reasoning tokens bill at `output`. NOTE: $0.10/$0.60 is the *batch* rate
   // (50% off) for this model, not a later price cut — do not "correct" these
   // numbers down to it.
-  "gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  "gpt-5.6-luna": {
+    input: 0.2,
+    output: 1.2,
+    cacheRead: 0.02,
+    cacheWrite: 0.25,
+    long: { threshold: LONG_CONTEXT, rate: { input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 } },
+  },
+  // GPT-5.6 Sol (OpenAI list prices, verified against the API pricing table and
+  // the model page 2026-09-08) — the default model behind dotfiles' `cx`. Not
+  // the $2.50/$15.00 launch price, see the Terra note above. cacheWrite = 1.25x
+  // input, cacheRead = 90% off input, the published GPT-5.6+ caching rule.
+  "gpt-5.6-sol": {
+    input: 4.0,
+    output: 20.0,
+    cacheRead: 0.4,
+    cacheWrite: 5.0,
+    long: { threshold: LONG_CONTEXT, rate: { input: 8.0, output: 30.0, cacheRead: 0.8, cacheWrite: 10.0 } },
+  },
+  // GPT-6 Astra — dotfiles' `cxa`, and by a distance the most expensive model
+  // in this table: 5x Terra's input and ~4x its output. Deliberately opt-in
+  // there for that reason, and the reason this collector exists at all. Same
+  // 1.25x / 0.1x caching rule.
+  "gpt-6-astra": {
+    input: 10.0,
+    output: 50.0,
+    cacheRead: 1.0,
+    cacheWrite: 12.5,
+    long: { threshold: LONG_CONTEXT, rate: { input: 20.0, output: 75.0, cacheRead: 2.0, cacheWrite: 25.0 } },
+  },
+  // The base rows above are the standard short-context (<=272k) schedule; the
+  // `long` block on each is OpenAI's over-272k one (2x input, 1.5x output).
+  // computeCost picks between them per record from the prompt size.
   // Locally hosted (mlx/ollama) — no marginal token cost.
   "gemma4-agent": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
@@ -195,7 +246,13 @@ function resolveRate(modelNorm: string): { rate: Rate; source: "computed" | "fam
 export function computeCost(modelNorm: string | null, t: TokenCounts): CostResult {
   const resolved = modelNorm ? resolveRate(modelNorm) : null;
   if (!resolved) return { usd: null, source: "none" };
-  const { rate } = resolved;
+  const base = resolved.rate;
+
+  // Long-context schedules key off the prompt size, so this has to happen per
+  // record rather than per model. Without it a >272k call silently bills at
+  // half the input rate it actually cost.
+  const promptTokens = t.input + t.cacheRead + t.cacheWrite;
+  const rate = base.long && promptTokens > base.long.threshold ? base.long.rate : base;
 
   const cw1h = Math.min(Math.max(t.cacheWrite1h, 0), t.cacheWrite);
   const cw5m = t.cacheWrite - cw1h;

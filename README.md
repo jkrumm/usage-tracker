@@ -11,6 +11,7 @@ the end of `ingest`), which is where the dashboard lives.
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
 | `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max and IU-direct, every model id, billed by the session's base URL — see below) |
+| `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — sideclaw's direct IU calls (`read_image`, `read_drawing`, `generate_image`, the `review` critic) | message | `request_id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | historical rows only — OpenCode was removed 2026-09-04; the collector reports not-present |
