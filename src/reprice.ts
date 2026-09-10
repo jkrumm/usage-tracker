@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { computeCost } from "./pricing.ts";
+import type { Grain } from "./types.ts";
 
 /**
  * Re-cost already-ingested rows against the current PRICING table.
@@ -24,6 +25,7 @@ import { computeCost } from "./pricing.ts";
 interface RepriceRow {
   id: number;
   model_norm: string | null;
+  grain: Grain;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -67,7 +69,7 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
   const params = opts.model ? [opts.model] : [];
   const rows = db
     .query<RepriceRow, string[]>(
-      `SELECT id, model_norm, input_tokens, output_tokens, cache_read_tokens,
+      `SELECT id, model_norm, grain, input_tokens, output_tokens, cache_read_tokens,
               cache_write_tokens, cache_write_1h_tokens, reasoning_tokens,
               cost_usd, cost_source
        FROM usage_record ${where} ORDER BY id`,
@@ -86,6 +88,7 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
       cacheWrite: row.cache_write_tokens,
       cacheWrite1h: row.cache_write_1h_tokens,
       reasoning: row.reasoning_tokens,
+      grain: row.grain,
     });
 
     if (cost.usd === null && row.cost_usd !== null) {

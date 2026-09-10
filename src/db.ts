@@ -143,6 +143,7 @@ export function upsertRecords(
         cacheWrite: r.cacheWriteTokens,
         cacheWrite1h: r.cacheWrite1hTokens ?? 0,
         reasoning: r.reasoningTokens,
+        grain: r.grain,
       });
       stmt.run({
         $source: source,

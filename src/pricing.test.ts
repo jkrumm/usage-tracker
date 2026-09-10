@@ -15,6 +15,7 @@ describe("computeCost", () => {
       cacheWrite: 1_000_000,
       cacheWrite1h: 0,
       reasoning: 0,
+      grain: "message",
     });
     expect(result).toEqual({ usd: 12.5, source: "computed" });
   });
@@ -27,6 +28,7 @@ describe("computeCost", () => {
       cacheWrite: 1_000_000,
       cacheWrite1h: 1_000_000,
       reasoning: 0,
+      grain: "message",
     });
     expect(result).toEqual({ usd: 20, source: "computed" });
   });
@@ -39,6 +41,7 @@ describe("computeCost", () => {
       cacheWrite: 1_000_000,
       cacheWrite1h: 300_000,
       reasoning: 0,
+      grain: "message",
     });
     // 700k @ 12.5/M (5m) + 300k @ 20/M (1h)
     const expected = (700_000 * 12.5 + 300_000 * 20) / 1_000_000;
@@ -54,8 +57,25 @@ describe("computeCost", () => {
       cacheWrite: 1_000_000,
       cacheWrite1h: 5_000_000,
       reasoning: 0,
+      grain: "message",
     });
     expect(result).toEqual({ usd: 20, source: "computed" });
+  });
+
+  test("claude-fable-5-1 has its own exact rate, not the Fable-5 family fallback", () => {
+    // Fable 5.1 cut cache reads to $0.25/MTok from Fable 5's $1.00 — without
+    // an exact entry this would silently resolve through FAMILY_PRICING's
+    // "fable" tier at the stale $1.00 rate and report source "family".
+    const result = computeCost("claude-fable-5-1", {
+      input: 0,
+      output: 0,
+      cacheRead: 1_000_000,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(result).toEqual({ usd: 0.25, source: "computed" });
   });
 
   test("a model with no cacheWrite1h rate falls back to the 5m rate", () => {
@@ -66,6 +86,7 @@ describe("computeCost", () => {
       cacheWrite: 100_000,
       cacheWrite1h: 100_000,
       reasoning: 0,
+      grain: "message",
     });
     // gpt-5.6-terra's cacheWrite rate (1.25x its $2.00 input) — see pricing.ts.
     // 100k, not 1M: a 1M-token prompt would correctly trip the long-context
@@ -87,6 +108,7 @@ describe("computeCost", () => {
         cacheWrite: 0,
         cacheWrite1h: 0,
         reasoning: 0,
+        grain: "message",
         ...counts,
       }).usd;
 
@@ -106,6 +128,7 @@ describe("computeCost", () => {
       cacheWrite: 0,
       cacheWrite1h: 0,
       reasoning: 0,
+      grain: "message",
     });
 
     // 272k exactly is still short context; one token more is not.
@@ -126,8 +149,30 @@ describe("computeCost", () => {
       cacheWrite: 0,
       cacheWrite1h: 0,
       reasoning: 0,
+      grain: "message",
     });
     expect(result.usd).toBeCloseTo((1_000 * 8.0 + 299_000 * 0.8) / 1e6, 10);
+  });
+
+  test("the long-context schedule only applies to grain 'message'", () => {
+    // A session-grain row (hermes/feuer/opencode) sums tokens across every
+    // turn of the whole session, not one request — the same 300k total that
+    // correctly trips the long schedule for a single message must NOT trip it
+    // when it is really hundreds of small requests rolled up into one row.
+    const counts: Omit<TokenCounts, "grain"> = {
+      input: 1_000,
+      output: 0,
+      cacheRead: 299_000,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+    };
+
+    const session = computeCost("gpt-5.6-sol", { ...counts, grain: "session" });
+    const message = computeCost("gpt-5.6-sol", { ...counts, grain: "message" });
+
+    expect(session.usd).toBeCloseTo((1_000 * 4.0 + 299_000 * 0.4) / 1e6, 10); // base rate
+    expect(message.usd).toBeCloseTo((1_000 * 8.0 + 299_000 * 0.8) / 1e6, 10); // long rate
   });
 
   test("a model with no long schedule prices identically at any size", () => {
@@ -138,6 +183,7 @@ describe("computeCost", () => {
       cacheWrite: 0,
       cacheWrite1h: 0,
       reasoning: 0,
+      grain: "message",
     });
     expect(big.usd).toBeCloseTo(25, 10); // 5M x $5/M, no surcharge
   });
@@ -150,6 +196,7 @@ describe("computeCost", () => {
       cacheWrite: 0,
       cacheWrite1h: 0,
       reasoning: 0,
+      grain: "message",
     });
     expect(result).toEqual({ usd: null, source: "none" });
   });
@@ -159,13 +206,14 @@ describe("computeCost", () => {
 // approximate instead of silently zero — which is how a whole Opus generation
 // slipped through uncosted. These pin which models it may and may not catch.
 describe("computeCost tier fallback", () => {
-  const oneMillionIn = {
+  const oneMillionIn: TokenCounts = {
     input: 1_000_000,
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
     cacheWrite1h: 0,
     reasoning: 0,
+    grain: "message",
   };
 
   test("an unlisted claude model bills at its tier's rate", () => {

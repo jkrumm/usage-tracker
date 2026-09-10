@@ -1,3 +1,5 @@
+import type { Grain } from "./types.ts";
+
 // Token pricing, USD per 1,000,000 tokens.
 //
 // Cost is almost never reliable at the source: Claude Code records none, and
@@ -57,15 +59,24 @@ export const PRICING: Record<string, Rate> = {
   // Anthropic list prices, verified May 2026 (platform.claude.com pricing).
   // cacheWrite = 1.25x input (standard 5-minute cache-creation multiplier);
   // cacheWrite1h = 2x input (1-hour cache-creation multiplier).
+  "claude-opus-4-6": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   "claude-opus-4-7": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   // Opus 5 (August 2026) ships at the Opus 4.8 rate, 1M context included at
   // standard pricing — no long-context premium.
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
   // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50);
-  // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro through
-  // 2026-08-31 is not tracked (these are Max value, not a real bill).
+  // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro window
+  // ran through 2026-08-31 and has now lapsed, so $3/$15 is the settled standing
+  // rate, not a pending one (these are Max value, not a real bill either way).
+  // Re-verify against the live pricing page if Anthropic revises this tier again.
   "claude-fable-5": { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5, cacheWrite1h: 20 },
+  // Fable 5.1: same $10/$50 tier as Fable 5, but Anthropic cut cache reads to
+  // $0.25/MTok — the family-tier fallback's $1.00 was overstating 1.1B+
+  // recorded cache-read tokens by $826 before this entry existed. cacheWrite /
+  // cacheWrite1h keep the standard 1.25x/2x-input multipliers; unlike cacheRead
+  // these are not independently verified against a Fable-5.1-specific source.
+  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5, cacheWrite1h: 20 },
   "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
@@ -198,6 +209,15 @@ export interface TokenCounts {
   /** Subset of cacheWrite created at the 1h TTL (not additive). */
   cacheWrite1h: number;
   reasoning: number;
+  /**
+   * usage_record.grain for this row. The long-context schedule is a
+   * per-request concept (OpenAI charges it on one oversized prompt) but
+   * 'session' rows (hermes, feuer, opencode) sum tokens across every turn in
+   * the session — hundreds of requests, none of them individually anywhere
+   * near the threshold. computeCost only evaluates `long` for grain
+   * 'message', where the token counts genuinely describe one request.
+   */
+  grain: Grain;
 }
 
 /**
@@ -250,9 +270,15 @@ export function computeCost(modelNorm: string | null, t: TokenCounts): CostResul
 
   // Long-context schedules key off the prompt size, so this has to happen per
   // record rather than per model. Without it a >272k call silently bills at
-  // half the input rate it actually cost.
+  // half the input rate it actually cost. But the threshold is a per-request
+  // concept — OpenAI charges the dearer schedule on one oversized prompt — so
+  // it only applies to grain 'message'. A 'session' row (hermes, feuer,
+  // opencode) sums tokens across every turn of the whole session; that total
+  // can clear 272k many times over without any single request coming close,
+  // and pricing it as one giant prompt overcharges those rows badly.
   const promptTokens = t.input + t.cacheRead + t.cacheWrite;
-  const rate = base.long && promptTokens > base.long.threshold ? base.long.rate : base;
+  const rate =
+    t.grain === "message" && base.long && promptTokens > base.long.threshold ? base.long.rate : base;
 
   const cw1h = Math.min(Math.max(t.cacheWrite1h, 0), t.cacheWrite);
   const cw5m = t.cacheWrite - cw1h;

@@ -139,11 +139,20 @@ price at nothing.
 The sqlite files beside `sessions/` (`state_*`, `thread_history_*`, `logs_*`)
 are deliberately not read: `thread_turns` holds no token counts.
 
-Two known gaps. It is **local only** — there is no iumac mirror, so codex runs
-on the MacBook are invisible until one is added (mirror the rsync in
-`remote.ts`). And `pricing.ts` is a flat table, so the long-context (>272k)
-rates OpenAI charges — 2x input, 1.5x output — are not expressed; a very large
-codex run under-reports.
+One known gap: it is **local only** — there is no iumac mirror, so codex runs on
+the MacBook are invisible until one is added (mirror the rsync in `remote.ts`).
+
+`pricing.ts` does express OpenAI's long-context surcharge (`long` on a `Rate`,
+currently `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` and `gpt-6-astra`) —
+2x input, 1.5x output once a single prompt's input + cacheRead + cacheWrite
+passes 272k. `computeCost` only evaluates it for `grain === 'message'`, though:
+the threshold is a per-request concept, but hermes/feuer/opencode are
+session-grain, meaning their token counts are lifetime sums across every turn
+in the session, not one prompt. Applying the surcharge there would price a
+long-running session as if it were one giant oversized request and badly
+overcharge it (a real case: 346 hermes rows overcharged by $16.48, 41% of that
+model's recorded spend, before this gate existed). Codex is grain `'message'`,
+so its rows correctly get the surcharge when a single request earns it.
 
 ### Sideclaw direct IU calls (`sideclaw-iu`)
 
