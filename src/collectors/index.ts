@@ -1,10 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
+import { astraCollector } from "./astra.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
 import { codexCollector } from "./codex.ts";
 import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
+import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
 import { sideclawIuCollector } from "./sideclaw-iu.ts";
 
@@ -35,6 +37,8 @@ export const collectors: Collector[] = [
   opencodeCollector,
   litellmCollector,
   sideclawIuCollector,
+  modelpickCollector,
+  astraCollector,
 ];
 
 export function findCollector(source: string): Collector | undefined {

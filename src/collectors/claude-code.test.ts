@@ -59,7 +59,7 @@ describe("claude-code two-root collector", () => {
     const mirrorFile = join(mirrorProjectsDir, "mirror-session.jsonl");
     writeFileSync(mirrorFile, assistantLine("mirror-req"));
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true }));
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
 
     const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
 
@@ -80,6 +80,8 @@ describe("claude-code two-root collector", () => {
       ok: false,
       note: "iumac projects rsync exit 1",
       logsOk: false,
+      codexOk: true,
+      usageJsonlOk: true,
     }));
 
     const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
@@ -104,6 +106,8 @@ describe("claude-code two-root collector", () => {
       ok: false,
       note: "iumac logs rsync exit 1",
       logsOk: false,
+      codexOk: true,
+      usageJsonlOk: true,
     }));
 
     const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
@@ -132,6 +136,8 @@ describe("claude-code two-root collector", () => {
       ok: false,
       note: "iumac projects rsync exit 1",
       logsOk: false,
+      codexOk: true,
+      usageJsonlOk: true,
     }));
 
     const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });

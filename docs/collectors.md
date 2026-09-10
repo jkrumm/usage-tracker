@@ -68,9 +68,11 @@ column instead (see "Machine attribution" below); every other report
 
 Everything host-specific lives in `src/remote.ts`:
 
-- **Mirror location**: `${USAGE_REMOTE_DIR:-~/.local/share/usage-tracker/remote}/iumac/{projects,logs}/`,
-  refreshed by two `rsync -a --delete` runs (transcripts/logs only, via
-  `--include=*.jsonl`) at the top of every `collect()`.
+- **Mirror location**: `${USAGE_REMOTE_DIR:-~/.local/share/usage-tracker/remote}/iumac/{projects,logs,codex-sessions,usage-jsonl}/`,
+  refreshed by four `rsync -a --delete` runs (`--include=*.jsonl` /
+  `--exclude=*`, so each leg only ever pulls jsonl — the `usage-jsonl` leg's
+  remote directory also holds a stale, decommissioned `usage.db` (+ WAL/SHM)
+  that filter keeps off this machine) at the top of every `collect()`.
 - **Env vars**: `USAGE_IUMAC_HOST` (default `iumac`), `USAGE_IUMAC_MACHINE`
   (override the machine label instead of probing for it), `USAGE_REMOTE_DIR`
   (override the mirror root), `USAGE_IUMAC_DISABLE=1` (hard off switch — no
@@ -139,8 +141,16 @@ price at nothing.
 The sqlite files beside `sessions/` (`state_*`, `thread_history_*`, `logs_*`)
 are deliberately not read: `thread_turns` holds no token counts.
 
-One known gap: it is **local only** — there is no iumac mirror, so codex runs on
-the MacBook are invisible until one is added (mirror the rsync in `remote.ts`).
+Like `claude-code`, this is one collector walking two roots: this machine's own
+`~/.codex/sessions`, and a local rsync mirror of the MacBook's (a third
+`syncIumac()` leg in `remote.ts`, alongside the existing projects/logs legs —
+see "MacBook (iumac) mirror" above). Mirrored rows carry the MacBook's
+`machine` label the same way claude-code's do. A failed codex-mirror sync never
+blocks local ingest and never flips claude-code's own `ok`/`note` (it has its
+own `SyncResult.codexOk` flag, logged on failure but otherwise silent) — the
+codex-sessions leg is unrelated to claude-code's transcripts or billing
+classification, so folding its failure into that collector's report would
+misattribute it.
 
 `pricing.ts` does express OpenAI's long-context surcharge (`long` on a `Rate`,
 currently `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` and `gpt-6-astra`) —
@@ -153,6 +163,65 @@ long-running session as if it were one giant oversized request and badly
 overcharge it (a real case: 346 hermes rows overcharged by $16.48, 41% of that
 model's recorded spend, before this gate existed). Codex is grain `'message'`,
 so its rows correctly get the surcharge when a single request earns it.
+
+### modelpick benchmark spend (`modelpick`)
+
+`~/SourceRoot/modelpick/modelpick.db` records real spend that otherwise never
+reaches Argo: its bench harness points `CLAUDE_CONFIG_DIR` at a scratch dir it
+wipes after every run, so no Claude Code transcript — or any other collector's
+source of truth — ever sees it (verified: $37.50 across 370 runs, 2026-08-31 →
+2026-09-04, invisible until this collector).
+
+`bench_run` is the harness's own ledger, one row per (suite, model, task,
+attempt) it ran; the collector reads it directly with `bun:sqlite` (no FTS5
+trap here, unlike Hermes/Feuer). One row is a full agent loop, so `grain` is
+`'session'`. `cache_creation_tokens` maps to `cacheWriteTokens` and
+`thinking_tokens` to `reasoningTokens`; `bench_run.cost_usd` — the harness's own
+figure — is carried through in `raw.bench_cost_usd` for comparison only,
+because collectors never price (see the module comment atop `pricing.ts`):
+tokens are passed through and `computeCost` derives cost like every other
+source. `capability_probe`, a separate table in the same DB, is deliberately
+never read — it has no token columns at all, so its spend can't be
+reconstructed. Watermarked on `bench_run.id` (autoincrement, monotonic), since
+unlike Hermes/Feuer/OpenCode's small mutable tables, a finished benchmark
+attempt never changes after it's written. Mini-only: `available()` fails
+closed when the DB is absent.
+
+### Astra one-shot calls (`astra`)
+
+`astra` (dotfiles' `astra.sh`) is a one-shot OpenAI Responses call —
+`gpt-6-astra`, `reasoning.mode=pro`, effort `xhigh` — the highest per-call cost
+in the estate. It isn't a Codex session (no rollout JSONL) and doesn't go
+through sideclaw's IU transport either, so nothing else here ever sees it.
+`astra.sh` appends one JSON object per call to
+`~/.local/share/usage-tracker/astra.jsonl`
+(`{ ts, request_id, model, input_tokens, output_tokens, reasoning_tokens,
+cached_tokens, effort, mode, outcome, duration_ms }`); the collector's
+byte-offset jsonl read started as a clone of `sideclaw-iu`'s single-file
+walker, grain `'message'`, `subTool` set to `mode`.
+
+Same Responses-shaped usage object codex.ts already handles: `input_tokens` is
+treated as inclusive of `cached_tokens` and the cached amount subtracted back
+out (consistent with codex's `cached_input_tokens` handling). Unlike codex,
+`reasoning_tokens` is **not** treated as nested inside `output_tokens` — the
+logged shape has `reasoning_tokens` exceed `output_tokens` in practice, which
+is only possible if the two are already additive in astra.sh's own log format,
+unlike a raw vendor payload.
+
+Like `claude-code` and `codex`, this is one collector walking two roots: this
+machine's own `~/.local/share/usage-tracker`, and a local rsync mirror of the
+MacBook's (the fourth `syncIumac()` leg in `remote.ts` — see "MacBook (iumac)
+mirror" above). The cursor is the same per-absolute-path offset map
+`codex.ts`/`claude-code.ts` use, not the single-file `{"offset": N}` it
+started as; a persisted cursor still in that old shape is migrated in place
+(that N becomes the local file's starting offset) rather than dropped, so an
+upgrade doesn't force a full re-read. Both roots are walked and filtered to
+the `astra.jsonl` basename, since the mirror directory also carries other
+one-shot jsonl logs (e.g. `sideclaw-iu.jsonl`) this collector must not
+swallow. Mirror rows carry the MacBook's `machine` label the same way
+claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
+ingest and never flips claude-code's own `ok`/`note` (its own
+`SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
 
 ### Sideclaw direct IU calls (`sideclaw-iu`)
 

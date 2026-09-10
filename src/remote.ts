@@ -5,9 +5,10 @@ import { parseMacModel } from "./machine.ts";
 import type { Logger } from "./types.ts";
 
 // The MacBook (ssh alias `iumac`) isn't a source of its own — it's a second
-// filesystem root for the *existing* claude-code collector. Everything host-
-// specific (the mirror location, the rsync invocations, the machine label for
-// mirrored rows) lives here so claude-code.ts stays a plain two-root walker.
+// filesystem root for the *existing* claude-code and codex collectors.
+// Everything host-specific (the mirror location, the rsync invocations, the
+// machine label for mirrored rows) lives here so each collector stays a plain
+// two-root walker.
 //
 // Why mirror rather than read over ssh live: listJsonl/byte-offset resume
 // needs a real local path, and a local mirror lets a dead/asleep MacBook
@@ -42,6 +43,30 @@ export function iumacProjectsDir(): string {
 /** Local mirror of iumac's `~/.claude/logs` (session_env lines for billing classification). */
 export function iumacLogsDir(): string {
   return join(mirrorRoot(), "logs");
+}
+
+/**
+ * Local mirror of iumac's `~/.codex/sessions` — the MacBook's Codex CLI
+ * rollout JSONL, walked by codex.ts the same way it walks its local root.
+ * Not under ~/.claude at all, unlike the other two legs — see rsyncDir's
+ * per-leg remote path.
+ */
+export function iumacCodexDir(): string {
+  return join(mirrorRoot(), "codex-sessions");
+}
+
+/**
+ * Local mirror of iumac's `~/.local/share/usage-tracker` — the MacBook's
+ * one-shot jsonl logs (astra.jsonl, sideclaw-iu.jsonl, …), walked by astra.ts
+ * the same way it walks its local root. That remote directory also holds a
+ * stale, decommissioned (2026-07-27) `usage.db` (+ WAL/SHM siblings) from
+ * when the MacBook itself ran usage-tracker directly; rsyncDir's shared
+ * `--include=*.jsonl` / `--exclude=*` filter (the same one every other leg
+ * already uses) already excludes anything that isn't `*.jsonl`, so no
+ * leg-specific filter override is needed to keep that DB off this machine.
+ */
+export function iumacUsageJsonlDir(): string {
+  return join(mirrorRoot(), "usage-jsonl");
 }
 
 /** Hard off switch: when set, no ssh/rsync call is made at all. */
@@ -82,6 +107,33 @@ export interface SyncResult {
    * synced fine.
    */
   logsOk: boolean;
+  /**
+   * Outcome of the codex-sessions leg specifically. Deliberately never folded
+   * into `ok` or `note` the way projects/logs are: syncIumac's only call site
+   * is claude-code.ts's collect(), so a codex-mirror failure flipping that
+   * unrelated collector's `ok` (and overwriting its `note`) would misattribute
+   * the failure and could demote an otherwise-healthy claude-code run. A codex
+   * leg failure degrades the same way a logs failure degrades for its own
+   * consumer — its own flag, checked by its own reader (codex.ts) — rather
+   * than the way a projects failure degrades (the whole sync reported failed).
+   * It's logged here regardless, so it's never silent even without an `ok`
+   * flip.
+   */
+  codexOk: boolean;
+  /**
+   * Outcome of the usage-jsonl leg specifically (astra.jsonl and any sibling
+   * one-shot jsonl logs mirrored from iumac's ~/.local/share/usage-tracker).
+   * Deliberately never folded into `ok` or `note`, for the same reason as
+   * `codexOk`: syncIumac's only call site is claude-code.ts's collect(), so a
+   * usage-jsonl-mirror failure flipping that unrelated collector's `ok` (and
+   * overwriting its `note`) would misattribute the failure and could demote
+   * an otherwise-healthy claude-code run. It degrades the same way codexOk
+   * degrades — its own flag, checked by its own reader (astra.ts) — rather
+   * than the way a projects failure degrades (the whole sync reported
+   * failed). It's logged here regardless, so it's never silent even without
+   * an `ok` flip.
+   */
+  usageJsonlOk: boolean;
 }
 
 interface LegResult {
@@ -111,35 +163,118 @@ const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH
  *
  * Logs sync before projects (not the reverse) so the logs leg's own outcome
  * is known before the caller decides whether transcript offsets may advance
- * — see `logsOk` on SyncResult and collect() in claude-code.ts.
+ * — see `logsOk` on SyncResult and collect() in claude-code.ts. The codex and
+ * usage-jsonl legs run last: nothing gates on their outcome, they only need
+ * to happen and be reported on their own `codexOk`/`usageJsonlOk` flags (see
+ * each field's doc comment).
  */
 export async function syncIumac(log: Logger): Promise<SyncResult> {
   if (iumacDisabled()) {
     log.info("iumac mirror: disabled via USAGE_IUMAC_DISABLE");
-    return { ok: true, logsOk: true };
+    return { ok: true, logsOk: true, codexOk: true, usageJsonlOk: true };
   }
 
   const logs = await syncLeg("logs", iumacLogsDir());
   const projects = await syncLeg("projects", iumacProjectsDir());
+  const codex = await syncLeg("codex", iumacCodexDir());
+  if (!codex.ok) log.warn(`iumac mirror: ${codex.note}`);
+  const usageJsonl = await syncLeg("usage-jsonl", iumacUsageJsonlDir());
+  if (!usageJsonl.ok) log.warn(`iumac mirror: ${usageJsonl.note}`);
 
-  if (!projects.ok) return { ok: false, note: projects.note, logsOk: logs.ok };
-  if (!logs.ok) return { ok: false, note: logs.note, logsOk: false };
-  return { ok: true, logsOk: true };
-}
-
-/** mkdir + rsync for one leg ("projects" or "logs"). Both steps are guarded. */
-async function syncLeg(remoteSubdir: "projects" | "logs", destDir: string): Promise<LegResult> {
-  try {
-    mkdirSync(destDir, { recursive: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, note: `iumac ${remoteSubdir} mkdir failed: ${msg}` };
+  if (!projects.ok) {
+    return { ok: false, note: projects.note, logsOk: logs.ok, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
   }
-  return rsyncDir(remoteSubdir, destDir);
+  if (!logs.ok) {
+    return { ok: false, note: logs.note, logsOk: false, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
+  }
+  return { ok: true, logsOk: true, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
 }
 
-async function rsyncDir(remoteSubdir: "projects" | "logs", destDir: string): Promise<LegResult> {
+type Leg = "projects" | "logs" | "codex" | "usage-jsonl";
+
+// Only the codex and usage-jsonl legs live outside ~/.claude on the remote —
+// everything else about the four legs (mkdir, rsync flags, failure handling)
+// is identical, so this is the one place a leg's remote path is allowed to
+// differ.
+const REMOTE_SUBDIR: Record<Leg, string> = {
+  projects: ".claude/projects",
+  logs: ".claude/logs",
+  codex: ".codex/sessions",
+  "usage-jsonl": ".local/share/usage-tracker",
+};
+
+/** rsync exit 23 whose stderr names a missing source path — an absent month. */
+function isMissingSource(note: string | undefined): boolean {
+  return !!note && note.includes("rsync exit 23") && note.includes("No such file or directory");
+}
+
+/**
+ * Sub-paths to sync for a leg, relative to both REMOTE_SUBDIR[leg] and the
+ * local mirror dir. `[""]` means "the whole tree", which is what every leg
+ * except codex uses.
+ *
+ * Codex is the exception, and the reason is the link, not the data. The
+ * MacBook reaches this host over a Tailscale DERP relay (Frankfurt, ~120ms
+ * RTT, `direct connection not established` — measured 2026-09-10), and rsync
+ * costs several round trips per file. Its rollout tree is 1,187 files, so a
+ * full-tree sync spends minutes and reliably trips rsync's own inactivity
+ * --timeout mid-transfer; a manual run moved 273 of 1,187 files in 2m41s
+ * before dying on `poll: timeout`. Remote traversal is NOT the bottleneck
+ * (`find` over the same tree returns in 0.5s) — per-file latency is.
+ *
+ * `~/.codex/sessions` is date-bucketed as YYYY/MM/DD, so scoping the recurring
+ * sync to the current and previous month turns 1,187 files into a handful:
+ * cheap enough to survive the relay, and it still picks up the moment Codex
+ * is used on the MacBook again. Anything older is historical and static —
+ * previous month stays in the list for a full month after it ends, so a month
+ * boundary loses nothing.
+ *
+ * Deliberately NOT backfilled: the MacBook's 1,187 archived rollouts (Nov 2025
+ * – Mar 2026) were pulled once with a tar pipe and scanned — they contain ZERO
+ * ingestable rows. They predate the Codex CLI build that writes
+ * `payload.usage` / `payload.response_id`, so they carry no token counts at
+ * all. Walking them every run would cost 1,187 stats for nothing. The leg
+ * exists for FUTURE `cx` use on the MacBook, not for history.
+ */
+function legSubPaths(leg: Leg): string[] {
+  if (leg !== "codex") return [""];
+  const now = new Date();
+  const month = (d: Date) =>
+    `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  return [month(prev), month(now)];
+}
+
+/**
+ * mkdir + rsync for one leg. Both steps are guarded. A leg with several
+ * sub-paths (codex) syncs each in turn and reports the first failure; a
+ * missing remote month is not a failure, so `--ignore-missing-args`-style
+ * tolerance is handled by rsync exit 23/24 being surfaced as-is in the note
+ * rather than special-cased — the leg's flag is advisory anyway.
+ */
+async function syncLeg(leg: Leg, destDir: string): Promise<LegResult> {
+  for (const sub of legSubPaths(leg)) {
+    const dest = sub ? join(destDir, sub) : destDir;
+    try {
+      mkdirSync(dest, { recursive: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, note: `iumac ${leg} mkdir failed: ${msg}` };
+    }
+    const result = await rsyncDir(leg, dest, sub);
+    // A month with no Codex activity simply has no directory on the MacBook,
+    // and rsync calls that exit 23 ("partial transfer due to error", with a
+    // `(l)stat: No such file or directory` on the source). That is the normal
+    // state for a machine that has not run `cx` this month, not a failure —
+    // treat it as success so a quiet month cannot mark the leg unhealthy.
+    if (!result.ok && !isMissingSource(result.note)) return result;
+  }
+  return { ok: true };
+}
+
+async function rsyncDir(leg: Leg, destDir: string, sub = ""): Promise<LegResult> {
   const host = iumacHost();
+  const remote = sub ? `${REMOTE_SUBDIR[leg]}/${sub}` : REMOTE_SUBDIR[leg];
   const args = [
     "rsync",
     "-a",
@@ -150,7 +285,7 @@ async function rsyncDir(remoteSubdir: "projects" | "logs", destDir: string): Pro
     "--include=*/",
     "--include=*.jsonl",
     "--exclude=*",
-    `${host}:.claude/${remoteSubdir}/`,
+    `${host}:${remote}/`,
     `${destDir}/`,
   ];
   try {
@@ -166,12 +301,12 @@ async function rsyncDir(remoteSubdir: "projects" | "logs", destDir: string): Pro
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       const stderr = (await new Response(proc.stderr).text()).trim().split("\n")[0];
-      return { ok: false, note: `iumac ${remoteSubdir} rsync exit ${exitCode}${stderr ? ` — ${stderr}` : ""}` };
+      return { ok: false, note: `iumac ${leg}${sub ? `/${sub}` : ""} rsync exit ${exitCode}${stderr ? ` — ${stderr}` : ""}` };
     }
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, note: `iumac ${remoteSubdir} rsync failed: ${msg}` };
+    return { ok: false, note: `iumac ${leg} rsync failed: ${msg}` };
   }
 }
 

@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { iumacCodexDir, iumacMachineLabel, syncIumac } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from "../types.ts";
 import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 
@@ -25,9 +26,13 @@ import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 // JSONL is both the authoritative record and the append-only shape every other
 // collector here already handles.
 //
-// LOCAL ONLY. Unlike claude-code there is no iumac mirror, so codex runs on the
-// MacBook are invisible until one is added — mirror the rsync in remote.ts if
-// that ever matters.
+// One collector, two roots: this machine's own ~/.codex/sessions, and a local
+// rsync mirror of the MacBook's (ssh alias `iumac`, synced by remote.ts's
+// third leg alongside claude-code's projects/logs — see iumacCodexDir()).
+// Same shape as claude-code.ts's two-root walk: one shared cursor keyed by
+// absolute path (mirrored files are just new keys, no format change), rows
+// from the mirror tagged with the MacBook's machine label, local rows left
+// unset so upsertRecords stamps the local host.
 
 const DEFAULT_DIR = join(homedir(), ".codex", "sessions");
 
@@ -79,31 +84,63 @@ export const codexCollector: Collector = {
   source: "codex",
 
   available() {
+    // Local-root semantics only, deliberately unchanged (same reasoning as
+    // claude-code.ts's available()): the collector must stay available even
+    // when the MacBook is asleep or unreachable — the mirror degrades on its
+    // own inside collect(), never here.
     return existsSync(sessionsDir());
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const root = sessionsDir();
-    if (!existsSync(root)) return { records: [], cursor: ctx.cursor };
-
     const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor);
     const records: UsageRecord[] = [];
 
-    for (const file of await walkJsonlFiles(root)) {
-      const state = cursor[file] ?? { offset: 0 };
-      const next = await collectFile(file, state, ctx.log);
-      cursor[file] = next.state;
-      records.push(...next.records);
+    // Refresh the mirror before reading it. Same call claude-code.ts makes at
+    // the top of its own collect() — kept independent rather than shared so
+    // `ingest --source codex` alone still refreshes the mirror instead of
+    // silently reading stale (or absent) data; when both collectors run in
+    // the same ingest cycle the second call is a cheap no-op rsync (nothing
+    // changed since the first). Never throws; a failed codex leg only logs a
+    // warning and local ingest continues (see SyncResult.codexOk in remote.ts
+    // for why this never touches `note`/`ok`).
+    const sync = await syncIumac(ctx.log);
+    if (!sync.codexOk) ctx.log.warn("codex: iumac codex-sessions mirror sync failed");
+
+    await collectRoot(sessionsDir(), cursor, records, null, ctx.log);
+
+    // If the mirror doesn't exist at all (first run, or sync never succeeded
+    // once), there's nothing to walk — skip it rather than treat a missing
+    // root as an error.
+    if (existsSync(iumacCodexDir())) {
+      const machine = await iumacMachineLabel();
+      await collectRoot(iumacCodexDir(), cursor, records, machine, ctx.log);
     }
 
     return { records, cursor: JSON.stringify(cursor) };
   },
 };
 
+/** Walk every rollout file under `root`, advancing the shared cursor in place. */
+async function collectRoot(
+  root: string,
+  cursor: Cursor,
+  records: UsageRecord[],
+  machine: string | null,
+  log: Logger,
+): Promise<void> {
+  for (const file of await walkJsonlFiles(root)) {
+    const state = cursor[file] ?? { offset: 0 };
+    const next = await collectFile(file, state, machine, log);
+    cursor[file] = next.state;
+    records.push(...next.records);
+  }
+}
+
 /** One rollout file from its watermark forward. */
 async function collectFile(
   file: string,
   state: FileState,
+  machine: string | null,
   log: Logger,
 ): Promise<{ records: UsageRecord[]; state: FileState }> {
   const chunk = await readNewLines(file, state.offset, statSync(file).size);
@@ -126,7 +163,7 @@ async function collectFile(
     }
     if (obj.type !== "token_usage_record") continue;
 
-    const rec = toRecord(obj, model, project, log);
+    const rec = toRecord(obj, model, project, machine, log);
     if (rec) records.push(rec);
   }
 
@@ -137,6 +174,7 @@ function toRecord(
   obj: RolloutLine,
   model: string | null,
   project: string | null,
+  machine: string | null,
   log: Logger,
 ): UsageRecord | null {
   const usage = obj.payload?.usage;
@@ -182,6 +220,7 @@ function toRecord(
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     reasoningTokens: reasoning,
+    machine,
     raw: {
       turnId: obj.payload?.turn_id ?? null,
       sessionId: obj.payload?.session_id ?? null,

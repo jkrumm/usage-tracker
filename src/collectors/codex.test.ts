@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { iumacCodexDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { codexCollector } from "./codex.ts";
 
@@ -59,10 +60,14 @@ describe("codex collector", () => {
     mkdirSync(join(dir, "2026", "09", "08"), { recursive: true });
     file = join(dir, "2026", "09", "08", "rollout-2026-09-08T18-59-25-sess-1.jsonl");
     process.env.USAGE_CODEX_SESSIONS_DIR = dir;
+    // collect() now calls syncIumac() itself (see codex.ts) — hard-disable it
+    // so these local-root tests never spawn a real ssh/rsync.
+    process.env.USAGE_IUMAC_DISABLE = "1";
   });
 
   afterEach(() => {
     delete process.env.USAGE_CODEX_SESSIONS_DIR;
+    delete process.env.USAGE_IUMAC_DISABLE;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -181,10 +186,12 @@ describe("codex collector — malformed input", () => {
     mkdirSync(join(dir, "2026", "09", "08"), { recursive: true });
     file = join(dir, "2026", "09", "08", "rollout-bad.jsonl");
     process.env.USAGE_CODEX_SESSIONS_DIR = dir;
+    process.env.USAGE_IUMAC_DISABLE = "1";
   });
 
   afterEach(() => {
     delete process.env.USAGE_CODEX_SESSIONS_DIR;
+    delete process.env.USAGE_IUMAC_DISABLE;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -254,5 +261,72 @@ describe("codex collector — malformed input", () => {
     const { records } = await codexCollector.collect({ cursor: "{{not-json", full: false, log });
 
     expect(records.map((r) => r.sourceId)).toEqual(["resp-1"]);
+  });
+});
+
+// Mirrors claude-code.test.ts's two-root coverage: one shared cursor across
+// local + mirror files, and mirror rows carrying the MacBook's machine label.
+// USAGE_IUMAC_DISABLE keeps collect()'s own syncIumac() call from ever
+// spawning ssh/rsync — the mirror fixture is placed on disk directly instead.
+describe("codex collector — iumac mirror", () => {
+  let localDir: string;
+  let remoteDir: string;
+
+  beforeEach(() => {
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-codex-local-"));
+    remoteDir = mkdtempSync(join(tmpdir(), "usage-tracker-codex-remote-"));
+    process.env.USAGE_CODEX_SESSIONS_DIR = localDir;
+    process.env.USAGE_REMOTE_DIR = remoteDir;
+    process.env.USAGE_IUMAC_MACHINE = "MacBook Pro (Test)";
+    process.env.USAGE_IUMAC_DISABLE = "1";
+  });
+
+  afterEach(() => {
+    delete process.env.USAGE_CODEX_SESSIONS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    delete process.env.USAGE_IUMAC_MACHINE;
+    delete process.env.USAGE_IUMAC_DISABLE;
+    rmSync(localDir, { recursive: true, force: true });
+    rmSync(remoteDir, { recursive: true, force: true });
+  });
+
+  test("reads both roots into one cursor; mirror rows carry the MacBook's machine, local rows leave it null", async () => {
+    const localFile = join(localDir, "rollout-local.jsonl");
+    writeFileSync(
+      localFile,
+      turnContext("gpt-6-astra") + tokenUsage("local-resp", { input_tokens: 10, output_tokens: 1, total_tokens: 11 }),
+    );
+
+    const mirrorDir = iumacCodexDir();
+    mkdirSync(mirrorDir, { recursive: true });
+    const mirrorFile = join(mirrorDir, "rollout-mirror.jsonl");
+    writeFileSync(
+      mirrorFile,
+      turnContext("gpt-6-astra") + tokenUsage("mirror-resp", { input_tokens: 20, output_tokens: 2, total_tokens: 22 }),
+    );
+
+    const { records, cursor } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    const localRecord = records.find((r) => r.sourceId === "local-resp");
+    const mirrorRecord = records.find((r) => r.sourceId === "mirror-resp");
+    expect(localRecord?.machine).toBeNull();
+    expect(mirrorRecord?.machine).toBe("MacBook Pro (Test)");
+
+    const offsets = JSON.parse(cursor ?? "{}") as Record<string, { offset: number }>;
+    expect(offsets[localFile]?.offset).toBeGreaterThan(0);
+    expect(offsets[mirrorFile]?.offset).toBeGreaterThan(0);
+  });
+
+  test("a missing mirror root is skipped, not treated as an error", async () => {
+    const localFile = join(localDir, "rollout-local.jsonl");
+    writeFileSync(
+      localFile,
+      turnContext("gpt-6-astra") + tokenUsage("local-resp", { input_tokens: 10, output_tokens: 1, total_tokens: 11 }),
+    );
+    // Deliberately no iumacCodexDir() on disk at all.
+
+    const { records } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    expect(records.map((r) => r.sourceId)).toEqual(["local-resp"]);
   });
 });
