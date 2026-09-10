@@ -168,10 +168,46 @@ const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH
  * to happen and be reported on their own `codexOk`/`usageJsonlOk` flags (see
  * each field's doc comment).
  */
+/**
+ * Cheap liveness check: open a connection, run nothing (`-N` would hang, so
+ * `true` is the payload). Bounded by the same ConnectTimeout every leg uses,
+ * so an unreachable host costs one stall instead of one per leg. Never throws.
+ */
+async function iumacReachable(): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(["ssh", ...SSH_OPTS, iumacHost(), "true"], {
+      stdout: "ignore",
+      stderr: "ignore",
+      timeout: (RSYNC_TIMEOUT_S + 15) * 1000,
+      killSignal: "SIGKILL",
+      env: { ...process.env, PATH: SPAWN_PATH },
+    });
+    return (await proc.exited) === 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function syncIumac(log: Logger): Promise<SyncResult> {
   if (iumacDisabled()) {
     log.info("iumac mirror: disabled via USAGE_IUMAC_DISABLE");
     return { ok: true, logsOk: true, codexOk: true, usageJsonlOk: true };
+  }
+
+  // One reachability probe before any leg. The sshd on the MacBook is a
+  // LaunchAgent (`com.jkrumm.tailnet-sshd`) — a userland sshd is what bypasses
+  // that machine's MDM Remote Login SACL, so it loads at LOGIN, not at boot. A
+  // MacBook sitting at the login window therefore has no sshd at all, which is
+  // the shape behind long unbroken runs of `connect ... Operation timed out`
+  // (88 of them on 2026-09-08..10). That is harmless — the machine only
+  // produces transcripts while someone is logged in, and byte offsets make the
+  // catch-up lossless — but each leg would otherwise pay its own
+  // ConnectTimeout. With four legs that is 4x the stall for zero information,
+  // so probe once and report every leg unreachable together.
+  if (!(await iumacReachable())) {
+    const note = "iumac unreachable (no sshd — MacBook logged out or offline)";
+    log.info(`iumac mirror: ${note}`);
+    return { ok: false, note, logsOk: false, codexOk: false, usageJsonlOk: false };
   }
 
   const logs = await syncLeg("logs", iumacLogsDir());
