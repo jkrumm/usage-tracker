@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isBridgeRouted } from "../models.ts";
+import { getSessionLane, isBridgeRouted } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -171,7 +171,7 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
   const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
   if (!sourceId) return null;
 
-  return {
+  const record: UsageRecord = {
     sourceId,
     grain: "message",
     ts: obj.timestamp ?? new Date().toISOString(),
@@ -190,6 +190,18 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
       serviceTier: usage.service_tier,
     },
   };
+
+  // A session whose spawner set USAGE_LANE (sideclaw's Max-lane workers, `rd
+  // wave`, `rd bg`, warden-caused work) gets its lane as sub_tool — never
+  // overwriting a subTool this collector already set above (it sets none
+  // today, but a future field wouldn't be clobbered here). Subagents share the
+  // parent's sessionId and so inherit its lane too, same as billing above.
+  if (!record.subTool) {
+    const lane = getSessionLane(obj.sessionId);
+    if (lane) record.subTool = lane;
+  }
+
+  return record;
 }
 
 function parseOffsets(cursor: string | null): Offsets {

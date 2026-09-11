@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   classifyBilling,
   getSessionBaseUrl,
+  getSessionLane,
   isBridgeRouted,
   LITELLM_BRIDGE_CUTOFF,
   normalizeModel,
@@ -161,6 +162,59 @@ describe("sessionLogDirs / loadSessionBaseUrls merge", () => {
 
     expect(getSessionBaseUrl("local-session")).toBeNull();
     expect(getSessionBaseUrl("mirror-session")).toBe("https://iu-endpoint.example");
+  });
+});
+
+// getSessionLane joins the same session_env line for sub_tool attribution
+// (claude-code.ts applies it) — one scan, two derived facts.
+
+describe("getSessionLane", () => {
+  let localDir: string;
+
+  beforeEach(() => {
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
+    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
+    writeFileSync(
+      join(localDir, "2026-09-10.jsonl"),
+      [
+        { event: "session_env", data: { session: "lane-session", base_url: null, lane: "sideclaw:review" } },
+        { event: "session_env", data: { session: "no-lane-session", base_url: null } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    rmSync(localDir, { recursive: true, force: true });
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  test("returns the lane a spawner set via USAGE_LANE", () => {
+    expect(getSessionLane("lane-session")).toBe("sideclaw:review");
+  });
+
+  test("returns null when the session_env line has no lane", () => {
+    expect(getSessionLane("no-lane-session")).toBeNull();
+  });
+
+  test("returns undefined when no session_env line exists at all", () => {
+    expect(getSessionLane("unknown-session")).toBeUndefined();
+  });
+
+  test("resetSessionBaseUrlsCacheForTest clears the shared cache so a new log dir is picked up", () => {
+    expect(getSessionLane("lane-session")).toBe("sideclaw:review");
+
+    rmSync(localDir, { recursive: true, force: true });
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
+    resetSessionBaseUrlsCacheForTest();
+
+    expect(getSessionLane("lane-session")).toBeUndefined();
   });
 });
 

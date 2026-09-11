@@ -6,9 +6,16 @@ import type { Billing } from "./types.ts";
 
 // claude-code's transcripts don't record which ANTHROPIC_BASE_URL produced a
 // message, so `hooks/notify.ts` logs it once per SessionStart to the same
-// structured log dir it already writes to. Loaded lazily and cached for the
-// life of the process (ingest is a short-lived one-shot run).
-let sessionBaseUrls: Map<string, string | null> | null = null;
+// structured log dir it already writes to. The same log line also carries
+// `lane` — whoever spawned the session's `USAGE_LANE` env var, if any — so
+// this one scan feeds both billing classification and sub_tool attribution.
+// Loaded lazily and cached for the life of the process (ingest is a
+// short-lived one-shot run).
+interface SessionEnv {
+  base_url: string | null;
+  lane: string | null;
+}
+let sessionEnvs: Map<string, SessionEnv> | null = null;
 
 /**
  * This machine's own session_env log dir. A function, not a frozen constant,
@@ -22,11 +29,11 @@ function localSessionLogDir(): string {
 
 /**
  * Test-only: clear the module-level session_env cache so a test can control
- * loadSessionBaseUrls' inputs deterministically. Never called from
- * production code.
+ * loadSessionEnvs' inputs deterministically. Never called from production
+ * code.
  */
 export function resetSessionBaseUrlsCacheForTest(): void {
-  sessionBaseUrls = null;
+  sessionEnvs = null;
 }
 
 // iumac sessions never wrote into this machine's log dir, so a MacBook
@@ -43,8 +50,8 @@ function sessionLogDirs(): string[] {
   return dirs;
 }
 
-function loadSessionBaseUrls(): Map<string, string | null> {
-  const map = new Map<string, string | null>();
+function loadSessionEnvs(): Map<string, SessionEnv> {
+  const map = new Map<string, SessionEnv>();
   for (const dir of sessionLogDirs()) {
     if (!existsSync(dir)) continue;
     try {
@@ -61,10 +68,13 @@ function loadSessionBaseUrls(): Map<string, string | null> {
           try {
             const entry = JSON.parse(line) as {
               event?: string;
-              data?: { session?: string; base_url?: string | null };
+              data?: { session?: string; base_url?: string | null; lane?: string | null };
             };
             if (entry.event === "session_env" && entry.data?.session) {
-              map.set(entry.data.session, entry.data.base_url ?? null);
+              map.set(entry.data.session, {
+                base_url: entry.data.base_url ?? null,
+                lane: entry.data.lane ?? null,
+              });
             }
           } catch {
             continue;
@@ -80,8 +90,21 @@ function loadSessionBaseUrls(): Map<string, string | null> {
 
 export function getSessionBaseUrl(sessionId: string | null | undefined): string | null | undefined {
   if (!sessionId) return undefined;
-  if (!sessionBaseUrls) sessionBaseUrls = loadSessionBaseUrls();
-  return sessionBaseUrls.get(sessionId);
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  return sessionEnvs.get(sessionId)?.base_url;
+}
+
+/**
+ * The lane whoever spawned the session set via `USAGE_LANE` (`sideclaw:review`,
+ * `wave`, `bg`, `warden`, …), joined the same way classifyBilling joins
+ * base_url — by sessionId against the session_env log line. `undefined` means
+ * no session_env line was found at all (pruned, or older than the hook);
+ * `null` means the line exists but no lane was set for that session.
+ */
+export function getSessionLane(sessionId: string | null | undefined): string | null | undefined {
+  if (!sessionId) return undefined;
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  return sessionEnvs.get(sessionId)?.lane;
 }
 
 /**
@@ -167,6 +190,11 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * different model (`Explore` on Haiku inside a `ca` session) and share its
  * `sessionId` (no SessionStart of their own). A non-empty base_url is "iu", an
  * empty one "max".
+ *
+ * The same session_env line also carries `lane` — whoever spawned the session
+ * set `USAGE_LANE` — joined via `getSessionLane()` and applied as `sub_tool` by
+ * the claude-code collector, not this function. Subagents inherit it exactly
+ * like they inherit base_url, sharing the parent's sessionId.
  *
  * When the log line is missing (pruned after 3 days, or the transcript is
  * older than the hook) the id decides the only way it can: Max serves nothing

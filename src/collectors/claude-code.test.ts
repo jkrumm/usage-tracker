@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetSessionBaseUrlsCacheForTest } from "../models.ts";
 import { iumacLogsDir, iumacProjectsDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { claudeCodeCollector, setSyncOverrideForTest } from "./claude-code.ts";
@@ -32,13 +33,20 @@ function assistantLine(requestId: string): string {
 describe("claude-code two-root collector", () => {
   let localDir: string;
   let remoteDir: string;
+  let localLogsDir: string;
 
   beforeEach(() => {
     localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-"));
     remoteDir = mkdtempSync(join(tmpdir(), "usage-tracker-remote-"));
+    localLogsDir = mkdtempSync(join(tmpdir(), "usage-tracker-logs-"));
     process.env.USAGE_CLAUDE_PROJECTS_DIR = localDir;
     process.env.USAGE_REMOTE_DIR = remoteDir;
     process.env.USAGE_IUMAC_MACHINE = "MacBook Pro (Test)";
+    // getSessionLane() now runs on every parsed line — point it at an empty
+    // tmp dir rather than the real ~/.claude/logs so these tests never read
+    // this machine's actual session history.
+    process.env.USAGE_CLAUDE_LOGS_DIR = localLogsDir;
+    resetSessionBaseUrlsCacheForTest();
   });
 
   afterEach(() => {
@@ -46,8 +54,11 @@ describe("claude-code two-root collector", () => {
     delete process.env.USAGE_CLAUDE_PROJECTS_DIR;
     delete process.env.USAGE_REMOTE_DIR;
     delete process.env.USAGE_IUMAC_MACHINE;
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
     rmSync(localDir, { recursive: true, force: true });
     rmSync(remoteDir, { recursive: true, force: true });
+    rmSync(localLogsDir, { recursive: true, force: true });
+    resetSessionBaseUrlsCacheForTest();
   });
 
   test("offsets for local and mirror files coexist without colliding; mirror carries machine, local leaves it null", async () => {
@@ -144,5 +155,38 @@ describe("claude-code two-root collector", () => {
 
     const offsets = JSON.parse(result.cursor ?? "{}") as Record<string, number>;
     expect(offsets[mirrorFile]).toBeGreaterThan(0);
+  });
+
+  test("a session_env line with a lane stamps sub_tool on that session's rows", async () => {
+    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    writeFileSync(
+      join(localLogsDir, "2026-09-10.jsonl"),
+      `${JSON.stringify({
+        event: "session_env",
+        data: { session: "session-1", base_url: null, lane: "sideclaw:review" },
+      })}\n`,
+    );
+
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "local-req");
+    expect(record?.subTool).toBe("sideclaw:review");
+  });
+
+  test("a session_env line without a lane leaves sub_tool null", async () => {
+    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    writeFileSync(
+      join(localLogsDir, "2026-09-10.jsonl"),
+      `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: null } })}\n`,
+    );
+
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "local-req");
+    expect(record?.subTool).toBeFalsy();
   });
 });

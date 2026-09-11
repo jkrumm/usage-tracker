@@ -35,6 +35,23 @@ Every row is also tagged with the `machine` that produced it (the macOS hardware
 model + chip, e.g. `Mac mini (M2 Pro)`) so multiple laptops' DBs stay
 distinguishable once merged — see "Machine attribution" below.
 
+### Lane attribution (`sub_tool` for claude-code rows)
+
+`claude-code` rows are otherwise anonymous — every Max-lane worker and every
+`c`/`ca` session looks the same. Whoever spawns a session on purpose can set
+`USAGE_LANE`; `hooks/notify.ts` logs it once per SessionStart next to
+`base_url`, and the collector joins it onto every row for that session
+(subagents included, since they share the parent's session id) as `sub_tool`.
+`stats --by sub_tool` then breaks `claude-code` cost down by lane.
+
+| Lane | Set by |
+|-|-|
+| `sideclaw:<tool>` (`sideclaw:review`, `sideclaw:dispatch`, `sideclaw:otel`, `sideclaw:check`) | sideclaw's `session-runner.ts`, one per routed tool |
+| `wave` | `rd wave` |
+| `bg` | `rd bg` |
+| `warden` | warden-caused dispatch work |
+| *(unset)* | manual `c`/`ca`/`cs`/`cf` sessions — `sub_tool` stays null |
+
 ## Usage
 
 ```bash
