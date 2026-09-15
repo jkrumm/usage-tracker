@@ -51,6 +51,7 @@ make sources            # per-collector status, error rate, last run, last note
 make billing-audit      # per-session claude-code billing vs. the live session_env log
 make billing-audit SESSION=<id> SINCE=7
 make install-agent      # 15-min incremental ingest via LaunchAgent
+make uninstall-agent    # stop + remove the LaunchAgent
 make logs               # tail ~/Library/Logs/usage-tracker.{log,err}
 ```
 
