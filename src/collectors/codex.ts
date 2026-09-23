@@ -63,6 +63,11 @@ interface RolloutLine {
     response_id?: string;
     turn_id?: string;
     usage?: CodexUsage;
+    // event_msg envelope — the sub-event kind lives on payload.type here,
+    // distinct from the outer line's own `type`.
+    type?: string;
+    id?: string;
+    message?: string;
   };
 }
 
@@ -70,12 +75,15 @@ interface RolloutLine {
  * Per-file watermark. The model lives on `turn_context` lines that may sit
  * before the offset a later run resumes from, so it is carried here rather
  * than re-read — otherwise every resumed session would report a null model and
- * price at nothing.
+ * price at nothing. `lastTs` is the previous line's timestamp regardless of
+ * type, carried the same way so a response right after a resume still gets a
+ * duration instead of silently reporting null forever.
  */
 interface FileState {
   offset: number;
   model?: string | null;
   project?: string | null;
+  lastTs?: string | null;
 }
 
 type Cursor = Record<string, FileState>;
@@ -149,10 +157,20 @@ async function collectFile(
   const records: UsageRecord[] = [];
   let model = state.model ?? null;
   let project = state.project ?? null;
+  let lastTs = state.lastTs ?? null;
 
   for (const line of chunk.lines) {
     const obj = parseLine(line);
     if (!obj) continue;
+
+    // The gap to whatever line preceded this one, chronologically — the same
+    // "time since the last causally-relevant event" idea claude-code.ts uses
+    // via parentUuid, adapted to codex's flat, unlinked line stream. A parent
+    // from an already-offset-consumed chunk (first line after a resume)
+    // simply isn't carried forward past this run's FileState.lastTs, so that
+    // one record's duration falls back to null.
+    const prevTs = lastTs;
+    if (obj.timestamp) lastTs = obj.timestamp;
 
     // A session can switch models mid-thread (`/model`, or `cx` then a
     // profile), so this tracks the latest rather than the first.
@@ -161,13 +179,71 @@ async function collectFile(
       project = obj.payload?.cwd ?? project;
       continue;
     }
+
+    if (obj.type === "event_msg") {
+      const rec = toErrorRecord(obj, model, project, machine, prevTs);
+      if (rec) records.push(rec);
+      continue;
+    }
+
     if (obj.type !== "token_usage_record") continue;
 
-    const rec = toRecord(obj, model, project, machine, log);
+    const rec = toRecord(obj, model, project, machine, log, prevTs);
     if (rec) records.push(rec);
   }
 
-  return { records, state: { offset: chunk.offset, model, project } };
+  return { records, state: { offset: chunk.offset, model, project, lastTs } };
+}
+
+/**
+ * Best-effort failed-turn detection. No confirmed real-world example of a
+ * codex-rs error/turn-abort line was available while writing this (every
+ * local rollout examined completed cleanly; retries surface only in the
+ * separate `~/.codex/logs_*.sqlite` diagnostic log this collector is
+ * deliberately barred from reading — see the module comment). This is
+ * therefore a tolerant, generic match on any `event_msg` whose inner
+ * `payload.type` names an error, rather than a specific string verified
+ * against the vendor's actual schema — safe to ship because it can only ever
+ * add rows, never suppress a legitimate token_usage_record.
+ */
+function toErrorRecord(
+  obj: RolloutLine,
+  model: string | null,
+  project: string | null,
+  machine: string | null,
+  prevTs: string | null,
+): UsageRecord | null {
+  const kind = obj.payload?.type;
+  if (!kind || !/error|fail|abort/i.test(kind)) return null;
+
+  const sourceId = obj.payload?.id ?? obj.payload?.turn_id ?? `event:${Bun.hash(JSON.stringify(obj))}`;
+
+  return {
+    sourceId,
+    grain: "message",
+    ts: obj.timestamp ?? new Date().toISOString(),
+    model,
+    project,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    durationMs: durationSince(prevTs, obj.timestamp),
+    outcome: "error",
+    machine,
+    raw: {
+      eventType: kind,
+      message: obj.payload?.message ?? null,
+      turnId: obj.payload?.turn_id ?? null,
+    },
+  };
+}
+
+function durationSince(prevTs: string | null, ts: string | undefined): number | null {
+  if (!prevTs || !ts) return null;
+  const delta = Date.parse(ts) - Date.parse(prevTs);
+  return Number.isFinite(delta) && delta >= 0 ? delta : null;
 }
 
 function toRecord(
@@ -176,6 +252,7 @@ function toRecord(
   project: string | null,
   machine: string | null,
   log: Logger,
+  prevTs: string | null,
 ): UsageRecord | null {
   const usage = obj.payload?.usage;
   // response_id is the dedup key; without it the row can't be upserted safely.
@@ -220,6 +297,7 @@ function toRecord(
     cacheReadTokens: cacheRead,
     cacheWriteTokens: cacheWrite,
     reasoningTokens: reasoning,
+    durationMs: durationSince(prevTs, obj.timestamp),
     machine,
     raw: {
       turnId: obj.payload?.turn_id ?? null,

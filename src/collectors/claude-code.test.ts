@@ -189,4 +189,126 @@ describe("claude-code two-root collector", () => {
     const record = result.records.find((r) => r.sourceId === "local-req");
     expect(record?.subTool).toBeFalsy();
   });
+
+  test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {
+    const line = `${JSON.stringify({
+      type: "assistant",
+      requestId: "thinking-req",
+      sessionId: "session-1",
+      timestamp: new Date().toISOString(),
+      message: {
+        id: "msg-thinking-req",
+        model: "claude-sonnet-5",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 500,
+          output_tokens_details: { thinking_tokens: 187 },
+        },
+      },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), line);
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "thinking-req");
+    expect(record?.reasoningTokens).toBe(187);
+  });
+
+  test("a response with no thinking usage defaults reasoningTokens to 0", async () => {
+    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "local-req");
+    expect(record?.reasoningTokens).toBe(0);
+  });
+
+  test("a local API-error line (isApiErrorMessage) becomes a zero-token error row", async () => {
+    const errorLine = `${JSON.stringify({
+      type: "assistant",
+      uuid: "err-uuid-1",
+      sessionId: "session-1",
+      timestamp: new Date().toISOString(),
+      cwd: "/Users/j/proj",
+      error: "rate_limit",
+      isApiErrorMessage: true,
+      apiErrorStatus: 429,
+      message: {
+        model: "<synthetic>",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), errorLine);
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    expect(result.records).toHaveLength(1);
+    const record = result.records[0]!;
+    expect(record.sourceId).toBe("err-uuid-1");
+    expect(record.outcome).toBe("error");
+    expect(record.inputTokens).toBe(0);
+    expect(record.outputTokens).toBe(0);
+    expect(record.raw?.error).toBe("rate_limit");
+    expect(record.raw?.apiErrorStatus).toBe(429);
+  });
+
+  test("a synthetic line with no isApiErrorMessage is still dropped", async () => {
+    const line = `${JSON.stringify({
+      type: "assistant",
+      uuid: "synthetic-uuid",
+      sessionId: "session-1",
+      timestamp: new Date().toISOString(),
+      message: { model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), line);
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    expect(result.records).toHaveLength(0);
+  });
+
+  test("derives duration_ms from the gap to the parentUuid's timestamp", async () => {
+    const parentTs = "2026-09-10T10:00:00.000Z";
+    const childTs = "2026-09-10T10:00:03.500Z";
+    const parentLine = `${JSON.stringify({
+      type: "user",
+      uuid: "parent-uuid",
+      sessionId: "session-1",
+      timestamp: parentTs,
+    })}\n`;
+    const childLine = `${JSON.stringify({
+      type: "assistant",
+      uuid: "child-uuid",
+      parentUuid: "parent-uuid",
+      requestId: "duration-req",
+      sessionId: "session-1",
+      timestamp: childTs,
+      message: {
+        id: "msg-duration-req",
+        model: "claude-sonnet-5",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), parentLine + childLine);
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "duration-req");
+    expect(record?.durationMs).toBe(3500);
+  });
+
+  test("duration_ms is null when the parentUuid isn't in the same read (e.g. a resumed offset)", async () => {
+    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "local-req");
+    expect(record?.durationMs).toBeNull();
+  });
 });

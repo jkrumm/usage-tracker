@@ -45,8 +45,14 @@ interface AssistantLine {
   requestId?: string;
   sessionId?: string;
   uuid?: string;
+  parentUuid?: string;
   timestamp?: string;
   cwd?: string;
+  // Set on the local, non-API line a failed request synthesizes in place of a
+  // real assistant response — see the isApiErrorMessage branch in parseLine.
+  error?: string;
+  isApiErrorMessage?: boolean;
+  apiErrorStatus?: number;
   message?: {
     id?: string;
     model?: string;
@@ -58,6 +64,12 @@ interface AssistantLine {
       cache_creation?: {
         ephemeral_5m_input_tokens?: number;
         ephemeral_1h_input_tokens?: number;
+      };
+      // The provider's own thinking spend, billed at the output rate. Present
+      // whenever the response used extended thinking; 0/absent otherwise —
+      // see the module comment above parseLine for the verified evidence.
+      output_tokens_details?: {
+        thinking_tokens?: number;
       };
       service_tier?: string;
     };
@@ -138,8 +150,17 @@ async function collectRoot(
     if (lastNl === -1) continue; // no complete line yet; revisit next run
 
     const complete = chunk.slice(0, lastNl);
-    for (const line of complete.split("\n")) {
-      const rec = parseLine(line, machine);
+    const lines = complete.split("\n");
+    // parentUuid chains a line to whatever causally preceded it (the user
+    // message that triggered a turn, or — for a turn that streamed several
+    // assistant lines — the previous one). That gap is the closest thing to a
+    // per-request latency the transcript records, so it's built once per
+    // chunk and used below for duration_ms. A parent from an earlier,
+    // already-offset-consumed chunk (the first line after a resume) simply
+    // isn't in the map, and that one record's duration falls back to null.
+    const timestamps = buildTimestampMap(lines);
+    for (const line of lines) {
+      const rec = parseLine(line, machine, timestamps);
       if (rec) records.push(rec);
     }
     // Withheld only by the mirror root's bounded-re-read fallback above — the
@@ -148,7 +169,40 @@ async function collectRoot(
   }
 }
 
-function parseLine(line: string, machine: string | null): UsageRecord | null {
+function buildTimestampMap(lines: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line) as { uuid?: string; timestamp?: string };
+      if (obj.uuid && obj.timestamp) map.set(obj.uuid, obj.timestamp);
+    } catch {
+      continue;
+    }
+  }
+  return map;
+}
+
+function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>): number | null {
+  const parentTs = obj.parentUuid ? timestamps.get(obj.parentUuid) : undefined;
+  if (!parentTs || !obj.timestamp) return null;
+  const delta = Date.parse(obj.timestamp) - Date.parse(parentTs);
+  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+}
+
+/** Stamp sub_tool from the session's USAGE_LANE, same rule for every record
+ * this file emits — never overwriting a subTool already set. */
+function stampLane(record: UsageRecord, sessionId: string | undefined): void {
+  if (record.subTool) return;
+  const lane = getSessionLane(sessionId);
+  if (lane) record.subTool = lane;
+}
+
+function parseLine(
+  line: string,
+  machine: string | null,
+  timestamps: Map<string, string>,
+): UsageRecord | null {
   if (!line) return null;
   let obj: AssistantLine;
   try {
@@ -157,8 +211,50 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
     return null;
   }
 
+  if (obj.type !== "assistant") return null;
+
+  // The CLI synthesizes this line locally in place of a real API response
+  // when a request fails outright (model_not_found, auth, rate_limit,
+  // server_error, …) — `message.model` is always the literal string
+  // "<synthetic>", never a billable id. Confirmed against real transcripts:
+  //   { "type": "assistant", "message": { "model": "<synthetic>", "usage": {
+  //     "input_tokens": 0, "output_tokens": 0, ... }, "content": [{ "type":
+  //     "text", "text": "There's an issue with the selected model ..." }] },
+  //     "error": "model_not_found", "isApiErrorMessage": true,
+  //     "apiErrorStatus": 404, "uuid": "...", "sessionId": "..." }
+  // requestId is present for 429/529 (rate_limit/server_error) but absent for
+  // 401/403/404 (auth/model_not_found) — uuid is always present, so it's the
+  // dedup key here rather than the triple fallback the success path uses.
+  if (obj.isApiErrorMessage) {
+    const sourceId = obj.requestId ?? obj.uuid;
+    if (!sourceId) return null;
+
+    const record: UsageRecord = {
+      sourceId,
+      grain: "message",
+      ts: obj.timestamp ?? new Date().toISOString(),
+      model: obj.message?.model ?? null,
+      project: obj.cwd ?? null,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      durationMs: computeDurationMs(obj, timestamps),
+      outcome: "error",
+      machine,
+      raw: {
+        sessionId: obj.sessionId,
+        error: obj.error ?? null,
+        apiErrorStatus: obj.apiErrorStatus ?? null,
+      },
+    };
+    stampLane(record, obj.sessionId);
+    return record;
+  }
+
   const usage = obj.message?.usage;
-  if (obj.type !== "assistant" || !usage) return null;
+  if (!usage) return null;
   if (obj.message?.model === "<synthetic>") return null; // local, non-API message
 
   const model = obj.message?.model ?? null;
@@ -182,7 +278,11 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
     cacheReadTokens: usage.cache_read_input_tokens ?? 0,
     cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
     cacheWrite1hTokens: usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
-    reasoningTokens: 0,
+    // Provider-reported, not derived from the transcript's thinking-block
+    // text — see the AssistantLine.message.usage.output_tokens_details field
+    // comment and the evidence quoted above.
+    reasoningTokens: usage.output_tokens_details?.thinking_tokens ?? 0,
+    durationMs: computeDurationMs(obj, timestamps),
     machine,
     raw: {
       sessionId: obj.sessionId,
@@ -191,16 +291,7 @@ function parseLine(line: string, machine: string | null): UsageRecord | null {
     },
   };
 
-  // A session whose spawner set USAGE_LANE (sideclaw's Max-lane workers, `rd
-  // wave`, `rd bg`, warden-caused work) gets its lane as sub_tool — never
-  // overwriting a subTool this collector already set above (it sets none
-  // today, but a future field wouldn't be clobbered here). Subagents share the
-  // parent's sessionId and so inherit its lane too, same as billing above.
-  if (!record.subTool) {
-    const lane = getSessionLane(obj.sessionId);
-    if (lane) record.subTool = lane;
-  }
-
+  stampLane(record, obj.sessionId);
   return record;
 }
 

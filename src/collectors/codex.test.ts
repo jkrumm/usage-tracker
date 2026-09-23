@@ -157,6 +157,58 @@ describe("codex collector", () => {
     expect(records.map((r) => r.model)).toEqual(["gpt-5.6-sol", "gpt-6-astra"]);
   });
 
+  test("derives duration_ms from the gap since the previous line's timestamp", async () => {
+    writeFileSync(
+      file,
+      turnContext("gpt-6-astra") +
+        tokenUsage("resp-1", { input_tokens: 10, output_tokens: 1, total_tokens: 11 }),
+    );
+
+    const { records } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    // turnContext() is fixed at 18:59:26.000Z, tokenUsage() at 18:59:50.989Z.
+    expect(records[0]!.durationMs).toBe(24989);
+  });
+
+  test("duration_ms is null for the very first line in a file (nothing to diff against)", async () => {
+    writeFileSync(file, tokenUsage("resp-1", { input_tokens: 10, output_tokens: 1, total_tokens: 11 }));
+
+    const { records } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    expect(records[0]!.durationMs).toBeNull();
+  });
+
+  test("an event_msg naming an error/failed/aborted kind becomes a zero-token error row", async () => {
+    const errorEvent = `${JSON.stringify({
+      timestamp: "2026-09-08T18:59:30.000Z",
+      type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn-1", message: "stream disconnected" },
+    })}\n`;
+    writeFileSync(file, turnContext("gpt-6-astra") + errorEvent);
+
+    const { records } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    expect(records).toHaveLength(1);
+    const r = records[0]!;
+    expect(r.outcome).toBe("error");
+    expect(r.inputTokens).toBe(0);
+    expect(r.model).toBe("gpt-6-astra");
+    expect(r.raw?.eventType).toBe("turn_aborted");
+  });
+
+  test("an event_msg with an ordinary payload kind is not treated as an error", async () => {
+    const okEvent = `${JSON.stringify({
+      timestamp: "2026-09-08T18:59:30.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete" },
+    })}\n`;
+    writeFileSync(file, turnContext("gpt-6-astra") + okEvent);
+
+    const { records } = await codexCollector.collect({ cursor: null, full: false, log });
+
+    expect(records).toHaveLength(0);
+  });
+
   test("holds the offset on a half-written trailing line", async () => {
     writeFileSync(
       file,
