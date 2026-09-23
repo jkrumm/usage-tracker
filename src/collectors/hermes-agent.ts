@@ -3,6 +3,7 @@ import type {
   Collector,
   CollectContext,
   CollectResult,
+  Logger,
   UsageRecord,
   Workspace,
 } from "../types.ts";
@@ -202,7 +203,7 @@ async function runSessionQuery(
       return { records: [], cursor: ctx.cursor, note: "unreadable: expected JSON array" };
     }
 
-    const records = rows.map((r) => toRecord(r, project, legacy));
+    const records = rows.map((r) => toRecord(r, project, legacy, ctx.log));
     const cursor = rows.length ? String(Math.max(0, ...rows.map((r) => r.started_at))) : ctx.cursor;
     return { records, cursor };
   } catch (err) {
@@ -211,7 +212,7 @@ async function runSessionQuery(
   }
 }
 
-function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean): UsageRecord {
+function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log: Logger): UsageRecord {
   const durationMs =
     r.ended_at != null && r.started_at != null
       ? Math.max(0, Math.round((r.ended_at - r.started_at) * 1000))
@@ -240,6 +241,24 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean): Us
   // loop (unchanged filtering for the common case), `channel:task` once a row
   // is a side task. This keeps cron/slack/cli distinguishable in every row.
   const subTool = r.task ? `${r.session_source ?? "session"}:${r.task}` : r.session_source;
+
+  // Hermes reports reasoning_tokens as a detail NESTED inside output_tokens
+  // (same convention as OpenAI/codex — see codex.ts's toRecord), not additive
+  // like Anthropic/sideclaw-iu. pricing.ts's contract is additive (input +
+  // output + cacheRead + cacheWrite + reasoning), so it has to be split back
+  // out here or reasoning bills twice — this visibly inflated Luna rows before
+  // the fix. A negative split means the nesting assumption broke; clamp and
+  // warn rather than let tokens go negative or silently double-bill.
+  const rawOutput = r.output_tokens ?? 0;
+  const reasoning = r.reasoning_tokens ?? 0;
+  const output = rawOutput - reasoning;
+  if (output < 0) {
+    log.warn(
+      `hermes-agent: ${sourceId} reasoning_tokens (${reasoning}) exceeds output_tokens ` +
+        `(${rawOutput}) — clamped, this row under-reports`,
+    );
+  }
+
   return {
     sourceId,
     grain: "session",
@@ -248,10 +267,10 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean): Us
     project,
     subTool,
     inputTokens: r.input_tokens ?? 0,
-    outputTokens: r.output_tokens ?? 0,
+    outputTokens: Math.max(0, output),
     cacheReadTokens: r.cache_read_tokens ?? 0,
     cacheWriteTokens: r.cache_write_tokens ?? 0,
-    reasoningTokens: r.reasoning_tokens ?? 0,
+    reasoningTokens: reasoning,
     durationMs,
     raw: {
       task: r.task || null,
