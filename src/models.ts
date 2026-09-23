@@ -206,10 +206,20 @@ export function classifyBilling(
   source: string,
   rawModel: string | null,
   sessionId?: string | null,
+  backend?: string | null,
 ): Billing {
   if (source === "claude-code") {
     const baseUrl = getSessionBaseUrl(sessionId);
     if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
+    return isIuOnlyModel(rawModel) ? "iu" : "max";
+  }
+
+  // sideclaw-sessions carries its own backend ("max" | "iu") straight from the
+  // session log — sideclaw dispatches both lanes, so the model id alone can't
+  // tell them apart. Older rows written before the field existed fall back to
+  // the same id-based heuristic as the no-session_env case above.
+  if (source === "sideclaw-sessions") {
+    if (backend === "max" || backend === "iu") return backend;
     return isIuOnlyModel(rawModel) ? "iu" : "max";
   }
 

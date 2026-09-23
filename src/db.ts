@@ -159,6 +159,7 @@ export function upsertRecords(
           source,
           r.model,
           typeof r.raw?.sessionId === "string" ? r.raw.sessionId : undefined,
+          typeof r.raw?.backend === "string" ? r.raw.backend : undefined,
         ),
         $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",

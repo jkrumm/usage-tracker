@@ -286,4 +286,14 @@ describe("classifyBilling", () => {
     expect(classifyBilling("hermes", "gpt-5.6-luna")).toBe("iu");
     expect(classifyBilling("sideclaw-iu", "gemini-3.5-flash")).toBe("iu");
   });
+
+  test("sideclaw-sessions follows its own backend field, not the session log", () => {
+    expect(classifyBilling("sideclaw-sessions", "claude-sonnet-5[1m]", null, "max")).toBe("max");
+    expect(classifyBilling("sideclaw-sessions", "gemini-3.5-flash", null, "iu")).toBe("iu");
+  });
+
+  test("sideclaw-sessions without a backend falls back to the id heuristic", () => {
+    expect(classifyBilling("sideclaw-sessions", "claude-sonnet-5", null, null)).toBe("max");
+    expect(classifyBilling("sideclaw-sessions", "gemini-3.5-flash", null, null)).toBe("iu");
+  });
 });

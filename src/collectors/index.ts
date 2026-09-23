@@ -9,6 +9,7 @@ import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
 import { sideclawIuCollector } from "./sideclaw-iu.ts";
+import { sideclawSessionsCollector } from "./sideclaw-sessions.ts";
 
 // The registry. Adding a source = write a collector and append it here. Paths
 // are overridable via env so the registry stays machine-agnostic.
@@ -37,6 +38,7 @@ export const collectors: Collector[] = [
   opencodeCollector,
   litellmCollector,
   sideclawIuCollector,
+  sideclawSessionsCollector,
   modelpickCollector,
   astraCollector,
 ];
