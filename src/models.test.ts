@@ -96,11 +96,20 @@ describe("normalizeModel", () => {
       "qwen3.7-max": "qwen3.7-max",
       "DeepSeek-V4-Flash": "deepseek-v4-flash",
       "DeepSeek-V4-Pro": "deepseek-v4-pro",
+      "DeepSeek-V4.1-Flash": "deepseek-v4.1-flash",
+      "deepseek-v4.1-flash": "deepseek-v4.1-flash",
     };
     for (const [gatewayId, key] of Object.entries(gatewayIdToKey)) {
       expect(normalizeModel(gatewayId)).toBe(key);
       expect(PRICING[key]).toBeDefined();
     }
+  });
+
+  test("deepseek-v4.1-flash does not collapse onto the retired deepseek-v4-flash key", () => {
+    // A new model, not a rename: the two must resolve to distinct PRICING
+    // entries or historical v4-flash rows silently get re-priced at v4.1's rate.
+    expect(normalizeModel("deepseek-v4.1-flash")).not.toBe(normalizeModel("deepseek-v4-flash"));
+    expect(PRICING["deepseek-v4.1-flash"]).not.toEqual(PRICING["deepseek-v4-flash"]);
   });
 
   test("resolves the dated ids of priced models onto a real PRICING key", () => {

@@ -188,6 +188,49 @@ describe("computeCost", () => {
     expect(big.usd).toBeCloseTo(25, 10); // 5M x $5/M, no surcharge
   });
 
+  // Pinned 2026-09-13 measurements — see pricing.ts's inline notes. Both
+  // regressions that mattered here: glm-5.3-flash silently staying at the
+  // stale 08-28 half rate, and deepseek-v4.1-flash resolving to null (or,
+  // worse, silently onto the retired v4-flash rate) instead of its own entry.
+  test("glm-5.3-flash bills at its re-measured 2026-09-13 rate, not the stale 08-28 half rate", () => {
+    const result = computeCost("glm-5.3-flash", {
+      input: 1_000_000,
+      output: 1_000_000,
+      cacheRead: 1_000_000,
+      cacheWrite: 1_000_000,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(result.usd).toBeCloseTo(0.15 + 0.5 + 0.03 + 0.15, 10);
+    expect(result.source).toBe("computed");
+  });
+
+  test("deepseek-v4.1-flash has its own rate, distinct from the retired deepseek-v4-flash", () => {
+    const v41 = computeCost("deepseek-v4.1-flash", {
+      input: 1_000_000,
+      output: 1_000_000,
+      cacheRead: 1_000_000,
+      cacheWrite: 1_000_000,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(v41.usd).toBeCloseTo(0.5 + 1.5 + 0.05 + 0.5, 10);
+    expect(v41.source).toBe("computed");
+
+    const v4 = computeCost("deepseek-v4-flash", {
+      input: 1_000_000,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(v4.usd).not.toBe(v41.usd);
+  });
+
   test("unpriced model returns null cost", () => {
     const result = computeCost("some-unknown-model", {
       input: 100,

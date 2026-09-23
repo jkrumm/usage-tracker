@@ -16,7 +16,9 @@ import type { Grain } from "./types.ts";
 // endpoint's own reported `usage.cost`, 2026-08-28 — solved by least squares
 // across four request shapes per model with a 0.0% residual, and confirmed
 // route-independent (/openai and /anthropic both agree). Those rates are
-// exact, not estimates. Two caveats remain for everything else: (1) the
+// exact, not estimates. deepseek-v4.1-flash and a re-check of glm-5.3-flash
+// were measured the same way on 2026-09-13; glm-5.3-flash's rate had
+// genuinely doubled since 08-28. Two caveats remain for everything else: (1) the
 // Claude/Gemini models route to AWS Bedrock eu-west-1 / Azure Sweden and the
 // gateway reports no cost field for them, so their entries stay public-list-
 // price proxies of unknown accuracy against IU's actual EU per-token rate;
@@ -92,11 +94,23 @@ export const PRICING: Record<string, Rate> = {
   // as ordinary input.
   "deepseek-v4-pro": { input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 1.32 },
   "deepseek-v4-flash": { input: 0.44, output: 1.32, cacheRead: 0.014, cacheWrite: 0.44 },
+  // DeepSeek V4.1 Flash — the new Hermes brain (also research-gateway,
+  // argo, audio-gateway, image-gen, warden). Retired: `deepseek-v4-flash`
+  // above stays for historical rows priced before the swap; this is a
+  // separate model, not a rename, so normalizeModel must not collapse the
+  // two onto one key. Rates measured 2026-09-13 the same way as the rest of
+  // this block (gateway `usage.cost`, exact to 1e-7 USD). Cache write is not
+  // surcharged — the gateway bills a cache-write request at the ordinary
+  // input rate (first call bills full input), so cacheWrite = input.
+  "deepseek-v4.1-flash": { input: 0.5, output: 1.5, cacheRead: 0.05, cacheWrite: 0.5 },
   // The following ten (glm-5.3-flash through qwen3.7-max) are the rest of the
-  // IU unified endpoint's Requesty-routed catalog, measured the same way and
-  // on the same date — see the file header for the method. cacheWrite = input
+  // IU unified endpoint's Requesty-routed catalog, measured 2026-08-28 the
+  // same way — see the file header for the method. cacheWrite = input
   // throughout, same reason as DeepSeek above.
-  "glm-5.3-flash": { input: 0.075, output: 0.25, cacheRead: 0.015, cacheWrite: 0.075 },
+  // glm-5.3-flash re-measured 2026-09-13: exactly double the 08-28 figure
+  // (0.075/0.015/0.25) — not a rounding correction, the gateway's rate for
+  // this model actually doubled between the two measurement dates.
+  "glm-5.3-flash": { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0.15 },
   // No caching observed on the gateway for this model — cacheRead = input is a
   // deliberate "caching does not work on this model" encoding, not a missing
   // measurement.
