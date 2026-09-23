@@ -117,6 +117,7 @@ describe("normalizeModel", () => {
     for (const dated of [
       "gpt-5.6-terra-2026-07-09",
       "gpt-image-2-2026-04-21",
+      "gpt-image-2.5-sunburst-2026-09-08",
       "claude-haiku-4-5-20251001",
       "claude-sonnet-4-6-eu",
     ]) {

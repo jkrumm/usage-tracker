@@ -148,6 +148,12 @@ export const PRICING: Record<string, Rate> = {
   // tokens (edits/reference images) bill at $8/M and would need a separate
   // rate; sideclaw doesn't send them today.
   "gpt-image-2": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
+  // GPT Image 2.5 Flare / Sunburst (OpenAI pricing table, verified 2026-09-23)
+  // — listed on the IU catalog, not yet used by any source. Same schedule as
+  // gpt-image-2 above and mapped the same way: text input $5/M (cached
+  // $1.25), image output $30/M; image input ($8/M, cached $2) is unmodelled.
+  "gpt-image-2.5-flare": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
+  "gpt-image-2.5-sunburst": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
   // GPT-5.6 Terra (OpenAI list prices, GA 2026-07-09) — sideclaw's `review`
   // adversary critic, which runs it at reasoning_effort "high". cacheWrite =
@@ -196,6 +202,27 @@ export const PRICING: Record<string, Rate> = {
     cacheRead: 0.4,
     cacheWrite: 5.0,
     long: { threshold: LONG_CONTEXT, rate: { input: 8.0, output: 30.0, cacheRead: 0.8, cacheWrite: 10.0 } },
+  },
+  // GPT-6 Luna (OpenAI API pricing table + model page, verified 2026-09-23) —
+  // successor to gpt-5.6-luna in every slot that ran it (2026-09-23 rollout);
+  // the 5.6 row above stays for historical rows. Half 5.6 Luna's input and
+  // ~40% of its output. cacheRead is published ($0.01); cacheWrite = 1.25x
+  // input per the GPT-5.6+ caching rule, which Sol's published $2.50 matches.
+  "gpt-6-luna": {
+    input: 0.1,
+    output: 0.5,
+    cacheRead: 0.01,
+    cacheWrite: 0.125,
+    long: { threshold: LONG_CONTEXT, rate: { input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 } },
+  },
+  // GPT-6 Sol (OpenAI API pricing table, verified 2026-09-23, cache write
+  // published at $2.50 / $5.00 long) — IU-listed, no source uses it yet.
+  "gpt-6-sol": {
+    input: 2.0,
+    output: 10.0,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
+    long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 15.0, cacheRead: 0.4, cacheWrite: 5.0 } },
   },
   // GPT-6 Astra — dotfiles' `cxa`, and by a distance the most expensive model
   // in this table: 5x Terra's input and ~4x its output. Deliberately opt-in

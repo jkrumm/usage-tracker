@@ -99,6 +99,8 @@ describe("computeCost", () => {
   test.each([
     ["gpt-5.6-sol", 4.0, 20.0, 0.4, 5.0],
     ["gpt-6-astra", 10.0, 50.0, 1.0, 12.5],
+    ["gpt-6-luna", 0.1, 0.5, 0.01, 0.125],
+    ["gpt-6-sol", 2.0, 10.0, 0.2, 2.5],
   ])("%s bills at its published short-context rate", (model, input, output, read, write) => {
     const per = (counts: Partial<TokenCounts>) =>
       computeCost(model as string, {
