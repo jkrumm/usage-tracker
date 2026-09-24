@@ -78,6 +78,36 @@ describe("computeCost", () => {
     expect(result).toEqual({ usd: 0.25, source: "computed" });
   });
 
+  test("claude-opus-5-5 has its own exact rate, not the opus family fallback", () => {
+    // The opus-tier FAMILY_PRICING fallback is $5/$25 (cacheRead 0.1x input);
+    // Opus 5.5 is cheaper ($4/$20) with a steeper 0.05x cacheRead discount —
+    // without an exact entry this silently resolved through the family tier at
+    // the wrong rate and reported source "family".
+    const result = computeCost("claude-opus-5-5", {
+      input: 0,
+      output: 0,
+      cacheRead: 1_000_000,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(result).toEqual({ usd: 0.2, source: "computed" });
+  });
+
+  test("claude-sonnet-5 bills at its published $2/$10 rate, not the cancelled $3/$15 increase", () => {
+    const result = computeCost("claude-sonnet-5", {
+      input: 1_000_000,
+      output: 1_000_000,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      grain: "message",
+    });
+    expect(result).toEqual({ usd: 12, source: "computed" });
+  });
+
   test("a model with no cacheWrite1h rate falls back to the 5m rate", () => {
     const result = computeCost("gpt-5.6-terra", {
       input: 0,
@@ -209,6 +239,8 @@ describe("computeCost", () => {
   });
 
   test("deepseek-v4.1-flash has its own rate, distinct from the retired deepseek-v4-flash", () => {
+    // Re-measured 2026-09-24 (0.15/0.6/0.003/0.15) — down sharply from the
+    // 2026-09-13 figures pinned here previously (0.5/1.5/0.05/0.5).
     const v41 = computeCost("deepseek-v4.1-flash", {
       input: 1_000_000,
       output: 1_000_000,
@@ -218,7 +250,7 @@ describe("computeCost", () => {
       reasoning: 0,
       grain: "message",
     });
-    expect(v41.usd).toBeCloseTo(0.5 + 1.5 + 0.05 + 0.5, 10);
+    expect(v41.usd).toBeCloseTo(0.15 + 0.6 + 0.003 + 0.15, 10);
     expect(v41.source).toBe("computed");
 
     const v4 = computeCost("deepseek-v4-flash", {

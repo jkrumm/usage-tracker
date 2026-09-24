@@ -18,7 +18,10 @@ import type { Grain } from "./types.ts";
 // route-independent (/openai and /anthropic both agree). Those rates are
 // exact, not estimates. deepseek-v4.1-flash and a re-check of glm-5.3-flash
 // were measured the same way on 2026-09-13; glm-5.3-flash's rate had
-// genuinely doubled since 08-28. Two caveats remain for everything else: (1) the
+// genuinely doubled since 08-28. Sonnet 5 corrected and Opus 5.5 added
+// 2026-09-24 against the live Anthropic pricing page (see their inline
+// notes) — deepseek-v4.1-flash also re-measured against the IU gateway's own
+// `usage.cost` the same day. Two caveats remain for everything else: (1) the
 // Claude/Gemini models route to AWS Bedrock eu-west-1 / Azure Sweden and the
 // gateway reports no cost field for them, so their entries stay public-list-
 // price proxies of unknown accuracy against IU's actual EU per-token rate;
@@ -67,11 +70,7 @@ export const PRICING: Record<string, Rate> = {
   // Opus 5 (August 2026) ships at the Opus 4.8 rate, 1M context included at
   // standard pricing — no long-context premium.
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, cacheWrite1h: 10 },
-  // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50);
-  // Sonnet 5 standard list matches Sonnet 4.6 ($3/$15) — the $2/$10 intro window
-  // ran through 2026-08-31 and has now lapsed, so $3/$15 is the settled standing
-  // rate, not a pending one (these are Max value, not a real bill either way).
-  // Re-verify against the live pricing page if Anthropic revises this tier again.
+  // Claude 5 family (list prices, July 2026). Fable 5 is the top tier ($10/$50).
   "claude-fable-5": { input: 10, output: 50, cacheRead: 1.0, cacheWrite: 12.5, cacheWrite1h: 20 },
   // Fable 5.1: same $10/$50 tier as Fable 5, but Anthropic cut cache reads to
   // $0.25/MTok — the family-tier fallback's $1.00 was overstating 1.1B+
@@ -79,9 +78,20 @@ export const PRICING: Record<string, Rate> = {
   // cacheWrite1h keep the standard 1.25x/2x-input multipliers; unlike cacheRead
   // these are not independently verified against a Fable-5.1-specific source.
   "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5, cacheWrite1h: 20 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
+  // Sonnet 5 — corrected 2026-09-24 (platform.claude.com/docs/en/about-claude/pricing).
+  // The previously-recorded $3/$15 was the *planned* Sept-1 increase off the
+  // $2/$10 intro rate; Anthropic cancelled that increase, so $2/$10 is the
+  // settled standing rate, not a lapsed intro window. cacheRead $0.20,
+  // cacheWrite (5m) $2.50 (1.25x input), cacheWrite1h $4 (2x input) — all
+  // published, not derived.
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, cacheWrite1h: 4 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
+  // Opus 5.5 — added 2026-09-24 (platform.claude.com/docs/en/about-claude/pricing).
+  // Diverges from the opus-tier FAMILY_PRICING fallback ($5/$25/$0.50/$6.25/$10),
+  // which had been silently overcosting every opus-5-5 row until this exact
+  // entry was added. cacheRead is 0.05x input (not the usual 0.1x), published.
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, cacheWrite1h: 8 },
   // IU bridge rate (Feuer agent config — authoritative for this setup).
   "kimi-k2.6": { input: 0.95, output: 4.0, cacheRead: 0.16, cacheWrite: 0.95 },
   // DeepSeek V4 (IU unified endpoint, EU-resident, Requesty-routed) — Hermes
@@ -98,11 +108,15 @@ export const PRICING: Record<string, Rate> = {
   // argo, audio-gateway, image-gen, warden). Retired: `deepseek-v4-flash`
   // above stays for historical rows priced before the swap; this is a
   // separate model, not a rename, so normalizeModel must not collapse the
-  // two onto one key. Rates measured 2026-09-13 the same way as the rest of
-  // this block (gateway `usage.cost`, exact to 1e-7 USD). Cache write is not
-  // surcharged — the gateway bills a cache-write request at the ordinary
-  // input rate (first call bills full input), so cacheWrite = input.
-  "deepseek-v4.1-flash": { input: 0.5, output: 1.5, cacheRead: 0.05, cacheWrite: 0.5 },
+  // two onto one key. Rates re-measured 2026-09-24 against the gateway's own
+  // `usage.cost` on /openai/v1/chat/completions (solved exactly, 0 residual):
+  // 7780 uncached input + 2 output = $0.0011682 -> input $0.15/M; 44 in + 79
+  // out (77 reasoning) = $0.000054 -> output $0.60/M; 7552 cached + 228
+  // uncached + 2 out = $0.000058056 -> cacheRead $0.003/M. Down sharply from
+  // the 2026-09-13 figures (0.5/1.5/0.05) — a real gateway repricing, not a
+  // correction. Cache write still not surcharged — the gateway bills a
+  // cache-write request at the ordinary input rate — so cacheWrite = input.
+  "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
   // The following ten (glm-5.3-flash through qwen3.7-max) are the rest of the
   // IU unified endpoint's Requesty-routed catalog, measured 2026-08-28 the
   // same way — see the file header for the method. cacheWrite = input
