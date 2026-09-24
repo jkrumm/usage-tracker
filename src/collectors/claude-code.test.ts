@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetSessionBaseUrlsCacheForTest } from "../models.ts";
+import { resetSessionBaseUrlsCacheForTest, resetSideclawWindowsCacheForTest } from "../models.ts";
 import { iumacLogsDir, iumacProjectsDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { claudeCodeCollector, setSyncOverrideForTest } from "./claude-code.ts";
@@ -46,7 +46,13 @@ describe("claude-code two-root collector", () => {
     // tmp dir rather than the real ~/.claude/logs so these tests never read
     // this machine's actual session history.
     process.env.USAGE_CLAUDE_LOGS_DIR = localLogsDir;
+    // Same reasoning for the sideclaw-attribution fallback getSideclawLane()
+    // now runs on every unattributed line — point it at a path that doesn't
+    // exist so these tests never read this machine's real
+    // sideclaw-sessions.jsonl.
+    process.env.SIDECLAW_SESSIONS_LOG = join(localLogsDir, "no-such-sideclaw-sessions.jsonl");
     resetSessionBaseUrlsCacheForTest();
+    resetSideclawWindowsCacheForTest();
   });
 
   afterEach(() => {
@@ -55,10 +61,12 @@ describe("claude-code two-root collector", () => {
     delete process.env.USAGE_REMOTE_DIR;
     delete process.env.USAGE_IUMAC_MACHINE;
     delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.SIDECLAW_SESSIONS_LOG;
     rmSync(localDir, { recursive: true, force: true });
     rmSync(remoteDir, { recursive: true, force: true });
     rmSync(localLogsDir, { recursive: true, force: true });
     resetSessionBaseUrlsCacheForTest();
+    resetSideclawWindowsCacheForTest();
   });
 
   test("offsets for local and mirror files coexist without colliding; mirror carries machine, local leaves it null", async () => {
@@ -188,6 +196,44 @@ describe("claude-code two-root collector", () => {
 
     const record = result.records.find((r) => r.sourceId === "local-req");
     expect(record?.subTool).toBeFalsy();
+  });
+
+  test("a session_env line without a lane falls back to the sideclaw-sessions.jsonl time-window join", async () => {
+    const line = `${JSON.stringify({
+      type: "assistant",
+      requestId: "worker-req",
+      sessionId: "session-1",
+      timestamp: "2026-09-24T18:22:30.000Z",
+      cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+      message: {
+        id: "msg-worker-req",
+        model: "deepseek-flash",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), line);
+    // session_env line found, but no `lane` — exactly what sideclaw's own
+    // writeSessionEnv() produces (see getSideclawLane's doc comment).
+    writeFileSync(
+      join(localLogsDir, "2026-09-10.jsonl"),
+      `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: "https://iu" } })}\n`,
+    );
+    writeFileSync(
+      process.env.SIDECLAW_SESSIONS_LOG!,
+      `${JSON.stringify({
+        tool: "review:router",
+        project: "/Users/jkrumm/SourceRoot/sideclaw",
+        tsStart: "2026-09-24T18:22:19.444Z",
+        tsEnd: "2026-09-24T18:22:35.797Z",
+      })}\n`,
+    );
+
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "worker-req");
+    expect(record?.subTool).toBe("sideclaw:review");
   });
 
   test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {

@@ -107,6 +107,111 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
   return sessionEnvs.get(sessionId)?.lane;
 }
 
+// Fallback for the case getSessionLane can never solve: every sideclaw worker
+// session_env line is written by sideclaw's own writeSessionEnv() (needed
+// because workers run with disableAllHooks, so the real SessionStart hook that
+// carries `lane` never fires for them) — and that write's payload is
+// `{ session, base_url, model, backend }`, no `lane` field at all, even though
+// sideclaw already computes `USAGE_LANE` for the child process. So
+// getSessionLane() resolves the *session id* fine (billing classifies
+// correctly) but always returns null for the lane itself, for every sideclaw
+// row. (The precise fix is one line in sideclaw's session-runner.ts:
+// writeSessionEnv's `data` object needs `lane: usageLane(tool)` alongside
+// `base_url`/`model`/`backend` — not applied here, this repo doesn't own that
+// file.)
+//
+// sideclaw independently writes `~/.local/share/usage-tracker/sideclaw-sessions.jsonl`,
+// one record per worker with `{ tool, project, tsStart, tsEnd }` — but keyed by
+// sideclaw's own pre-run UUID, not the transcript session id claude-code
+// records, so there's no id to join on. litellm.ts solved the identical problem
+// for bridge rows by matching a record's timestamp into a session's
+// [tsStart, tsEnd] window instead; this does the same for claude-code rows,
+// additionally preferring a window whose `project` matches the row's cwd to
+// disambiguate concurrent sideclaw sessions (litellm rows carry no cwd, so
+// litellm.ts can't do this) — ties fall back to the narrowest window.
+interface SideclawWindow {
+  tool: string;
+  project: string | null;
+  tsStartMs: number;
+  tsEndMs: number;
+  /** End - start in ms; used to pick the narrowest match when windows overlap. */
+  spanMs: number;
+}
+let sideclawWindows: SideclawWindow[] | null = null;
+
+function sideclawSessionsLogPath(): string {
+  return (
+    process.env.SIDECLAW_SESSIONS_LOG?.trim() ||
+    join(homedir(), ".local", "share", "usage-tracker", "sideclaw-sessions.jsonl")
+  );
+}
+
+/**
+ * Test-only: clear the module-level sideclaw-sessions cache so a test can
+ * control loadSideclawWindows' input deterministically. Never called from
+ * production code.
+ */
+export function resetSideclawWindowsCacheForTest(): void {
+  sideclawWindows = null;
+}
+
+function loadSideclawWindows(): SideclawWindow[] {
+  const path = sideclawSessionsLogPath();
+  if (!existsSync(path)) return [];
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return [];
+  }
+  const windows: SideclawWindow[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line) as { tool?: string; project?: string; tsStart?: string; tsEnd?: string };
+      const tsStartMs = typeof obj.tsStart === "string" ? Date.parse(obj.tsStart) : NaN;
+      const tsEndMs = typeof obj.tsEnd === "string" ? Date.parse(obj.tsEnd) : NaN;
+      if (!Number.isFinite(tsStartMs) || !Number.isFinite(tsEndMs)) continue;
+      windows.push({
+        tool: typeof obj.tool === "string" ? obj.tool : "unknown",
+        project: typeof obj.project === "string" ? obj.project : null,
+        tsStartMs,
+        tsEndMs,
+        spanMs: Math.max(0, tsEndMs - tsStartMs),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return windows;
+}
+
+/**
+ * Coarsened the same way sideclaw's usageLane() would (`sideclaw:<tool before
+ * the first ':'>`) so `review:angle`/`review:synthesis`/… collapse onto one
+ * `sideclaw:review` row, same as a correctly-written USAGE_LANE would have.
+ * Returns null when no window contains `ts` — a manual `c`/`ca` session, or a
+ * sideclaw window this log has already rotated past.
+ */
+export function getSideclawLane(ts: string | null | undefined, project: string | null | undefined): string | null {
+  if (!ts) return null;
+  const rowMs = Date.parse(ts);
+  if (!Number.isFinite(rowMs)) return null;
+  if (!sideclawWindows) sideclawWindows = loadSideclawWindows();
+
+  let best: SideclawWindow | undefined;
+  let bestIsProjectMatch = false;
+  for (const w of sideclawWindows) {
+    if (rowMs < w.tsStartMs || rowMs > w.tsEndMs) continue;
+    const isProjectMatch = project != null && w.project === project;
+    if (!best || (isProjectMatch && !bestIsProjectMatch) || (isProjectMatch === bestIsProjectMatch && w.spanMs < best.spanMs)) {
+      best = w;
+      bestIsProjectMatch = isProjectMatch;
+    }
+  }
+  return best ? `sideclaw:${best.tool.split(":")[0]}` : null;
+}
+
 /**
  * Reduce a source's raw model string to a canonical key used for pricing and
  * grouping. Handles OpenCode's JSON-encoded model, the IU gateway's `-eu` suffix,
@@ -138,6 +243,17 @@ export function normalizeModel(raw: string | null): string | null {
   // Verified against the IU catalog's 287 ids: this collapses 44 dated variants
   // onto their bare alias and produces no unintended collisions.
   m = m.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  // `deepseek-flash` (no version) is Claude Code's own small/fast-model slot
+  // (ANTHROPIC_DEFAULT_HAIKU_MODEL), which sideclaw's session-runner.ts pins to
+  // the literal id "DeepSeek-V4-Flash" for every non-Claude worker route — the
+  // gateway then echoes a shorter alias back in the transcript's `message.model`
+  // field instead of the requested id. Evidence: 1758+ claude-code rows since
+  // 2026-09-12 whose project is a sideclaw worktree or `hermes`'s own
+  // `compression` task (same alias, same gateway); one row's window lines up
+  // exactly with a live `review:router` sideclaw-sessions.jsonl entry whose own
+  // `model` field is "DeepSeek-V4-Flash". Without this it silently priced at
+  // $0 (no PRICING entry for the bare alias).
+  if (m === "deepseek-flash") m = "deepseek-v4-flash";
   return m;
 }
 

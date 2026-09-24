@@ -156,13 +156,36 @@ misattribute it.
 currently `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` and `gpt-6-astra`) —
 2x input, 1.5x output once a single prompt's input + cacheRead + cacheWrite
 passes 272k. `computeCost` only evaluates it for `grain === 'message'`, though:
-the threshold is a per-request concept, but hermes/feuer/opencode are
-session-grain, meaning their token counts are lifetime sums across every turn
-in the session, not one prompt. Applying the surcharge there would price a
-long-running session as if it were one giant oversized request and badly
-overcharge it (a real case: 346 hermes rows overcharged by $16.48, 41% of that
-model's recorded spend, before this gate existed). Codex is grain `'message'`,
-so its rows correctly get the surcharge when a single request earns it.
+the threshold is a per-request concept, but hermes/feuer (and opencode's
+legacy session-grain fallback, see below) are session-grain, meaning their
+token counts are lifetime sums across every turn in the session, not one
+prompt. Applying the surcharge there would price a long-running session as if
+it were one giant oversized request and badly overcharge it (a real case: 346
+hermes rows overcharged by $16.48, 41% of that model's recorded spend, before
+this gate existed). Codex and opencode's default message-grain read are both
+grain `'message'`, so their rows correctly get the surcharge when a single
+request earns it.
+
+### OpenCode (`opencode`)
+
+Removed 2026-09-04, re-added 2026-09-23 (v1.18.30) — re-verified against the
+live schema the same day. `session` still carries the same mutable
+per-session totals this collector originally read (the legacy shape below),
+but `message` (one row per turn, `data` a JSON blob keyed by `role`) now
+carries per-assistant-message tokens/cost too, with its own `modelID`/
+`providerID`/`path.cwd`/`time.created`/`time.completed` — strictly finer than
+session grain, since a session's cwd or model can change mid-run and session
+grain collapses that to one value. Message grain is preferred whenever the
+table exists; `sourceId` is the message id, `project` prefers the message's
+own `path.cwd` and falls back to the joined session's `directory`. `part` is
+never read — token/cost data already lives on the assistant `message` row.
+
+Falls back to the original session-grain read (`sourceId` = session id,
+`grain: 'session'`) when `message` doesn't exist (an older OpenCode build),
+so the collector degrades gracefully instead of going dark. Both queries
+re-read their table whole every run and reconcile by upsert, same as before
+the re-add — cheap given the small DB and the 15-min LaunchAgent tick, and
+tolerant of a message row updating in place mid-stream.
 
 ### modelpick benchmark spend (`modelpick`)
 
@@ -260,6 +283,15 @@ window with `sub_tool` and `project`. When concurrent windows overlap, the
 narrowest one wins (best-effort heuristic — small risk of misattribution under
 heavy parallel fan-out). Review's three internal phases are tagged separately
 as `review:router` / `review:angle` / `review:synthesis`.
+
+`claude-code.ts`'s `stampLane()` uses the same log for the identical reason,
+via `getSideclawLane()` in `models.ts`: every sideclaw worker's `session_env`
+line (written by sideclaw itself, since `disableAllHooks` skips the real
+SessionStart hook) carries `base_url` but never `lane`, so the id-based join
+in `getSessionLane()` always comes back empty for these rows. The fallback
+additionally prefers a window whose `project` matches the claude-code row's
+own `cwd` over the narrowest-window heuristic above — claude-code rows carry
+a cwd, litellm rows don't.
 
 Group by it with `make stats BY=sub_tool`.
 

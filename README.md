@@ -14,7 +14,7 @@ the end of `ingest`), which is where the dashboard lives.
 | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — sideclaw's direct IU calls (`read_image`, `read_drawing`, `generate_image`, the `review` critic) | message | `request_id` | working |
-| `opencode` | `~/.local/share/opencode/opencode.db` → `session` | session | `id` | historical rows only — OpenCode was removed 2026-09-04; the collector reports not-present |
+| `opencode` | `~/.local/share/opencode/opencode.db` → `message` (per assistant turn), session-grain fallback if that table is absent | message | message `id` (session `id` on the fallback) | working — OpenCode was re-added 2026-09-23; removed 2026-09-04 → 2026-09-23, historical rows from before the removal stay queryable |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | historical rows only — the local LiteLLM proxy was removed 2026-09-04; the collector reports not-present |
 
@@ -51,6 +51,21 @@ distinguishable once merged — see "Machine attribution" below.
 | `bg` | `rd bg` |
 | `warden` | warden-caused dispatch work |
 | *(unset)* | manual `c`/`ca`/`cs`/`cf` sessions — `sub_tool` stays null |
+
+sideclaw's own `writeSessionEnv()` (needed because its workers run with
+`disableAllHooks`, so the real hook above never fires for them) writes a
+`session_env` line with no `lane` field at all — so every sideclaw worker
+session resolves billing correctly (it does carry `base_url`) but never gets a
+lane from that join. `getSideclawLane()` (`src/models.ts`) is the fallback:
+it re-derives the lane by matching the row's timestamp into a
+[`tsStart`,`tsEnd`] window from sideclaw's independent
+`sideclaw-sessions.jsonl` attribution log (same time-window technique the
+retired `litellm` collector used, since the two logs share no session id to
+join on directly), preferring a window whose `project` matches the row's cwd
+to disambiguate concurrent sideclaw sessions. The precise upstream fix — one
+line in sideclaw's `session-runner.ts` adding `lane: usageLane(tool)` to
+`writeSessionEnv`'s payload — would make this fallback redundant but lives
+outside this repo.
 
 ## Usage
 

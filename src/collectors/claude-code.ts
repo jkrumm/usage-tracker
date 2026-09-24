@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getSessionLane, isBridgeRouted } from "../models.ts";
+import { getSessionLane, getSideclawLane, isBridgeRouted } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -191,11 +191,19 @@ function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>):
 }
 
 /** Stamp sub_tool from the session's USAGE_LANE, same rule for every record
- * this file emits — never overwriting a subTool already set. */
+ * this file emits — never overwriting a subTool already set. Falls back to
+ * sideclaw's own time-window attribution log when the session_env join can't
+ * supply a lane (every sideclaw worker session today — see getSideclawLane's
+ * doc comment in models.ts for why). */
 function stampLane(record: UsageRecord, sessionId: string | undefined): void {
   if (record.subTool) return;
   const lane = getSessionLane(sessionId);
-  if (lane) record.subTool = lane;
+  if (lane) {
+    record.subTool = lane;
+    return;
+  }
+  const fallback = getSideclawLane(record.ts, record.project);
+  if (fallback) record.subTool = fallback;
 }
 
 function parseLine(

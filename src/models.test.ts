@@ -6,10 +6,12 @@ import {
   classifyBilling,
   getSessionBaseUrl,
   getSessionLane,
+  getSideclawLane,
   isBridgeRouted,
   LITELLM_BRIDGE_CUTOFF,
   normalizeModel,
   resetSessionBaseUrlsCacheForTest,
+  resetSideclawWindowsCacheForTest,
 } from "./models.ts";
 import { PRICING } from "./pricing.ts";
 import { iumacLogsDir } from "./remote.ts";
@@ -110,6 +112,15 @@ describe("normalizeModel", () => {
     // entries or historical v4-flash rows silently get re-priced at v4.1's rate.
     expect(normalizeModel("deepseek-v4.1-flash")).not.toBe(normalizeModel("deepseek-v4-flash"));
     expect(PRICING["deepseek-v4.1-flash"]).not.toEqual(PRICING["deepseek-v4-flash"]);
+  });
+
+  test("maps the bare deepseek-flash alias onto deepseek-v4-flash", () => {
+    // Claude Code's own small/fast-model slot (ANTHROPIC_DEFAULT_HAIKU_MODEL,
+    // pinned by sideclaw's session-runner.ts to "DeepSeek-V4-Flash") comes back
+    // in the transcript as the bare, unversioned "deepseek-flash" — without this
+    // mapping it priced at $0 for every row.
+    expect(normalizeModel("deepseek-flash")).toBe("deepseek-v4-flash");
+    expect(PRICING["deepseek-v4-flash"]).toBeDefined();
   });
 
   test("resolves the dated ids of priced models onto a real PRICING key", () => {
@@ -225,6 +236,71 @@ describe("getSessionLane", () => {
     resetSessionBaseUrlsCacheForTest();
 
     expect(getSessionLane("lane-session")).toBeUndefined();
+  });
+});
+
+// getSideclawLane is the fallback claude-code.ts's stampLane uses when
+// getSessionLane can't supply a lane — every sideclaw worker session today,
+// since sideclaw's own session_env write carries no `lane` field (see the
+// doc comment on getSideclawLane in models.ts). It joins by time window
+// instead, against sideclaw's independent attribution log.
+
+describe("getSideclawLane", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-sideclaw-sessions-"));
+    process.env.SIDECLAW_SESSIONS_LOG = join(dir, "sideclaw-sessions.jsonl");
+    writeFileSync(
+      process.env.SIDECLAW_SESSIONS_LOG,
+      [
+        {
+          tool: "review:router",
+          project: "/Users/jkrumm/SourceRoot/sideclaw",
+          tsStart: "2026-09-24T18:22:19.444Z",
+          tsEnd: "2026-09-24T18:22:35.797Z",
+        },
+        // A concurrent, wider window in a different project — picking the
+        // narrowest match alone would pick this one over the true match below.
+        {
+          tool: "dispatch",
+          project: "/Users/jkrumm/SourceRoot/warden",
+          tsStart: "2026-09-24T18:20:00.000Z",
+          tsEnd: "2026-09-24T18:30:00.000Z",
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+    );
+    resetSideclawWindowsCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.SIDECLAW_SESSIONS_LOG;
+    rmSync(dir, { recursive: true, force: true });
+    resetSideclawWindowsCacheForTest();
+  });
+
+  test("coarsens the matched tool to sideclaw:<tool>, same as usageLane() would", () => {
+    expect(getSideclawLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/sideclaw")).toBe(
+      "sideclaw:review",
+    );
+  });
+
+  test("prefers the project-matching window over a wider one it's also inside", () => {
+    // 18:22:30 falls inside BOTH windows above; the warden one is wider (and
+    // would win a narrowest-span-only tie-break), but the project match wins.
+    expect(getSideclawLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/warden")).toBe(
+      "sideclaw:dispatch",
+    );
+  });
+
+  test("returns null outside every window", () => {
+    expect(getSideclawLane("2026-09-24T19:00:00.000Z", "/Users/jkrumm/SourceRoot/sideclaw")).toBeNull();
+  });
+
+  test("returns null for a null/missing ts", () => {
+    expect(getSideclawLane(null, "/Users/jkrumm/SourceRoot/sideclaw")).toBeNull();
   });
 });
 
