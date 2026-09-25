@@ -136,15 +136,21 @@ export function upsertRecords(
   const tx = db.transaction((rows: UsageRecord[]) => {
     for (const r of rows) {
       const modelNorm = normalizeModel(r.model);
-      const cost = computeCost(modelNorm, {
-        input: r.inputTokens,
-        output: r.outputTokens,
-        cacheRead: r.cacheReadTokens,
-        cacheWrite: r.cacheWriteTokens,
-        cacheWrite1h: r.cacheWrite1hTokens ?? 0,
-        reasoning: r.reasoningTokens,
-        grain: r.grain,
-      });
+      // A vendor-reported cost (research-gateway's sonar rows) is authoritative
+      // and stored verbatim; everything else is priced from tokens centrally.
+      // The line's own cost is never trusted for a source that has a table rate.
+      const cost =
+        r.authoritativeCostUsd != null
+          ? { usd: r.authoritativeCostUsd, source: "reported" as const }
+          : computeCost(modelNorm, {
+              input: r.inputTokens,
+              output: r.outputTokens,
+              cacheRead: r.cacheReadTokens,
+              cacheWrite: r.cacheWriteTokens,
+              cacheWrite1h: r.cacheWrite1hTokens ?? 0,
+              reasoning: r.reasoningTokens,
+              grain: r.grain,
+            });
       stmt.run({
         $source: source,
         $source_id: r.sourceId,

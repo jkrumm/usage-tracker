@@ -14,6 +14,7 @@ the end of `ingest`), which is where the dashboard lives.
 | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
 | `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — sideclaw's direct IU calls (`read_image`, `read_drawing`, `generate_image`, the `review` critic) | message | `request_id` | working |
+| `research-gateway` | `~/.local/share/usage-tracker/research-gateway.jsonl` (offset-incremental) — research-gateway's argo usage records: lead/worker LLM calls, per-call vendor rows (`sonar`, `tavily`, `render`, …) and the re-sent `tavily-account` snapshot | session | `source_id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `message` (per assistant turn), session-grain fallback if that table is absent | message | message `id` (session `id` on the fallback) | working — OpenCode was re-added 2026-09-23; removed 2026-09-04 → 2026-09-23, historical rows from before the removal stay queryable |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | historical rows only — the local LiteLLM proxy was removed 2026-09-04; the collector reports not-present |

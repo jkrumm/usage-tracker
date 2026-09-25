@@ -73,6 +73,26 @@ describe("reprice", () => {
   });
 });
 
+describe("reprice — vendor-reported cost", () => {
+  test("never rewrites a cost_source 'reported' row, even for a priced model", () => {
+    // The model is priced, so without the reported guard this row would be
+    // recomputed to 0.14; the vendor's per-call cost must survive.
+    const db = seed(0.42, "reported");
+    const result = reprice(db);
+
+    expect(result.changed).toBe(0);
+    const row = db
+      .query<{ cost_usd: number; cost_source: string; synced_at: string | null }, []>(
+        "SELECT cost_usd, cost_source, synced_at FROM usage_record",
+      )
+      .get();
+    expect(row?.cost_usd).toBe(0.42);
+    expect(row?.cost_source).toBe("reported");
+    expect(row?.synced_at).toBe("2026-08-02T00:00:00Z");
+    db.close();
+  });
+});
+
 describe("reprice — rates removed from the table", () => {
   test("never rewrites a priced row to unpriced", () => {
     const db = seed(5.25, "computed", "gemini-3.1-flash-tts-preview");

@@ -8,6 +8,7 @@ import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
+import { researchGatewayCollector } from "./research-gateway.ts";
 import { sideclawIuCollector } from "./sideclaw-iu.ts";
 import { sideclawSessionsCollector } from "./sideclaw-sessions.ts";
 
@@ -39,6 +40,7 @@ export const collectors: Collector[] = [
   litellmCollector,
   sideclawIuCollector,
   sideclawSessionsCollector,
+  researchGatewayCollector,
   modelpickCollector,
   astraCollector,
 ];
