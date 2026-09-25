@@ -15,6 +15,9 @@ import type { Grain } from "./types.ts";
  * holds its own copy of `cost_usd`, and a local-only fix would leave the two
  * disagreeing.
  *
+ * A vendor-reported row (`cost_source = 'reported'`) is skipped outright —
+ * that cost came from the vendor, not from our table.
+ *
  * A row the current table cannot price is left exactly as it is. Rates get
  * *removed* from PRICING when a collector is retired (the audio-proxy models
  * went that way), so "no entry today" means the table forgot the model, not
@@ -81,6 +84,11 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
   let preserved = 0;
 
   for (const row of rows) {
+    // A vendor-reported cost (cost_source 'reported', e.g. research-gateway's
+    // sonar rows) is not ours to recompute: the table has no rate for a
+    // per-call vendor bill, so leave the row exactly as it landed.
+    if (row.cost_source === "reported") continue;
+
     const cost = computeCost(row.model_norm, {
       input: row.input_tokens,
       output: row.output_tokens,

@@ -257,6 +257,35 @@ latency_ms, bytes }`); the collector reads it by byte offset and maps `tool` to
 `sub_tool`. Billing is derived centrally (always `iu`), the line's own
 `billing` field is ignored.
 
+### research-gateway (`research-gateway`)
+
+research-gateway appends one line per usage record to
+`~/.local/share/usage-tracker/research-gateway.jsonl` — its argo usage record
+verbatim, the same directory and append-only shape as sideclaw's
+`sideclaw-iu.jsonl`, so the collector reads it by byte offset the same way.
+`source_id` is the dedup key (`<jobId>:lead`, `<jobId>:worker`, `<jobId>:sonar`,
+`<jobId>:tavily`, … or the fixed `tavily-account`); the `tavily-account` snapshot
+is re-sent, and because upsert is keyed on `(source, source_id)` the last line
+wins, exactly like a session whose token counts grew.
+
+The line's `billing` and `machine` are ignored: billing is derived centrally
+(always `iu` here) and `machine` is stamped by `upsertRecords` from
+`machine.ts`, not taken from the line's `"mini"`. `sub_tool`, `outcome` (with a
+non-`ok`/`error` original kept as `raw.rawOutcome`) and `raw` pass through.
+
+Cost is the one thing split by row. A row with a `model` (the `lead`/`worker`
+LLM calls, e.g. `deepseek-v4.1-flash`) is priced from its tokens by the central
+table — the line's own `cost_usd` is never trusted. A `cost_source:"reported"`
+row (`sonar`, the vendor's own per-call bill, which has no table rate) keeps
+the line's `cost_usd` by carrying it on `UsageRecord.authoritativeCostUsd`,
+which `upsertRecords` stores with `cost_source = "reported"` and `reprice`
+leaves untouched. A row with no model and `cost_source:"none"` stays null.
+
+The collector also recovers from a truncated or rotated file: when the file is
+shorter than the persisted offset it resumes from the top instead of stalling
+past EOF (safe because the upsert is idempotent). The other offset collectors
+still simply hold their offset in that case.
+
 ### LiteLLM bridge (retired)
 
 The local LiteLLM proxy and its logger were removed on 2026-09-04; the collector
