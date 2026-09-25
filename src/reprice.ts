@@ -15,8 +15,11 @@ import type { Grain } from "./types.ts";
  * holds its own copy of `cost_usd`, and a local-only fix would leave the two
  * disagreeing.
  *
- * A vendor-reported row (`cost_source = 'reported'`) is skipped outright —
- * that cost came from the vendor, not from our table.
+ * A vendor-reported row (`cost_source = 'reported'`) is skipped outright: its
+ * cost_usd came straight from the vendor's own gateway (research-gateway's
+ * `sonar` rows, sideclaw-iu's `usage.cost`), not this table, and computeCost
+ * has no way to reproduce that figure from tokens alone — recomputing it
+ * would silently replace a real reported cost with a list-price guess.
  *
  * A row the current table cannot price is left exactly as it is. Rates get
  * *removed* from PRICING when a collector is retired (the audio-proxy models
@@ -59,6 +62,8 @@ export interface RepriceResult {
   changed: number;
   /** Priced rows whose model has no rate today — deliberately left untouched. */
   preserved: number;
+  /** Rows with a source-reported cost (cost_source = "reported") — never recomputed. */
+  reportedSkipped: number;
   dryRun: boolean;
   models: RepriceModelSummary[];
 }
@@ -82,13 +87,17 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
   const byModel = new Map<string, RepriceModelSummary>();
   const updates: Array<{ id: number; usd: number | null; source: string }> = [];
   let preserved = 0;
+  let reportedSkipped = 0;
 
   for (const row of rows) {
     // A vendor-reported cost (cost_source 'reported', e.g. research-gateway's
-    // sonar rows) is not ours to recompute: the table has no rate for a
-    // per-call vendor bill, so leave the row exactly as it landed.
-    if (row.cost_source === "reported") continue;
-
+    // sonar rows or sideclaw-iu's gateway `usage.cost`) is not ours to
+    // recompute: the table has no rate for a per-call vendor bill, so leave
+    // the row exactly as it landed.
+    if (row.cost_source === "reported") {
+      reportedSkipped++;
+      continue;
+    }
     const cost = computeCost(row.model_norm, {
       input: row.input_tokens,
       output: row.output_tokens,
@@ -143,6 +152,7 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
     scanned: rows.length,
     changed: updates.length,
     preserved,
+    reportedSkipped,
     dryRun,
     models: [...byModel.values()]
       .filter((m) => m.changed > 0)
@@ -155,8 +165,12 @@ export function formatReprice(result: RepriceResult): string {
     result.preserved > 0
       ? `\n${result.preserved} priced rows kept as-is: their model has no rate in the current table`
       : "";
+  const reportedNote =
+    result.reportedSkipped > 0
+      ? `\n${result.reportedSkipped} rows kept as-is: cost_source = "reported" (source's own gateway cost)`
+      : "";
   if (result.changed === 0) {
-    return `reprice: ${result.scanned} rows scanned, everything already matches the current rates${preservedNote}`;
+    return `reprice: ${result.scanned} rows scanned, everything already matches the current rates${preservedNote}${reportedNote}`;
   }
   const lines = [
     `${"model".padEnd(24)} ${"rows".padStart(7)} ${"was".padStart(11)} ${"now".padStart(11)} ${"delta".padStart(11)}`,
@@ -174,7 +188,8 @@ export function formatReprice(result: RepriceResult): string {
   lines.push(
     `${verb} ${result.changed} of ${result.scanned} rows` +
       (result.dryRun ? " (dry run — nothing written)" : "; cleared synced_at so `sync` re-pushes them") +
-      preservedNote,
+      preservedNote +
+      reportedNote,
   );
   return lines.join("\n");
 }

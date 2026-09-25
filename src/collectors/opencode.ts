@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getSessionLane } from "../models.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
 
 // OpenCode (sst/opencode) was re-added 2026-09-23 (v1.18.30). Re-verified
@@ -147,6 +148,12 @@ function toMessageRecord(row: MessageRow): UsageRecord | null {
     // multi-directory session is attributed correctly); fall back to the
     // session's directory when a message predates `path` being recorded.
     project: data.path?.cwd ?? row.directory ?? null,
+    // sideclaw's dispatch/OpenCode lane writes a session_env line keyed by
+    // this same opencode session id (ses_…) with a `lane` field — the same
+    // join claude-code.ts uses for its own sessions, just against a different
+    // id namespace. undefined (no line at all) collapses to null here same as
+    // a manual opencode run.
+    subTool: getSessionLane(row.session_id) ?? null,
     inputTokens: tokens.input ?? 0,
     outputTokens: tokens.output ?? 0,
     cacheReadTokens: tokens.cache?.read ?? 0,

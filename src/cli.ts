@@ -8,6 +8,7 @@ import {
   sessionBillingAudit,
   sourceStatus,
   stats,
+  unpricedByModel,
   type GroupBy,
 } from "./report.ts";
 import { formatReprice, reprice } from "./reprice.ts";
@@ -77,6 +78,10 @@ async function main(): Promise<number> {
       }
       const failed = summary.results.some((r) => r.status === "error");
       process.stdout.write(`\ndb: ${dbPath()}\n${formatRunSummary(summary)}\n`);
+      if (summary.unpriced.length > 0) {
+        const breakdown = summary.unpriced.map((m) => `${m.model}=${m.rows}`).join(" ");
+        process.stdout.write(`unpriced by model: ${breakdown}\n`);
+      }
       return failed ? 1 : 0;
     }
 
@@ -105,6 +110,12 @@ async function main(): Promise<number> {
 
     if (cmd === "sources") {
       process.stdout.write(`${formatSources(sourceStatus(db))}\n`);
+      const unpriced = unpricedByModel(db);
+      if (unpriced.length > 0) {
+        const total = unpriced.reduce((sum, m) => sum + m.rows, 0);
+        const breakdown = unpriced.map((m) => `${m.model}=${m.rows}`).join(" ");
+        process.stdout.write(`\nunpriced: ${total} rows, cost_source='none' (${breakdown})\n`);
+      }
       return 0;
     }
 

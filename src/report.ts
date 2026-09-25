@@ -57,6 +57,29 @@ export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): 
     .all();
 }
 
+export interface UnpricedModel {
+  model: string;
+  rows: number;
+}
+
+/**
+ * Rows the current pricing table can't price at all (cost_source = 'none') —
+ * a new/unrecognized model id silently costs $0 otherwise, which looks
+ * identical to a genuinely free local model. Grouped by model so the ingest
+ * summary can name the culprit instead of just a count.
+ */
+export function unpricedByModel(db: Database): UnpricedModel[] {
+  return db
+    .query<UnpricedModel, []>(
+      `SELECT coalesce(model_norm, '(unknown)') AS model, count(*) AS rows
+       FROM usage_record
+       WHERE cost_source = 'none'
+       GROUP BY model
+       ORDER BY rows DESC`,
+    )
+    .all();
+}
+
 export interface SourceStatus {
   source: string;
   records: number;

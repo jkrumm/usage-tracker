@@ -107,18 +107,17 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
   return sessionEnvs.get(sessionId)?.lane;
 }
 
-// Fallback for the case getSessionLane can never solve: every sideclaw worker
-// session_env line is written by sideclaw's own writeSessionEnv() (needed
-// because workers run with disableAllHooks, so the real SessionStart hook that
-// carries `lane` never fires for them) — and that write's payload is
-// `{ session, base_url, model, backend }`, no `lane` field at all, even though
-// sideclaw already computes `USAGE_LANE` for the child process. So
-// getSessionLane() resolves the *session id* fine (billing classifies
-// correctly) but always returns null for the lane itself, for every sideclaw
-// row. (The precise fix is one line in sideclaw's session-runner.ts:
-// writeSessionEnv's `data` object needs `lane: usageLane(tool)` alongside
-// `base_url`/`model`/`backend` — not applied here, this repo doesn't own that
-// file.)
+// Fallback for the case getSessionLane can never solve. Until 2026-09-24,
+// sideclaw's own writeSessionEnv() (needed because workers run with
+// disableAllHooks, so the real SessionStart hook that carries `lane` never
+// fires for them) wrote `{ session, base_url, model, backend }` with no `lane`
+// field at all, so getSessionLane() resolved the *session id* fine (billing
+// classified correctly) but always returned null for the lane, for every
+// sideclaw row. sideclaw's writeSessionEnv now includes `lane` too, so a
+// going-forward sideclaw session_env line resolves its lane directly and this
+// fallback only matters for a session with no session_env line at all
+// (pruned, or older than the fix) — stampLane (claude-code.ts) only calls it
+// in that case, never when a line exists with a null lane.
 //
 // sideclaw independently writes `~/.local/share/usage-tracker/sideclaw-sessions.jsonl`,
 // one record per worker with `{ tool, project, tsStart, tsEnd }` — but keyed by
@@ -317,6 +316,12 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * but bare `claude-*` ids, so a non-Anthropic or `-eu` id is "iu" and a bare
  * Claude id defaults to "max" — precision isn't critical here, only not being
  * obviously wrong.
+ *
+ * The id check runs first and wins outright: Max can never serve a
+ * non-Anthropic id, so a model only IU can serve (DeepSeek/GLM/Gemini/GPT/
+ * MiniMax/…, or the `-eu` twin) is always "iu" even when the session_env line
+ * reports an empty base_url — a stale/mis-joined line must not mislabel spend
+ * that is provably not Max's to bill.
  */
 export function classifyBilling(
   source: string,
@@ -325,9 +330,10 @@ export function classifyBilling(
   backend?: string | null,
 ): Billing {
   if (source === "claude-code") {
+    if (isIuOnlyModel(rawModel)) return "iu";
     const baseUrl = getSessionBaseUrl(sessionId);
     if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
-    return isIuOnlyModel(rawModel) ? "iu" : "max";
+    return "max";
   }
 
   // sideclaw-sessions carries its own backend ("max" | "iu") straight from the

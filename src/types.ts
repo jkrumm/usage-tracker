@@ -60,12 +60,14 @@ export interface UsageRecord {
   durationMs?: number | null;
   /**
    * Vendor-reported cost that must be stored verbatim instead of being derived
-   * from tokens — research-gateway's `sonar` rows, where the vendor bills per
-   * call rather than per token and the central table has no rate to apply.
-   * When set, upsertRecords stores it with `cost_source = "reported"`; when
-   * omitted the row is priced from the token counts as usual. Do not set this
-   * for a source whose cost the pricing table can compute — opencode and
-   * modelpick keep their raw vendor cost in `raw` for inspection only.
+   * from tokens — research-gateway's `sonar` rows (billed per call, not per
+   * token) and sideclaw-iu's gateway `usage.cost` (more accurate than this
+   * table's list-price proxy for its Bedrock/Azure-routed models). When set,
+   * upsertRecords stores it with `cost_source = "reported"` and reprice.ts
+   * never rewrites it; when omitted the row is priced from the token counts as
+   * usual. Do not set this for a source whose cost the pricing table can
+   * compute — opencode and modelpick keep their raw vendor cost in `raw` for
+   * inspection only.
    */
   authoritativeCostUsd?: number | null;
   /**

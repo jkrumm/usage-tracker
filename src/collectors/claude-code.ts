@@ -192,9 +192,11 @@ function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>):
 
 /** Stamp sub_tool from the session's USAGE_LANE, same rule for every record
  * this file emits — never overwriting a subTool already set. Falls back to
- * sideclaw's own time-window attribution log when the session_env join can't
- * supply a lane (every sideclaw worker session today — see getSideclawLane's
- * doc comment in models.ts for why). */
+ * sideclaw's own time-window attribution log only when there is NO session_env
+ * line for this session at all (getSessionLane returns undefined) — a session
+ * whose line exists but carries no lane (a manual `c`/`ca` session with no
+ * USAGE_LANE set) must stay unattributed rather than being matched against an
+ * unrelated, merely time-adjacent sideclaw window. */
 function stampLane(record: UsageRecord, sessionId: string | undefined): void {
   if (record.subTool) return;
   const lane = getSessionLane(sessionId);
@@ -202,8 +204,10 @@ function stampLane(record: UsageRecord, sessionId: string | undefined): void {
     record.subTool = lane;
     return;
   }
-  const fallback = getSideclawLane(record.ts, record.project);
-  if (fallback) record.subTool = fallback;
+  if (lane === undefined) {
+    const fallback = getSideclawLane(record.ts, record.project);
+    if (fallback) record.subTool = fallback;
+  }
 }
 
 function parseLine(

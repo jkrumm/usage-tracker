@@ -198,7 +198,7 @@ describe("claude-code two-root collector", () => {
     expect(record?.subTool).toBeFalsy();
   });
 
-  test("a session_env line without a lane falls back to the sideclaw-sessions.jsonl time-window join", async () => {
+  test("no session_env line at all falls back to the sideclaw-sessions.jsonl time-window join", async () => {
     const line = `${JSON.stringify({
       type: "assistant",
       requestId: "worker-req",
@@ -212,8 +212,45 @@ describe("claude-code two-root collector", () => {
       },
     })}\n`;
     writeFileSync(join(localDir, "local-session.jsonl"), line);
-    // session_env line found, but no `lane` — exactly what sideclaw's own
-    // writeSessionEnv() produces (see getSideclawLane's doc comment).
+    // No session_env line for session-1 at all (pruned, or older than the
+    // hook) — getSessionLane returns undefined, the only case the fallback
+    // should engage for.
+    writeFileSync(
+      process.env.SIDECLAW_SESSIONS_LOG!,
+      `${JSON.stringify({
+        tool: "review:router",
+        project: "/Users/jkrumm/SourceRoot/sideclaw",
+        tsStart: "2026-09-24T18:22:19.444Z",
+        tsEnd: "2026-09-24T18:22:35.797Z",
+      })}\n`,
+    );
+
+    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+    const record = result.records.find((r) => r.sourceId === "worker-req");
+    expect(record?.subTool).toBe("sideclaw:review");
+  });
+
+  test("a session_env line without a lane does NOT fall back, even when a sideclaw window matches", async () => {
+    // The bug this guards against: a manual `c`/`ca` session (session_env line
+    // exists, no USAGE_LANE set) whose timestamp happens to fall inside an
+    // unrelated, concurrent sideclaw window must stay unattributed rather than
+    // being mislabeled as that sideclaw tool.
+    const line = `${JSON.stringify({
+      type: "assistant",
+      requestId: "manual-req",
+      sessionId: "session-1",
+      timestamp: "2026-09-24T18:22:30.000Z",
+      cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+      message: {
+        id: "msg-manual-req",
+        model: "claude-sonnet-5",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    })}\n`;
+    writeFileSync(join(localDir, "local-session.jsonl"), line);
     writeFileSync(
       join(localLogsDir, "2026-09-10.jsonl"),
       `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: "https://iu" } })}\n`,
@@ -232,8 +269,8 @@ describe("claude-code two-root collector", () => {
 
     const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
 
-    const record = result.records.find((r) => r.sourceId === "worker-req");
-    expect(record?.subTool).toBe("sideclaw:review");
+    const record = result.records.find((r) => r.sourceId === "manual-req");
+    expect(record?.subTool).toBeFalsy();
   });
 
   test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {

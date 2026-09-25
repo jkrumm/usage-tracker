@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from "../types.ts";
+import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRecord } from "../types.ts";
 
 // Reads offset-incrementally from the NDJSON log sideclaw's `recordIuUsage`
 // (server/lib/iu-openai.ts) appends to for its multimodal tools (`read_image`,
@@ -10,7 +10,10 @@ import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } fr
 // LiteLLM bridge and the `claude -p` session path, so neither the litellm nor
 // claude-code collector ever sees them. One line per request:
 // { ts, source, request_id, tool, model, billing, input_tokens, output_tokens,
-//   total_tokens, latency_ms, bytes }.
+//   cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, outcome,
+//   latency_ms, bytes }. `cache_read_tokens`/`cache_write_tokens`, `cost_usd`
+//   and `outcome` were added 2026-09-25 — older rows lack them and are treated
+//   as 0/null/"ok".
 //
 // The line's own `billing:"iu"` is ignored — billing is derived centrally
 // (models.ts classifyBilling), not plumbed through from the source. `bytes` is
@@ -21,6 +24,20 @@ import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } fr
 // output) in normalizeUsage and emits it here. Rows written before that field
 // existed lack it and default to 0, understating those historical Gemini rows;
 // their `total_tokens` survives in `raw.totalTokens` if they ever need fixing up.
+//
+// `input_tokens` is OpenAI-convention total prompt tokens, INCLUSIVE of both
+// cache_read_tokens and cache_write_tokens — same nested-not-additive shape
+// codex.ts already handles for Codex's `input_tokens`/`cached_input_tokens`/
+// `cache_write_input_tokens`, so the two are split back out here the same way
+// to keep this table's additive contract (input + output + cacheRead +
+// cacheWrite + reasoning).
+//
+// `cost_usd`, when a number, is the gateway's own reported cost for the
+// request — more accurate than this table's list-price proxy for the
+// Bedrock/Azure-routed models sideclaw calls (gemini, gpt-image, gpt-5.6-*).
+// It's carried through as `authoritativeCostUsd`; db.ts's upsertRecords uses
+// it verbatim (cost_source = "reported") instead of computeCost, and
+// reprice.ts never touches a "reported" row.
 
 const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "sideclaw-iu.jsonl");
 
@@ -32,7 +49,11 @@ interface SideclawIuLine {
   input_tokens?: number;
   output_tokens?: number;
   reasoning_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   total_tokens?: number;
+  cost_usd?: number | null;
+  outcome?: string | null;
   latency_ms?: number | null;
   bytes?: number | null;
 }
@@ -102,6 +123,15 @@ function parseLine(line: string, log: Logger): UsageRecord | null {
   if (typeof obj.total_tokens === "number") raw.totalTokens = obj.total_tokens;
   if (typeof obj.bytes === "number") raw.bytes = obj.bytes;
 
+  // input_tokens is inclusive of both cache_read_tokens and cache_write_tokens
+  // (OpenAI convention) — split back out to keep this table's additive
+  // contract, same pattern as codex.ts's input_tokens/cached_input_tokens.
+  const cacheRead = num(obj.cache_read_tokens);
+  const cacheWrite = num(obj.cache_write_tokens);
+  const input = Math.max(0, num(obj.input_tokens) - cacheRead - cacheWrite);
+
+  const outcome: Outcome = obj.outcome === "error" ? "error" : "ok";
+
   return {
     sourceId: obj.request_id,
     grain: "message",
@@ -109,12 +139,14 @@ function parseLine(line: string, log: Logger): UsageRecord | null {
     model: obj.model ?? null,
     project: null,
     subTool: obj.tool ?? null,
-    inputTokens: num(obj.input_tokens),
+    inputTokens: input,
     outputTokens: num(obj.output_tokens),
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
     reasoningTokens: num(obj.reasoning_tokens),
     durationMs: typeof obj.latency_ms === "number" ? obj.latency_ms : null,
+    outcome,
+    authoritativeCostUsd: typeof obj.cost_usd === "number" ? obj.cost_usd : null,
     raw: Object.keys(raw).length > 0 ? raw : undefined,
   };
 }

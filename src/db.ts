@@ -136,9 +136,11 @@ export function upsertRecords(
   const tx = db.transaction((rows: UsageRecord[]) => {
     for (const r of rows) {
       const modelNorm = normalizeModel(r.model);
-      // A vendor-reported cost (research-gateway's sonar rows) is authoritative
-      // and stored verbatim; everything else is priced from tokens centrally.
-      // The line's own cost is never trusted for a source that has a table rate.
+      // A vendor-reported cost (research-gateway's sonar rows, sideclaw-iu's
+      // gateway `usage.cost`) is authoritative — more accurate than this
+      // table's pricing for a per-call vendor bill or a Bedrock/Azure-routed
+      // model with no real cost field — and stored verbatim; everything else
+      // is priced from tokens centrally.
       const cost =
         r.authoritativeCostUsd != null
           ? { usd: r.authoritativeCostUsd, source: "reported" as const }

@@ -108,15 +108,21 @@ export const PRICING: Record<string, Rate> = {
   // argo, audio-gateway, image-gen, warden). Retired: `deepseek-v4-flash`
   // above stays for historical rows priced before the swap; this is a
   // separate model, not a rename, so normalizeModel must not collapse the
-  // two onto one key. Rates re-measured 2026-09-24 against the gateway's own
-  // `usage.cost` on /openai/v1/chat/completions (solved exactly, 0 residual):
-  // 7780 uncached input + 2 output = $0.0011682 -> input $0.15/M; 44 in + 79
-  // out (77 reasoning) = $0.000054 -> output $0.60/M; 7552 cached + 228
-  // uncached + 2 out = $0.000058056 -> cacheRead $0.003/M. Down sharply from
-  // the 2026-09-13 figures (0.5/1.5/0.05) — a real gateway repricing, not a
-  // correction. Cache write still not surcharged — the gateway bills a
-  // cache-write request at the ordinary input rate — so cacheWrite = input.
-  "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
+  // two onto one key. Two measurements against the gateway's own `usage.cost`
+  // on /openai/v1/chat/completions, both solved exactly (0 residual):
+  // 2026-09-24 ~18:50Z: 7780 uncached input + 2 output = $0.0011682 -> input
+  // $0.15/M; 44 in + 79 out (77 reasoning) = $0.000054 -> output $0.60/M; 7552
+  // cached + 228 uncached + 2 out = $0.000058056 -> cacheRead $0.003/M.
+  // 2026-09-25 06:46Z (peak): 3634 uncached input + 16 output = $0.0011094 ->
+  // input $0.30/M, output $1.20/M; 3456 cached + 178 uncached + 20 out =
+  // $0.000098136 -> cacheRead $0.006/M. Exactly double the prior evening's
+  // figure. Table set to the PEAK rates below — likely cause is DeepSeek-style
+  // off-peak pricing (50% off 16:30-00:30 UTC), unconfirmed; a re-measure
+  // inside tonight's off-peak window is scheduled to confirm before any
+  // time-of-day pricing is implemented. Cache write still not surcharged — the
+  // gateway bills a cache-write request at the ordinary input rate — so
+  // cacheWrite = input.
+  "deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3 },
   // The following ten (glm-5.3-flash through qwen3.7-max) are the rest of the
   // IU unified endpoint's Requesty-routed catalog, measured 2026-08-28 the
   // same way — see the file header for the method. cacheWrite = input
@@ -298,8 +304,13 @@ export interface CostResult {
   /**
    * "computed" — exact rate; "family" — Anthropic tier fallback (approximate,
    * a new model at its tier's list price); "none" — unpriced, cost is null.
+   * "reported" is never produced here — it's assigned directly by
+   * upsertRecords (db.ts) when a record carries its own `authoritativeCostUsd`,
+   * bypassing this function entirely. Included in the union so every consumer
+   * of a stored row's cost_source (reprice.ts, report.ts) type-checks against
+   * the full set of values the column can actually hold.
    */
-  source: "computed" | "family" | "none";
+  source: "computed" | "family" | "reported" | "none";
 }
 
 /**

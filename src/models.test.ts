@@ -239,11 +239,12 @@ describe("getSessionLane", () => {
   });
 });
 
-// getSideclawLane is the fallback claude-code.ts's stampLane uses when
-// getSessionLane can't supply a lane — every sideclaw worker session today,
-// since sideclaw's own session_env write carries no `lane` field (see the
-// doc comment on getSideclawLane in models.ts). It joins by time window
-// instead, against sideclaw's independent attribution log.
+// getSideclawLane is the fallback claude-code.ts's stampLane uses only when a
+// session has no session_env line at all (see the doc comment on
+// getSideclawLane in models.ts) — sideclaw's own session_env write has
+// carried `lane` since 2026-09-24, so this fallback now only matters for a
+// pruned or pre-fix line. It joins by time window instead, against sideclaw's
+// independent attribution log.
 
 describe("getSideclawLane", () => {
   let dir: string;

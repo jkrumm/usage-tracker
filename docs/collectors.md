@@ -248,14 +248,19 @@ ingest and never flips claude-code's own `ok`/`note` (its own
 
 ### Sideclaw direct IU calls (`sideclaw-iu`)
 
-sideclaw's multimodal tools (`read_image`, `read_drawing`, `generate_image`) and
-the `review` adversary critic call the IU OpenAI transport with plain `fetch` —
-no `claude -p` session, so no transcript. sideclaw's `recordIuUsage` appends one
-line per request to `~/.local/share/usage-tracker/sideclaw-iu.jsonl`
+sideclaw's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
+retired 2026-07, historical rows stay queryable) and the `review` adversary
+critic call the IU OpenAI transport with plain `fetch` — no `claude -p`
+session, so no transcript. sideclaw's `recordIuUsage` appends one line per
+request to `~/.local/share/usage-tracker/sideclaw-iu.jsonl`
 (`{ ts, request_id, tool, model, input_tokens, output_tokens, reasoning_tokens,
-latency_ms, bytes }`); the collector reads it by byte offset and maps `tool` to
+cache_read_tokens, cache_write_tokens, cost_usd, outcome, latency_ms, bytes }`;
+the last four added 2026-09-25, older rows lack them and are treated as
+0/null/"ok"); the collector reads it by byte offset and maps `tool` to
 `sub_tool`. Billing is derived centrally (always `iu`), the line's own
-`billing` field is ignored.
+`billing` field is ignored. A numeric `cost_usd` is the gateway's own reported
+cost and is stored verbatim as the row's cost (`cost_source = "reported"`),
+taking precedence over this table's pricing.
 
 ### research-gateway (`research-gateway`)
 
@@ -314,13 +319,17 @@ heavy parallel fan-out). Review's three internal phases are tagged separately
 as `review:router` / `review:angle` / `review:synthesis`.
 
 `claude-code.ts`'s `stampLane()` uses the same log for the identical reason,
-via `getSideclawLane()` in `models.ts`: every sideclaw worker's `session_env`
-line (written by sideclaw itself, since `disableAllHooks` skips the real
-SessionStart hook) carries `base_url` but never `lane`, so the id-based join
-in `getSessionLane()` always comes back empty for these rows. The fallback
-additionally prefers a window whose `project` matches the claude-code row's
-own `cwd` over the narrowest-window heuristic above — claude-code rows carry
-a cwd, litellm rows don't.
+via `getSideclawLane()` in `models.ts`, but only when a session has no
+`session_env` line at all: sideclaw's own `session_env` write (since
+`disableAllHooks` skips the real SessionStart hook) has carried `lane`
+alongside `base_url` since 2026-09-24, so a going-forward sideclaw worker
+resolves its lane straight from `getSessionLane()` like any other spawner-set
+`USAGE_LANE`. This fallback only matters for a pruned or pre-fix line; it is
+never used when a line exists but its lane is null, which would otherwise
+mislabel a plain manual session that happens to overlap a sideclaw window in
+time. The fallback additionally prefers a window whose `project` matches the
+claude-code row's own `cwd` over the narrowest-window heuristic above —
+claude-code rows carry a cwd, litellm rows don't.
 
 Group by it with `make stats BY=sub_tool`.
 

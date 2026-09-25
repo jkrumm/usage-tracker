@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
+import { unpricedByModel, type UnpricedModel } from "./report.ts";
 import { sync } from "./sync.ts";
 import type { Collector } from "./types.ts";
 
@@ -17,6 +18,9 @@ export interface IngestSummary {
   results: SourceResult[];
   /** Rows pushed to Argo at the end of the run (0 when sync is disabled or failed). */
   synced: number;
+  /** Rows priced at nothing (cost_source = 'none'), by model — an unknown
+   * model id is otherwise indistinguishable from a genuinely free one. */
+  unpriced: UnpricedModel[];
 }
 
 export interface IngestOptions {
@@ -56,7 +60,8 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     log.error(`sync: ${msg}`);
   }
 
-  return { results, synced };
+  const unpriced = unpricedByModel(db);
+  return { results, synced, unpriced };
 }
 
 /**
@@ -64,17 +69,21 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
  * summary, not the liveness signal: the heartbeat reads the log's mtime, which
  * the per-source lines above already move. Fixed shape, one token per source:
  *
- *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … sync=12
+ *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … sync=12 unpriced=0
  *
  * `+new/seen` mirrors the per-source lines above it; a skipped or errored
- * source shows its status instead of counts.
+ * source shows its status instead of counts. `unpriced` is the total row count
+ * across every model with `cost_source = 'none'` (whole table, not just this
+ * run) — a nonzero value means some model id silently costs $0; `make sources`
+ * has the per-model breakdown.
  */
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
   const status = summary.results.some((r) => r.status === "error") ? "error" : "ok";
   const perSource = summary.results.map((r) =>
     r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
   );
-  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} sync=${summary.synced}`;
+  const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0);
+  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} sync=${summary.synced} unpriced=${unpricedTotal}`;
 }
 
 async function runOne(db: Database, c: Collector, opts: IngestOptions): Promise<SourceResult> {

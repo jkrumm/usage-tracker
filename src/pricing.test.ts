@@ -239,8 +239,10 @@ describe("computeCost", () => {
   });
 
   test("deepseek-v4.1-flash has its own rate, distinct from the retired deepseek-v4-flash", () => {
-    // Re-measured 2026-09-24 (0.15/0.6/0.003/0.15) — down sharply from the
-    // 2026-09-13 figures pinned here previously (0.5/1.5/0.05/0.5).
+    // Re-measured 2026-09-25 06:46Z (peak, 0.30/1.20/0.006/0.30) — exactly
+    // double the prior evening's 2026-09-24 figures (0.15/0.6/0.003/0.15),
+    // pinned here previously; see pricing.ts's inline notes on the off-peak
+    // hypothesis.
     const v41 = computeCost("deepseek-v4.1-flash", {
       input: 1_000_000,
       output: 1_000_000,
@@ -250,7 +252,7 @@ describe("computeCost", () => {
       reasoning: 0,
       grain: "message",
     });
-    expect(v41.usd).toBeCloseTo(0.15 + 0.6 + 0.003 + 0.15, 10);
+    expect(v41.usd).toBeCloseTo(0.3 + 1.2 + 0.006 + 0.3, 10);
     expect(v41.source).toBe("computed");
 
     const v4 = computeCost("deepseek-v4-flash", {
