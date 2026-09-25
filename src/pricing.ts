@@ -55,6 +55,27 @@ export interface Rate {
    * + cache-read + cache-write — not the additive sum including output.
    */
   long?: { threshold: number; rate: Rate };
+  /**
+   * A cheaper schedule inside a daily UTC window (DeepSeek-style off-peak
+   * pricing). `from`/`to` are "HH:MM" UTC; the window may wrap midnight. Only
+   * applied when the row carries a timestamp.
+   */
+  offPeak?: { from: string; to: string; rate: Rate };
+}
+
+function minutesUtc(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  return (h ?? 0) * 60 + (m ?? 0);
+}
+
+/** Whether an ISO timestamp falls inside a daily UTC window (wraps midnight). */
+export function inUtcWindow(ts: string, from: string, to: string): boolean {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return false;
+  const t = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const a = minutesUtc(from);
+  const b = minutesUtc(to);
+  return a <= b ? t >= a && t < b : t >= a || t < b;
 }
 
 /** OpenAI's published long-context boundary for GPT-5.6+ and GPT-6. */
@@ -122,7 +143,23 @@ export const PRICING: Record<string, Rate> = {
   // time-of-day pricing is implemented. Cache write still not surcharged — the
   // gateway bills a cache-write request at the ordinary input rate — so
   // cacheWrite = input.
-  "deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3 },
+  // Off-peak confirmed 2026-09-25 17:17Z: 3620 uncached in + 1 out = $0.0005436
+  // -> input $0.15/M; a cached pair (178 uncached + 3456 cached, 24 vs 35 out)
+  // -> output $0.60/M, cacheRead $0.003/M: exactly half the 06:46Z peak rate,
+  // and equal to 09-24's ~18:50Z figure. Window assumed to be DeepSeek's
+  // published 16:30-00:30 UTC; measured inside it (17:17Z, ~18:50Z) and outside
+  // it (06:46Z), boundaries not probed.
+  "deepseek-v4.1-flash": {
+    input: 0.3,
+    output: 1.2,
+    cacheRead: 0.006,
+    cacheWrite: 0.3,
+    offPeak: {
+      from: "16:30",
+      to: "00:30",
+      rate: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
+    },
+  },
   // The following ten (glm-5.3-flash through qwen3.7-max) are the rest of the
   // IU unified endpoint's Requesty-routed catalog, measured 2026-08-28 the
   // same way — see the file header for the method. cacheWrite = input
@@ -279,6 +316,8 @@ export interface TokenCounts {
    * 'message', where the token counts genuinely describe one request.
    */
   grain: Grain;
+  /** Row timestamp (ISO), for time-of-day schedules. Omitted = peak rate. */
+  ts?: string;
 }
 
 /**
@@ -332,7 +371,10 @@ function resolveRate(modelNorm: string): { rate: Rate; source: "computed" | "fam
 export function computeCost(modelNorm: string | null, t: TokenCounts): CostResult {
   const resolved = modelNorm ? resolveRate(modelNorm) : null;
   if (!resolved) return { usd: null, source: "none" };
-  const base = resolved.rate;
+  const base =
+    resolved.rate.offPeak && t.ts && inUtcWindow(t.ts, resolved.rate.offPeak.from, resolved.rate.offPeak.to)
+      ? resolved.rate.offPeak.rate
+      : resolved.rate;
 
   // Long-context schedules key off the prompt size, so this has to happen per
   // record rather than per model. Without it a >272k call silently bills at

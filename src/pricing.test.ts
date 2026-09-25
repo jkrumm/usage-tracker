@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeCost } from "./pricing.ts";
+import { computeCost, inUtcWindow } from "./pricing.ts";
 import type { TokenCounts } from "./pricing.ts";
 
 // computeCost is where the 5m/1h cache-write split actually lands: miss the
@@ -311,5 +311,24 @@ describe("computeCost tier fallback", () => {
 
   test("a non-claude model containing a tier word does not fall back", () => {
     expect(computeCost("opus-clone-v1", oneMillionIn)).toEqual({ usd: null, source: "none" });
+  });
+});
+
+describe("off-peak schedule (deepseek-v4.1-flash)", () => {
+  const t = { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0, grain: "message" as const };
+  test("peak outside 16:30-00:30 UTC", () => {
+    expect(computeCost("deepseek-v4.1-flash", { ...t, ts: "2026-09-25T06:46:00Z" }).usd).toBeCloseTo(0.3 + 1.2 + 0.006, 9);
+  });
+  test("off-peak inside the window, including after midnight", () => {
+    expect(computeCost("deepseek-v4.1-flash", { ...t, ts: "2026-09-25T17:17:00Z" }).usd).toBeCloseTo(0.15 + 0.6 + 0.003, 9);
+    expect(computeCost("deepseek-v4.1-flash", { ...t, ts: "2026-09-26T00:10:00Z" }).usd).toBeCloseTo(0.15 + 0.6 + 0.003, 9);
+    expect(computeCost("deepseek-v4.1-flash", { ...t, ts: "2026-09-26T00:30:00Z" }).usd).toBeCloseTo(0.3 + 1.2 + 0.006, 9);
+  });
+  test("no timestamp prices at peak", () => {
+    expect(computeCost("deepseek-v4.1-flash", t).usd).toBeCloseTo(0.3 + 1.2 + 0.006, 9);
+  });
+  test("inUtcWindow handles non-wrapping windows", () => {
+    expect(inUtcWindow("2026-09-25T10:00:00Z", "09:00", "11:00")).toBe(true);
+    expect(inUtcWindow("2026-09-25T11:00:00Z", "09:00", "11:00")).toBe(false);
   });
 });
