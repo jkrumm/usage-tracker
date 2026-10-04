@@ -1,4 +1,4 @@
-.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit typecheck install-agent uninstall-agent logs
+.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 
@@ -35,13 +35,26 @@ billing-audit: ## Per-session claude-code billing check vs. the live session_env
 typecheck: ## Type-check with tsc
 	bun run tsc --noEmit
 
+check: typecheck ## All local validation: type-check, then run the test suite
+	bun test
+
 install-agent: ## Install + start the 15-min ingest LaunchAgent
 	bash launchd/install-agent.sh
+
+deploy: install-agent ## Ship the default branch: (re)install + kickstart the LaunchAgent
+
+verify: ## Probe the running LaunchAgent (exit 0 = loaded, log fresh)
+	@launchctl print gui/$$(id -u)/$(LABEL) >/dev/null 2>&1 || { echo "verify: $(LABEL) not loaded"; exit 1; }
+	@log="$$HOME/Library/Logs/usage-tracker.log"; \
+	  [ -f "$$log" ] || { echo "verify: $$log missing"; exit 1; }; \
+	  age=$$(( $$(date +%s) - $$(stat -f %m "$$log") )); \
+	  [ "$$age" -le 1800 ] || { echo "verify: last output $${age}s old (limit 1800s)"; exit 1; }; \
+	  echo "verify: $(LABEL) loaded, last output $${age}s ago"
 
 uninstall-agent: ## Stop + remove the LaunchAgent
 	launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null || true
 	rm -f $$HOME/Library/LaunchAgents/$(LABEL).plist
 	@echo "removed $(LABEL)"
 
-logs: ## Tail the LaunchAgent logs (~/Library/Logs, never /tmp — macOS sweeps it)
-	tail -f $$HOME/Library/Logs/usage-tracker.log $$HOME/Library/Logs/usage-tracker.err
+logs: ## Tail the last 50 lines of the LaunchAgent logs (~/Library/Logs, never /tmp)
+	tail -n 50 $$HOME/Library/Logs/usage-tracker.log $$HOME/Library/Logs/usage-tracker.err
