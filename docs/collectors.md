@@ -8,7 +8,7 @@
 ### Claude Code billing classification
 
 The `claude-code` collector keeps every assistant row, whatever the model id —
-a `ca glm-5.3-flash` session or a sideclaw `iu` worker on DeepSeek leaves the
+a `ca <model>` session or a sideclaw `iu` worker on DeepSeek leaves the
 transcript as its only record. (Until 2026-09-07 the collector dropped every
 non-`claude-*` and `-eu` row, assuming the LiteLLM bridge had logged it; with
 the bridge gone that silently lost ~3.7k `glm-5.3-flash` rows in one week.) The

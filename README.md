@@ -49,7 +49,7 @@ distinguishable once merged — see "Machine attribution" below.
 |-|-|
 | `sideclaw:<tool>` (`sideclaw:review`, `sideclaw:dispatch`, `sideclaw:otel`, `sideclaw:check`) | sideclaw's `session-runner.ts`, one per routed tool |
 | `wave` | `rd wave` |
-| `bg` | `rd bg` |
+| `bg` | legacy — `rd bg` (removed 2026-10-04); historical rows only |
 | `warden` | warden-caused dispatch work |
 | *(unset)* | manual `c`/`ca`/`cs`/`cf` sessions — `sub_tool` stays null |
 
