@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,12 +11,28 @@ import type { Billing } from "./types.ts";
 // `lane` — whoever spawned the session's `USAGE_LANE` env var, if any — so
 // this one scan feeds both billing classification and sub_tool attribution.
 // Loaded lazily and cached for the life of the process (ingest is a
-// short-lived one-shot run).
+// short-lived one-shot run). The log files are pruned after 3 days, but herdr
+// panes run for longer — so when ingest registers the DB as a store
+// (useSessionEnvStore), every line seen is persisted in `session_env` and the
+// cache is built from the table merged with the live logs.
 interface SessionEnv {
   base_url: string | null;
   lane: string | null;
 }
 let sessionEnvs: Map<string, SessionEnv> | null = null;
+let sessionEnvStore: Database | null = null;
+
+/**
+ * Register the DB that persists session_env lines across log pruning. Drops the
+ * cache so the next lookup loads (and persists) against this store — still
+ * lazy, which matters: the claude-code collector rsyncs the iumac mirror logs
+ * at the top of collect(), and the load has to happen after that. With no store
+ * registered the logs are the only source, exactly as before.
+ */
+export function useSessionEnvStore(db: Database | null): void {
+  sessionEnvStore = db;
+  sessionEnvs = null;
+}
 
 /**
  * This machine's own session_env log dir. A function, not a frozen constant,
@@ -34,6 +51,7 @@ function localSessionLogDir(): string {
  */
 export function resetSessionBaseUrlsCacheForTest(): void {
   sessionEnvs = null;
+  sessionEnvStore = null;
 }
 
 // iumac sessions never wrote into this machine's log dir, so a MacBook
@@ -51,6 +69,41 @@ function sessionLogDirs(): string[] {
 }
 
 function loadSessionEnvs(): Map<string, SessionEnv> {
+  const logged = loadLoggedSessionEnvs();
+  if (!sessionEnvStore) return logged;
+  const db = sessionEnvStore;
+
+  const map = new Map<string, SessionEnv>();
+  try {
+    for (const row of db
+      .query<{ session: string; base_url: string | null; lane: string | null }, []>(
+        "SELECT session, base_url, lane FROM session_env",
+      )
+      .all()) {
+      map.set(row.session, { base_url: row.base_url, lane: row.lane });
+    }
+    // A log entry wins over the stored row for the same session: the latest
+    // SessionStart is the truth (a resume can change base_url or lane).
+    const upsert = db.prepare(
+      `INSERT INTO session_env (session, base_url, lane, seen_at)
+       VALUES ($session, $base_url, $lane, $seen_at)
+       ON CONFLICT (session) DO UPDATE SET
+         base_url=excluded.base_url, lane=excluded.lane, seen_at=excluded.seen_at`,
+    );
+    const seenAt = new Date().toISOString();
+    db.transaction(() => {
+      for (const [session, env] of logged) {
+        upsert.run({ $session: session, $base_url: env.base_url, $lane: env.lane, $seen_at: seenAt });
+      }
+    })();
+  } catch {
+    // never fail classification on a store error
+  }
+  for (const [session, env] of logged) map.set(session, env);
+  return map;
+}
+
+function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
   const map = new Map<string, SessionEnv>();
   for (const dir of sessionLogDirs()) {
     if (!existsSync(dir)) continue;
@@ -105,6 +158,18 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
   if (!sessionId) return undefined;
   if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
   return sessionEnvs.get(sessionId)?.lane;
+}
+
+/**
+ * The lane a session gets from its transcript `entrypoint` when nobody set a
+ * `USAGE_LANE`: an interactive CLI, a headless `claude -p` (sdk-cli), or the
+ * desktop app. null for a missing or unrecognised entrypoint.
+ */
+export function entrypointLane(entrypoint: string | null | undefined): string | null {
+  if (entrypoint === "cli") return "interactive";
+  if (entrypoint === "sdk-cli") return "headless";
+  if (entrypoint === "claude-desktop") return "desktop";
+  return null;
 }
 
 // Fallback for the case getSessionLane can never solve. Until 2026-09-24,
@@ -280,6 +345,12 @@ export function isBridgeRouted(rawModel: string | null, ts: string | null | unde
 }
 
 /**
+ * `message.model` of the line Claude Code synthesizes locally when a request
+ * fails outright — not a served id, so it says nothing about who pays.
+ */
+export const SYNTHETIC_MODEL = "<synthetic>";
+
+/**
  * An id the Max subscription can never serve: anything outside `claude-*`, or
  * the IU gateway's `-eu` EU-routed twin (Hermes still fails over to
  * `claude-sonnet-4-6-eu`, which is why normalizeModel keeps stripping it).
@@ -321,7 +392,9 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * non-Anthropic id, so a model only IU can serve (DeepSeek/GLM/Gemini/GPT/
  * MiniMax/…, or the `-eu` twin) is always "iu" even when the session_env line
  * reports an empty base_url — a stale/mis-joined line must not mislabel spend
- * that is provably not Max's to bill.
+ * that is provably not Max's to bill. The one exception is `<synthetic>`, the
+ * zero-token API-error row: it is not a served id at all, so it skips the id
+ * rule and follows the session base_url like any other row (default "max").
  */
 export function classifyBilling(
   source: string,
@@ -330,7 +403,7 @@ export function classifyBilling(
   backend?: string | null,
 ): Billing {
   if (source === "claude-code") {
-    if (isIuOnlyModel(rawModel)) return "iu";
+    if (rawModel !== SYNTHETIC_MODEL && isIuOnlyModel(rawModel)) return "iu";
     const baseUrl = getSessionBaseUrl(sessionId);
     if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
     return "max";

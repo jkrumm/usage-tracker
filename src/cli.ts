@@ -11,6 +11,7 @@ import {
   unpricedByModel,
   type GroupBy,
 } from "./report.ts";
+import { formatRelane, relane, scanEntrypoints } from "./relane.ts";
 import { formatReprice, reprice } from "./reprice.ts";
 import { sync } from "./sync.ts";
 
@@ -27,6 +28,8 @@ COMMANDS
   reprice                Re-cost stored rows against the current pricing table
     --model <norm>       Only this model_norm
     --dry-run            Report what would change without writing
+  relane                 Backfill claude-code sub_tool from transcript entrypoints (interactive/headless/desktop)
+    --dry-run            Report per old -> new lane counts and cost without writing
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
     --since <N>          Only the last N days
@@ -97,6 +100,12 @@ async function main(): Promise<number> {
         dryRun: rest.includes("--dry-run"),
       });
       process.stdout.write(`${formatReprice(result)}\n`);
+      return 0;
+    }
+
+    if (cmd === "relane") {
+      const result = relane(db, await scanEntrypoints(), { dryRun: rest.includes("--dry-run") });
+      process.stdout.write(`${formatRelane(result)}\n`);
       return 0;
     }
 

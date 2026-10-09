@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
+import { useSessionEnvStore } from "./models.ts";
 import { unpricedByModel, type UnpricedModel } from "./report.ts";
 import { sync } from "./sync.ts";
 import type { Collector } from "./types.ts";
@@ -42,6 +43,11 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
   if (opts.only && targets.length === 0) {
     throw new Error(`unknown source "${opts.only}"`);
   }
+
+  // Persist session_env lines in the DB so long-lived sessions keep their lane
+  // and base_url after the hook's log files are pruned. Lazy: nothing is read
+  // until the first lookup, which lands after claude-code has synced the mirror.
+  useSessionEnvStore(db);
 
   const results: SourceResult[] = [];
   for (const c of targets) {

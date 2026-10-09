@@ -1,9 +1,11 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   classifyBilling,
+  entrypointLane,
   getSessionBaseUrl,
   getSessionLane,
   getSideclawLane,
@@ -12,9 +14,11 @@ import {
   normalizeModel,
   resetSessionBaseUrlsCacheForTest,
   resetSideclawWindowsCacheForTest,
+  useSessionEnvStore,
 } from "./models.ts";
 import { PRICING } from "./pricing.ts";
 import { iumacLogsDir } from "./remote.ts";
+import { SCHEMA } from "./schema.ts";
 
 // normalizeModel is the join between a source's raw model string and the
 // PRICING table: miss here and the record silently prices as unknown (usd:
@@ -239,6 +243,95 @@ describe("getSessionLane", () => {
   });
 });
 
+// With the DB registered as a store, a session_env line outlives the log file
+// it came from — herdr panes run longer than the hook's 3-day retention.
+
+describe("session_env store", () => {
+  let localDir: string;
+  let db: Database;
+
+  const sessionEnvLine = (data: Record<string, unknown>) =>
+    `${JSON.stringify({ event: "session_env", data })}\n`;
+
+  beforeEach(() => {
+    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
+    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
+    db = new Database(":memory:");
+    db.exec(SCHEMA);
+    resetSessionBaseUrlsCacheForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    rmSync(localDir, { recursive: true, force: true });
+    resetSessionBaseUrlsCacheForTest();
+    db.close();
+  });
+
+  test("a line seen in run 1 still resolves lane and base_url in run 2 after its log file is gone", () => {
+    const logFile = join(localDir, "2026-10-06.jsonl");
+    writeFileSync(logFile, sessionEnvLine({ session: "wave-1", base_url: "https://iu.example", lane: "wave" }));
+    useSessionEnvStore(db);
+    expect(getSessionLane("wave-1")).toBe("wave");
+
+    rmSync(logFile);
+    resetSessionBaseUrlsCacheForTest();
+    useSessionEnvStore(db);
+
+    expect(getSessionLane("wave-1")).toBe("wave");
+    expect(getSessionBaseUrl("wave-1")).toBe("https://iu.example");
+    expect(classifyBilling("claude-code", "claude-sonnet-5", "wave-1")).toBe("iu");
+  });
+
+  test("a stored row with a NULL lane still means the line exists", () => {
+    const logFile = join(localDir, "2026-10-06.jsonl");
+    writeFileSync(logFile, sessionEnvLine({ session: "manual-1", base_url: null }));
+    useSessionEnvStore(db);
+    expect(getSessionLane("manual-1")).toBeNull();
+
+    rmSync(logFile);
+    resetSessionBaseUrlsCacheForTest();
+    useSessionEnvStore(db);
+
+    expect(getSessionLane("manual-1")).toBeNull();
+    expect(getSessionLane("never-seen")).toBeUndefined();
+  });
+
+  test("a log entry wins over the stored row for the same session", () => {
+    db.run("INSERT INTO session_env (session, base_url, lane, seen_at) VALUES ('s', NULL, 'bg', '2026-10-01')");
+    writeFileSync(join(localDir, "2026-10-06.jsonl"), sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
+    useSessionEnvStore(db);
+
+    expect(getSessionLane("s")).toBe("wave");
+    const row = db.query<{ lane: string }, []>("SELECT lane FROM session_env WHERE session = 's'").get();
+    expect(row?.lane).toBe("wave");
+  });
+
+  test("without a store nothing is persisted and a pruned line is gone", () => {
+    const logFile = join(localDir, "2026-10-06.jsonl");
+    writeFileSync(logFile, sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
+    expect(getSessionLane("s")).toBe("wave");
+    expect(db.query("SELECT 1 FROM session_env").all()).toHaveLength(0);
+
+    rmSync(logFile);
+    resetSessionBaseUrlsCacheForTest();
+    expect(getSessionLane("s")).toBeUndefined();
+  });
+});
+
+describe("entrypointLane", () => {
+  test("maps the three observed entrypoints and leaves anything else null", () => {
+    expect(entrypointLane("cli")).toBe("interactive");
+    expect(entrypointLane("sdk-cli")).toBe("headless");
+    expect(entrypointLane("claude-desktop")).toBe("desktop");
+    expect(entrypointLane("vscode")).toBeNull();
+    expect(entrypointLane(undefined)).toBeNull();
+    expect(entrypointLane(null)).toBeNull();
+  });
+});
+
 // getSideclawLane is the fallback claude-code.ts's stampLane uses only when a
 // session has no session_env line at all (see the doc comment on
 // getSideclawLane in models.ts) — sideclaw's own session_env write has
@@ -358,6 +451,13 @@ describe("classifyBilling", () => {
     expect(classifyBilling("claude-code", "claude-sonnet-5", "expired-session")).toBe("max");
     expect(classifyBilling("claude-code", "glm-5.3-flash", "expired-session")).toBe("iu");
     expect(classifyBilling("claude-code", "claude-sonnet-4-6-eu", "expired-session")).toBe("iu");
+  });
+
+  test("<synthetic> is not an IU-only id: it follows the session base_url, default max", () => {
+    expect(classifyBilling("claude-code", "<synthetic>", "max-session")).toBe("max");
+    expect(classifyBilling("claude-code", "<synthetic>", "iu-session")).toBe("iu");
+    expect(classifyBilling("claude-code", "<synthetic>", "expired-session")).toBe("max");
+    expect(classifyBilling("claude-code", "<synthetic>", undefined)).toBe("max");
   });
 
   test("every other source bills iu", () => {

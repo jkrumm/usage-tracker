@@ -27,11 +27,22 @@ Haiku inside a `ca` session), sharing that session's `sessionId`.
 `dotfiles/hooks/notify.ts` logs `{ event: "session_env", session, base_url }`
 once per `SessionStart` to `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3
 days), and `getSessionBaseUrl()` joins a record's `sessionId` against that log —
-a non-empty `base_url` means `iu`, empty means `max`. When the line is missing
-(expired, or older than the hook) the id decides the only way it can: Max serves
+a non-empty `base_url` means `iu`, empty means `max`. herdr panes outlive the
+3-day retention, so `runIngest` registers the DB as a store
+(`useSessionEnvStore`): the first lookup upserts every log line into the
+`session_env` table (`session`, `base_url`, `lane`, `seen_at`) and builds the
+cache from table rows merged with the log entries, a log entry winning for the
+same session (a resume's latest SessionStart is the truth). The load stays lazy
+so it lands after the iumac log mirror is synced. A stored row with a NULL lane
+still counts as "line exists". When there is no line anywhere (never logged, or
+pruned before this table existed) the id decides the only way it can: Max serves
 nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `iu` and a
-bare Claude id defaults to `max` (going-forward correctness matters here, not
-historical precision).
+bare Claude id defaults to `max`.
+
+`<synthetic>`, the zero-token model id of an API-error row, is the exception to
+the id rule: it is not a served id, so it follows the session `base_url` and
+defaults to `max`. (Before, it counted as non-`claude*` and billed `iu` inside
+Max sessions.)
 
 The `-eu` suffix (`claude-sonnet-4-6-eu`) is the IU gateway's EU-routed twin of
 a Claude model, same rate card — `normalizeModel` keeps stripping it because it
@@ -52,7 +63,7 @@ seen in that session (more than one distinct `billing` per session should
 never happen — flagged as `MULTI-BILLING`), and cross-checks the stored
 `billing` against a live re-read of the `session_env` log, flagging
 `MISMATCH` when they disagree (only meaningful while the log is still inside
-its 3-day retention window).
+its 3-day retention window; it reads the live log, not the `session_env` table).
 
 ### MacBook (iumac) mirror
 
@@ -186,6 +197,14 @@ so the collector degrades gracefully instead of going dark. Both queries
 re-read their table whole every run and reconcile by upsert, same as before
 the re-add — cheap given the small DB and the 15-min LaunchAgent tick, and
 tolerant of a message row updating in place mid-stream.
+
+`sub_tool` is `getSessionLane(session_id) || "interactive"`: a sideclaw
+dispatch writes a `session_env` line keyed by the `ses_…` id with its lane; no
+line means a manual `oc` run or an opencode wave pane, both interactive TUIs.
+The fallback must be a string, not null — the table is re-read whole every run,
+so a null would make the upsert erase a sideclaw lane once its log line is
+pruned and not yet in the `session_env` table (only rows since 2026-10-06 still
+carry sideclaw lanes).
 
 ### modelpick benchmark spend (`modelpick`)
 
@@ -330,6 +349,34 @@ mislabel a plain manual session that happens to overlap a sideclaw window in
 time. The fallback additionally prefers a window whose `project` matches the
 claude-code row's own `cwd` over the narrowest-window heuristic above —
 claude-code rows carry a cwd, litellm rows don't.
+
+After the session lane and the window fallback, `stampLane()` falls back to the
+transcript's `entrypoint` (on every line, also kept as `raw.entrypoint`):
+`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`,
+anything else stays null (`entrypointLane()` in `models.ts`). Precedence is
+explicit session lane, then the sideclaw window, then the entrypoint lane. The
+window fallback only runs when there is no `session_env` line *and* the
+entrypoint is `sdk-cli` or absent: sideclaw workers are always `claude -p`, so a
+`cli` or `claude-desktop` session can never be one. Without that guard, a
+days-old herdr pane whose line was pruned got a random `sideclaw:*` lane from
+whichever window its rows overlapped, and lost its `wave`/`fleet` lane.
+
+`make relane` (`relane` in `src/cli.ts`, logic in `src/relane.ts`; `DRYRUN=1`
+prints per old → new lane row counts and cost without writing) backfills
+history. It scans the transcripts of both roots (subagent files included) for
+`sessionId → entrypoint`, then per session: the *explicit lane* is the most
+frequent existing lane that is neither `interactive`/`headless`/`desktop` nor
+`sideclaw:*` — a sideclaw lane never propagates to other rows. A
+`cli`/`claude-desktop` session rewrites NULL and `sideclaw:*` rows to its
+explicit lane, else the entrypoint lane; an `sdk-cli` session fills NULL rows
+(explicit lane, else `headless`) and leaves `sideclaw:*` alone; a session whose
+transcript is gone gets NULL rows filled from its own explicit lane only —
+unless it mixes NULL and `sideclaw:*` rows, which only a session outliving its
+pruned line produces (sideclaw workers finish in minutes, these spanned ~23h on
+average), so it is resolved as `cli`. The same pass flips
+`<synthetic>` rows from `iu` to `max` when the session has a non-synthetic `max`
+row. Changed rows get `synced_at = NULL` (like `reprice`) and run in one
+transaction; only `source = 'claude-code'` is touched.
 
 Group by it with `make stats BY=sub_tool`.
 

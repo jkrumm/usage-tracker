@@ -9,16 +9,17 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 
 ## Layout
 
-- `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `reprice`, `stats`,
-  `sources`, `billing-audit`.
+- `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `reprice`, `relane`,
+  `stats`, `sources`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
-  on `(source, source_id)`.
-- `src/pricing.ts`, `src/models.ts` — rates, model normalization and billing
-  classification.
-- `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/report.ts` — pipeline
-  and reporting.
+  on `(source, source_id)`; `session_env` table persists the hook's per-session
+  `base_url`/`lane` lines past log pruning.
+- `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
+  classification, session_env lookup and the transcript-entrypoint lane map.
+- `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
+  `src/report.ts` — pipeline, backfills (`reprice`, `relane`) and reporting.
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
@@ -60,6 +61,16 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   when a column actually differs. That keeps `ingested_at` moving on real
   change only, which is what keeps the Argo sync a delta despite hermes/feuer
   re-reading their whole tables every run.
+- claude-code `sub_tool` precedence: the session's `USAGE_LANE` (from
+  `session_env`), then sideclaw's time-window fallback — only when no
+  `session_env` line exists *and* the transcript `entrypoint` is `sdk-cli` or
+  absent, since sideclaw workers are always `claude -p` — then the entrypoint
+  lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` →
+  `desktop`). Don't loosen the guard: it stops pruned long-lived herdr sessions
+  from picking up random `sideclaw:*` lanes. opencode rows without a lane are
+  `interactive`, never null (the upsert would erase a lane).
+- `make relane` (`DRYRUN=1` first) backfills those lanes on stored rows and
+  clears `synced_at` so the next sync re-pushes them.
 - One broken collector must never abort the others. Failures are recorded as
   `error`/`skipped` in `collector_state` and the rest of the run continues.
 - Claude Code resumes by byte offset per file and only advances past complete

@@ -51,4 +51,14 @@ CREATE TABLE IF NOT EXISTS collector_state (
   last_note      TEXT,
   records_total  INTEGER NOT NULL DEFAULT 0
 );
+
+-- claude-code session_env lines (base_url + USAGE_LANE per sessionId), persisted
+-- because the hook's log files are pruned after 3 days while herdr sessions run
+-- for longer. Filled from the logs by models.ts; the log entry wins on conflict.
+CREATE TABLE IF NOT EXISTS session_env (
+  session   TEXT PRIMARY KEY,
+  base_url  TEXT,
+  lane      TEXT,
+  seen_at   TEXT NOT NULL
+);
 `;

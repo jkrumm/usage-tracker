@@ -1,4 +1,4 @@
-.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 
@@ -25,6 +25,9 @@ sync: ## Push unsynced rows to the Argo API
 
 reprice: ## Re-cost stored rows against the current pricing table (DRYRUN=1, MODEL=<norm>)
 	bun run src/cli.ts reprice $(if $(MODEL),--model $(MODEL)) $(if $(DRYRUN),--dry-run)
+
+relane: ## Backfill claude-code sub_tool from transcript entrypoints (DRYRUN=1)
+	bun run src/cli.ts relane $(if $(DRYRUN),--dry-run)
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources

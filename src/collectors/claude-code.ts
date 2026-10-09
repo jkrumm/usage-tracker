@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getSessionLane, getSideclawLane, isBridgeRouted } from "../models.ts";
+import { entrypointLane, getSessionLane, getSideclawLane, isBridgeRouted } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -29,6 +29,11 @@ function localProjectsDir(): string {
   return process.env.USAGE_CLAUDE_PROJECTS_DIR?.trim() || join(homedir(), ".claude", "projects");
 }
 
+/** Every transcripts root that exists: this machine's, then the iumac mirror's. */
+export function claudeCodeRoots(): string[] {
+  return [localProjectsDir(), iumacProjectsDir()].filter((root) => existsSync(root));
+}
+
 /**
  * Test-only seam: lets claude-code.test.ts force syncIumac's outcome inside
  * collect() without an ssh/rsync call ever happening. Always null in
@@ -48,6 +53,9 @@ interface AssistantLine {
   parentUuid?: string;
   timestamp?: string;
   cwd?: string;
+  // "cli" (interactive), "sdk-cli" (`claude -p`, i.e. every sideclaw worker) or
+  // "claude-desktop"; on every transcript line.
+  entrypoint?: string;
   // Set on the local, non-API line a failed request synthesizes in place of a
   // real assistant response — see the isApiErrorMessage branch in parseLine.
   error?: string;
@@ -190,24 +198,30 @@ function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>):
   return Number.isFinite(delta) && delta >= 0 ? delta : null;
 }
 
-/** Stamp sub_tool from the session's USAGE_LANE, same rule for every record
- * this file emits — never overwriting a subTool already set. Falls back to
- * sideclaw's own time-window attribution log only when there is NO session_env
- * line for this session at all (getSessionLane returns undefined) — a session
- * whose line exists but carries no lane (a manual `c`/`ca` session with no
- * USAGE_LANE set) must stay unattributed rather than being matched against an
- * unrelated, merely time-adjacent sideclaw window. */
-function stampLane(record: UsageRecord, sessionId: string | undefined): void {
+/** Stamp sub_tool, same rule for every record this file emits — never
+ * overwriting a subTool already set. Precedence:
+ *   1. the session's USAGE_LANE from its session_env line;
+ *   2. sideclaw's own time-window attribution log, only when there is NO
+ *      session_env line at all (getSessionLane returns undefined) AND the
+ *      entrypoint could be a sideclaw worker (`sdk-cli`, or absent) — sideclaw
+ *      workers are always `claude -p`, so a `cli`/`claude-desktop` session that
+ *      merely overlaps a window in time must never be stamped with it;
+ *   3. the entrypoint lane (interactive / headless / desktop), null if unknown. */
+function stampLane(record: UsageRecord, sessionId: string | undefined, entrypoint: string | undefined): void {
   if (record.subTool) return;
   const lane = getSessionLane(sessionId);
   if (lane) {
     record.subTool = lane;
     return;
   }
-  if (lane === undefined) {
+  if (lane === undefined && (entrypoint === undefined || entrypoint === "sdk-cli")) {
     const fallback = getSideclawLane(record.ts, record.project);
-    if (fallback) record.subTool = fallback;
+    if (fallback) {
+      record.subTool = fallback;
+      return;
+    }
   }
+  record.subTool = entrypointLane(entrypoint);
 }
 
 function parseLine(
@@ -259,9 +273,10 @@ function parseLine(
         sessionId: obj.sessionId,
         error: obj.error ?? null,
         apiErrorStatus: obj.apiErrorStatus ?? null,
+        entrypoint: obj.entrypoint ?? null,
       },
     };
-    stampLane(record, obj.sessionId);
+    stampLane(record, obj.sessionId, obj.entrypoint);
     return record;
   }
 
@@ -300,10 +315,11 @@ function parseLine(
       sessionId: obj.sessionId,
       messageId: obj.message?.id,
       serviceTier: usage.service_tier,
+      entrypoint: obj.entrypoint ?? null,
     },
   };
 
-  stampLane(record, obj.sessionId);
+  stampLane(record, obj.sessionId, obj.entrypoint);
   return record;
 }
 

@@ -273,6 +273,138 @@ describe("claude-code two-root collector", () => {
     expect(record?.subTool).toBeFalsy();
   });
 
+  // stampLane precedence: explicit session lane > sideclaw window (only with no
+  // session_env line at all and a sdk-cli/absent entrypoint) > entrypoint lane.
+  describe("stampLane precedence", () => {
+    const windowTs = "2026-09-24T18:22:30.000Z";
+    const syncOk = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
+
+    function writeTranscript(entrypoint: string | undefined): void {
+      writeFileSync(
+        join(localDir, "local-session.jsonl"),
+        `${JSON.stringify({
+          type: "assistant",
+          requestId: "req",
+          sessionId: "session-1",
+          timestamp: windowTs,
+          cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+          ...(entrypoint ? { entrypoint } : {}),
+          message: { id: "msg", model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 } },
+        })}\n`,
+      );
+    }
+
+    function writeSideclawWindow(): void {
+      writeFileSync(
+        process.env.SIDECLAW_SESSIONS_LOG!,
+        `${JSON.stringify({
+          tool: "review:router",
+          project: "/Users/jkrumm/SourceRoot/sideclaw",
+          tsStart: "2026-09-24T18:22:19.444Z",
+          tsEnd: "2026-09-24T18:22:35.797Z",
+        })}\n`,
+      );
+    }
+
+    function writeEnvLine(data: Record<string, unknown>): void {
+      writeFileSync(
+        join(localLogsDir, "2026-09-10.jsonl"),
+        `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: null, ...data } })}\n`,
+      );
+    }
+
+    async function collectSubTool(): Promise<string | null | undefined> {
+      setSyncOverrideForTest(syncOk);
+      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      return result.records[0]?.subTool;
+    }
+
+    test("an explicit session lane beats the entrypoint, whatever it is", async () => {
+      writeTranscript("cli");
+      writeEnvLine({ lane: "wave" });
+      expect(await collectSubTool()).toBe("wave");
+    });
+
+    test("a cli session without an env line is never sideclaw-stamped, even inside a window", async () => {
+      writeTranscript("cli");
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBe("interactive");
+    });
+
+    test("a claude-desktop session without an env line is never sideclaw-stamped either", async () => {
+      writeTranscript("claude-desktop");
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBe("desktop");
+    });
+
+    test("an sdk-cli session without an env line takes the sideclaw window", async () => {
+      writeTranscript("sdk-cli");
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBe("sideclaw:review");
+    });
+
+    test("an sdk-cli session without an env line and no window is headless", async () => {
+      writeTranscript("sdk-cli");
+      expect(await collectSubTool()).toBe("headless");
+    });
+
+    test("a missing entrypoint without an env line still takes the sideclaw window, else stays null", async () => {
+      writeTranscript(undefined);
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBe("sideclaw:review");
+
+      resetSideclawWindowsCacheForTest();
+      writeFileSync(process.env.SIDECLAW_SESSIONS_LOG!, "");
+      expect(await collectSubTool()).toBeNull();
+    });
+
+    test("an env line without a lane uses the entrypoint lane, never the window", async () => {
+      writeTranscript("cli");
+      writeEnvLine({ base_url: "https://iu" });
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBe("interactive");
+    });
+
+    test("an env line without a lane and an unknown entrypoint stays null", async () => {
+      writeTranscript("vscode");
+      writeEnvLine({});
+      writeSideclawWindow();
+      expect(await collectSubTool()).toBeNull();
+    });
+
+    test("raw.entrypoint is recorded on success and API-error rows", async () => {
+      const ok = {
+        type: "assistant",
+        requestId: "req-ok",
+        sessionId: "session-1",
+        timestamp: windowTs,
+        entrypoint: "cli",
+        message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 1, output_tokens: 1 } },
+      };
+      const err = {
+        type: "assistant",
+        uuid: "err-1",
+        sessionId: "session-1",
+        timestamp: windowTs,
+        entrypoint: "cli",
+        isApiErrorMessage: true,
+        message: { model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
+      };
+      writeFileSync(
+        join(localDir, "local-session.jsonl"),
+        `${JSON.stringify(ok)}\n${JSON.stringify(err)}\n`,
+      );
+      setSyncOverrideForTest(syncOk);
+      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+
+      expect(result.records).toHaveLength(2);
+      for (const r of result.records) {
+        expect(r.raw?.entrypoint).toBe("cli");
+        expect(r.subTool).toBe("interactive");
+      }
+    });
+  });
+
   test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {
     const line = `${JSON.stringify({
       type: "assistant",

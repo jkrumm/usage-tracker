@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resetSessionBaseUrlsCacheForTest } from "../models.ts";
 import type { Logger } from "../types.ts";
 import { opencodeCollector } from "./opencode.ts";
 
@@ -39,11 +40,19 @@ describe("opencode collector", () => {
     dir = mkdtempSync(join(tmpdir(), "usage-tracker-opencode-"));
     dbPath = join(dir, "opencode.db");
     process.env.USAGE_OPENCODE_DB = dbPath;
+    // getSessionLane() runs on every message — keep it off this machine's real
+    // ~/.claude/logs.
+    process.env.USAGE_CLAUDE_LOGS_DIR = join(dir, "logs");
+    process.env.USAGE_REMOTE_DIR = join(dir, "no-mirror");
+    resetSessionBaseUrlsCacheForTest();
   });
 
   afterEach(() => {
     if (originalDbPath === undefined) delete process.env.USAGE_OPENCODE_DB;
     else process.env.USAGE_OPENCODE_DB = originalDbPath;
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    delete process.env.USAGE_REMOTE_DIR;
+    resetSessionBaseUrlsCacheForTest();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -145,5 +154,37 @@ describe("opencode collector", () => {
     expect(records[0]?.sourceId).toBe("ses-3");
     expect(records[0]?.grain).toBe("session");
     expect(records[0]?.inputTokens).toBe(100);
+  });
+
+  test("sub_tool is the sideclaw lane when a session_env line exists, else interactive", async () => {
+    const db = new Database(dbPath, { create: true });
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER NOT NULL);
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+        time_updated INTEGER NOT NULL, data TEXT NOT NULL
+      );
+    `);
+    for (const id of ["ses_worker", "ses_manual"]) {
+      db.run("INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)", [id, "/tmp/p", 1_790_275_000_000]);
+      db.run(
+        "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+        [`msg-${id}`, id, 1_790_275_376_743, 1_790_275_377_961, messageData()],
+      );
+    }
+    db.close();
+    mkdirSync(process.env.USAGE_CLAUDE_LOGS_DIR!, { recursive: true });
+    writeFileSync(
+      join(process.env.USAGE_CLAUDE_LOGS_DIR!, "2026-10-06.jsonl"),
+      `${JSON.stringify({
+        event: "session_env",
+        data: { session: "ses_worker", base_url: null, lane: "sideclaw:implement" },
+      })}\n`,
+    );
+
+    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
+
+    expect(records.find((r) => r.sourceId === "msg-ses_worker")?.subTool).toBe("sideclaw:implement");
+    expect(records.find((r) => r.sourceId === "msg-ses_manual")?.subTool).toBe("interactive");
   });
 });
