@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { entrypointLane, getSessionLane, getSideclawLane, isBridgeRouted } from "../models.ts";
+import { entrypointLane, getSessionLane, getSideclawLane, isBridgeRouted, SYNTHETIC_MODEL } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -282,7 +282,7 @@ function parseLine(
 
   const usage = obj.message?.usage;
   if (!usage) return null;
-  if (obj.message?.model === "<synthetic>") return null; // local, non-API message
+  if (obj.message?.model === SYNTHETIC_MODEL) return null; // local, non-API message
 
   const model = obj.message?.model ?? null;
   // Every id counts — Max, `ca` and sideclaw's `iu` lane all leave the

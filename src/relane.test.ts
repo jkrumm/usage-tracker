@@ -138,6 +138,12 @@ describe("relane end to end", () => {
     expect(map.has("s-gone")).toBe(false);
   });
 
+  test("scanEntrypoints reads past the head prefix when the first line is huge", async () => {
+    const big = `${JSON.stringify({ type: "summary", text: "x".repeat(300 * 1024) })}\n`;
+    writeFileSync(join(process.env.USAGE_CLAUDE_PROJECTS_DIR!, "proj-a", "s-big.jsonl"), big + transcript("s-big", "cli"));
+    expect((await scanEntrypoints()).get("s-big")).toBe("cli");
+  });
+
   test("dry run reports per old -> new lane counts and cost without writing", async () => {
     const before = snapshot();
     const result = relane(db, await scanEntrypoints(), { dryRun: true });

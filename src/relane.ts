@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { claudeCodeRoots } from "./collectors/claude-code.ts";
 import { walkJsonlFiles } from "./collectors/fs-incremental.ts";
 import { entrypointLane, SYNTHETIC_MODEL } from "./models.ts";
+import type { Billing } from "./types.ts";
 
 /**
  * Backfill `sub_tool` (and one billing slip) on already-ingested claude-code
@@ -19,8 +20,22 @@ import { entrypointLane, SYNTHETIC_MODEL } from "./models.ts";
 
 const GENERIC_LANES = new Set(["interactive", "headless", "desktop"]);
 
-/** Bytes of each transcript scanned for its first line carrying sessionId + entrypoint. */
+/** Bytes read first per transcript; the whole file is read only when no line in
+ * this prefix carries sessionId + entrypoint (a huge pasted first message). */
 const HEAD_BYTES = 256 * 1024;
+
+function firstEntrypoint(text: string): [string, string] | null {
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line) as { sessionId?: unknown; entrypoint?: unknown };
+      if (typeof obj.sessionId === "string" && typeof obj.entrypoint === "string") return [obj.sessionId, obj.entrypoint];
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
 
 /**
  * `sessionId -> entrypoint` from the first line per file that has both fields
@@ -31,18 +46,11 @@ export async function scanEntrypoints(): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   for (const root of claudeCodeRoots()) {
     for (const file of await walkJsonlFiles(root)) {
-      const head = await Bun.file(file).slice(0, HEAD_BYTES).text();
-      for (const line of head.split("\n")) {
-        if (!line) continue;
-        try {
-          const obj = JSON.parse(line) as { sessionId?: string; entrypoint?: string };
-          if (!obj.sessionId || !obj.entrypoint) continue;
-          if (!map.has(obj.sessionId)) map.set(obj.sessionId, obj.entrypoint);
-          break;
-        } catch {
-          continue;
-        }
-      }
+      const blob = Bun.file(file);
+      const hit =
+        firstEntrypoint(await blob.slice(0, HEAD_BYTES).text()) ??
+        (blob.size > HEAD_BYTES ? firstEntrypoint(await blob.text()) : null);
+      if (hit && !map.has(hit[0])) map.set(hit[0], hit[1]);
     }
   }
   return map;
@@ -97,7 +105,7 @@ interface RelaneRow {
   session: string | null;
   sub_tool: string | null;
   model: string | null;
-  billing: string;
+  billing: Billing;
   cost_usd: number | null;
 }
 
@@ -112,7 +120,7 @@ export interface RelaneResult {
   scanned: number;
   /** Rows whose sub_tool and/or billing changed. */
   changed: number;
-  /** `<synthetic>` rows moved from iu to max (a subset of `changed`, or overlapping it). */
+  /** `<synthetic>` rows moved from iu to max (a subset of `changed`). */
   billingFixed: number;
   /** Sessions whose transcript was not found — only NULL rows filled from their own lane. */
   unknownEntrypointSessions: number;
@@ -141,7 +149,7 @@ export function relane(
     bySession.set(row.session, group);
   }
 
-  const updates: Array<{ id: number; subTool: string | null; billing: string; entrypoint: string | null }> = [];
+  const updates: Array<{ id: number; subTool: string | null; billing: Billing; entrypoint: string | null }> = [];
   const transitions = new Map<string, RelaneTransition>();
   let billingFixed = 0;
   let unknownEntrypointSessions = 0;

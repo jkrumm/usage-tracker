@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { log } from "./log.ts";
 import { iumacLogsDir } from "./remote.ts";
 import type { Billing } from "./types.ts";
 
@@ -96,8 +97,10 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
         upsert.run({ $session: session, $base_url: env.base_url, $lane: env.lane, $seen_at: seenAt });
       }
     })();
-  } catch {
-    // never fail classification on a store error
+  } catch (err) {
+    // never fail classification on a store error, but make it visible: a
+    // silent failure here regresses every long-lived session to log-only data
+    log.warn(`session_env store unavailable, using logs only: ${err instanceof Error ? err.message : String(err)}`);
   }
   for (const [session, env] of logged) map.set(session, env);
   return map;
