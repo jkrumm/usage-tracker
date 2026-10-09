@@ -59,29 +59,29 @@ export async function scanEntrypoints(): Promise<Map<string, string>> {
 /**
  * New `sub_tool` per row of one session, in input order (unchanged rows come
  * back as-is). The session's explicit lane is its most frequent existing lane
- * that is neither generic nor `sideclaw:*`. A sideclaw lane is never evidence
+ * that is neither generic nor `sideclaw:*`. An agent-gateway lane is never evidence
  * for other rows: it was either stamped from the session's own session_env line
  * (then every row has it) or by the time-window fallback, which is the
  * misattribution being repaired.
  *
  * A session with an unknown entrypoint (transcript gone) that mixes NULL and
  * `sideclaw:*` rows is treated as `cli`: that mix only arises when a session
- * outlives its pruned session_env line (hours to days), and sideclaw workers
+ * outlives its pruned session_env line (hours to days), and agent-gateway workers
  * finish in minutes.
  */
 export function resolveSessionLanes(
   current: Array<string | null>,
   entrypoint: string | null,
 ): Array<string | null> {
-  const isSideclaw = (lane: string | null) => lane?.startsWith("sideclaw:") ?? false;
-  const mixed = current.includes(null) && current.some(isSideclaw);
+  const isAgentGateway = (lane: string | null) => lane?.startsWith("sideclaw:") ?? false;
+  const mixed = current.includes(null) && current.some(isAgentGateway);
   const effective = entrypointLane(entrypoint) === null && mixed ? "cli" : entrypoint;
   const generic = entrypointLane(effective);
   const interactive = effective === "cli" || effective === "claude-desktop";
 
   const counts = new Map<string, number>();
   for (const lane of current) {
-    if (!lane || GENERIC_LANES.has(lane) || isSideclaw(lane)) continue;
+    if (!lane || GENERIC_LANES.has(lane) || isAgentGateway(lane)) continue;
     counts.set(lane, (counts.get(lane) ?? 0) + 1);
   }
   let explicit: string | null = null;
@@ -95,7 +95,7 @@ export function resolveSessionLanes(
 
   return current.map((lane) => {
     if (lane === null) return explicit ?? generic;
-    if (interactive && isSideclaw(lane)) return explicit ?? generic;
+    if (interactive && isAgentGateway(lane)) return explicit ?? generic;
     return lane;
   });
 }

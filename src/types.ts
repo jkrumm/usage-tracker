@@ -34,7 +34,7 @@ export interface UsageRecord {
   workspace?: Workspace | null;
   /**
    * Sub-tool / action that triggered the request, where the source can attribute
-   * it — e.g. "check", "review:angle", "implement" for sideclaw-attributed rows.
+   * it — e.g. "check", "review:angle", "implement" for agent-gateway-attributed rows.
    * Null when the source doesn't expose this granularity.
    */
   subTool?: string | null;

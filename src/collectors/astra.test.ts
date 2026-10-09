@@ -198,7 +198,7 @@ describe("astra collector — iumac mirror", () => {
     );
     writeFileSync(
       join(mirrorDir, "sideclaw-iu.jsonl"),
-      `${JSON.stringify({ request_id: "sideclaw-resp", tool: "check" })}\n`,
+      `${JSON.stringify({ request_id: "agent-gateway-resp", tool: "check" })}\n`,
     );
 
     const { records } = await astraCollector.collect({ cursor: null, full: false, log });

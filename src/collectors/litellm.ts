@@ -11,18 +11,18 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // Failed requests are logged too, marked `event: "error"` with no token fields.
 // Kimi-K2.6 is single-backend (Azure Sweden) and intermittently 5xx/429s, so the
 // error rate is a property of the bridge, not of any one consumer — every source
-// routed through it (Hermes, sideclaw, …) sees the same rate. Capturing it once
+// routed through it (Hermes, agent-gateway, …) sees the same rate. Capturing it once
 // here as zero-token error rows makes that one rate queryable.
 //
-// Attribution: sideclaw appends one record per worker session to
+// Attribution: agent-gateway appends one record per worker session to
 // sideclaw-sessions.jsonl with { tool, project, tsStart, tsEnd }. For each
 // litellm row whose ts falls inside one of those windows we tag the row with
-// the sideclaw tool that caused it. The two logs share no key, so the join is
+// the agent-gateway tool that caused it. The two logs share no key, so the join is
 // time-window based; concurrent sessions are disambiguated by picking the
 // narrowest window that contains the row.
 
 const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "litellm.jsonl");
-const SIDECLAW_SESSIONS_PATH = join(
+const AGENT_GATEWAY_SESSIONS_PATH = join(
   homedir(),
   ".local",
   "share",
@@ -48,7 +48,7 @@ interface LitellmLine {
   reasoning_tokens?: number;
 }
 
-interface SideclawSession {
+interface AgentGatewaySession {
   tool: string;
   project: string | null;
   tsStartMs: number;
@@ -87,7 +87,7 @@ export const litellmCollector: Collector = {
       return { records: [], cursor: JSON.stringify({ offset }) };
     }
 
-    const sessions = await loadSideclawSessions();
+    const sessions = await loadAgentGatewaySessions();
 
     const complete = chunk.slice(0, lastNl);
     const records: UsageRecord[] = [];
@@ -103,16 +103,16 @@ export const litellmCollector: Collector = {
 };
 
 /**
- * Load the sideclaw session attribution log into memory. Sessions are short
+ * Load the agent-gateway session attribution log into memory. Sessions are short
  * (minutes) and the log file is small enough that re-reading on every collect
  * run is fine — collectors run every 15 min. If the file is missing we just
  * have no attribution this run; not an error.
  */
-async function loadSideclawSessions(): Promise<SideclawSession[]> {
-  const path = process.env.SIDECLAW_SESSIONS_LOG ?? SIDECLAW_SESSIONS_PATH;
+async function loadAgentGatewaySessions(): Promise<AgentGatewaySession[]> {
+  const path = process.env.SIDECLAW_SESSIONS_LOG ?? AGENT_GATEWAY_SESSIONS_PATH;
   if (!existsSync(path)) return [];
   const text = await Bun.file(path).text();
-  const sessions: SideclawSession[] = [];
+  const sessions: AgentGatewaySession[] = [];
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     let obj: Record<string, unknown>;
@@ -135,10 +135,10 @@ async function loadSideclawSessions(): Promise<SideclawSession[]> {
   return sessions;
 }
 
-function matchSession(rowTs: string, sessions: SideclawSession[]): SideclawSession | undefined {
+function matchSession(rowTs: string, sessions: AgentGatewaySession[]): AgentGatewaySession | undefined {
   const rowMs = Date.parse(rowTs);
   if (!Number.isFinite(rowMs)) return undefined;
-  let best: SideclawSession | undefined;
+  let best: AgentGatewaySession | undefined;
   for (const s of sessions) {
     if (rowMs < s.tsStartMs || rowMs > s.tsEndMs) continue;
     if (!best || s.spanMs < best.spanMs) best = s;
@@ -146,7 +146,7 @@ function matchSession(rowTs: string, sessions: SideclawSession[]): SideclawSessi
   return best;
 }
 
-function parseLine(line: string, sessions: SideclawSession[]): UsageRecord | null {
+function parseLine(line: string, sessions: AgentGatewaySession[]): UsageRecord | null {
   if (!line) return null;
   let obj: LitellmLine;
   try {

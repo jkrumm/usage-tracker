@@ -8,7 +8,7 @@
 ### Claude Code billing classification
 
 The `claude-code` collector keeps every assistant row, whatever the model id —
-a `ca <model>` session or a sideclaw `iu` worker on DeepSeek leaves the
+a `ca <model>` session or an agent-gateway `iu` worker on DeepSeek leaves the
 transcript as its only record. (Until 2026-09-07 the collector dropped every
 non-`claude-*` and `-eu` row, assuming the LiteLLM bridge had logged it; with
 the bridge gone that silently lost ~3.7k `glm-5.3-flash` rows in one week.) The
@@ -198,13 +198,13 @@ re-read their table whole every run and reconcile by upsert, same as before
 the re-add — cheap given the small DB and the 15-min LaunchAgent tick, and
 tolerant of a message row updating in place mid-stream.
 
-`sub_tool` is `getSessionLane(session_id) || "interactive"`: a sideclaw
+`sub_tool` is `getSessionLane(session_id) || "interactive"`: an agent-gateway
 dispatch writes a `session_env` line keyed by the `ses_…` id with its lane; no
 line means a manual `oc` run or an opencode wave pane, both interactive TUIs.
 The fallback must be a string, not null — the table is re-read whole every run,
-so a null would make the upsert erase a sideclaw lane once its log line is
+so a null would make the upsert erase an agent-gateway lane once its log line is
 pruned and not yet in the `session_env` table (only rows since 2026-10-06 still
-carry sideclaw lanes).
+carry agent-gateway lanes).
 
 ### modelpick benchmark spend (`modelpick`)
 
@@ -234,7 +234,7 @@ closed when the DB is absent.
 `astra` (dotfiles' `astra.sh`) is a one-shot OpenAI Responses call —
 `gpt-6-astra`, `reasoning.mode=pro`, effort `xhigh` — the highest per-call cost
 in the estate. It isn't a Codex session (no rollout JSONL) and doesn't go
-through sideclaw's IU transport either, so nothing else here ever sees it.
+through agent-gateway's IU transport either, so nothing else here ever sees it.
 `astra.sh` appends one JSON object per call to
 `~/.local/share/usage-tracker/astra.jsonl`
 (`{ ts, request_id, model, input_tokens, output_tokens, reasoning_tokens,
@@ -265,12 +265,12 @@ claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
 ingest and never flips claude-code's own `ok`/`note` (its own
 `SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
 
-### Sideclaw direct IU calls (`sideclaw-iu`)
+### agent-gateway direct IU calls (`sideclaw-iu`)
 
-sideclaw's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
+agent-gateway's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
 retired 2026-07, historical rows stay queryable) and the `review` adversary
 critic call the IU OpenAI transport with plain `fetch` — no `claude -p`
-session, so no transcript. sideclaw's `recordIuUsage` appends one line per
+session, so no transcript. agent-gateway's `recordIuUsage` appends one line per
 request to `~/.local/share/usage-tracker/sideclaw-iu.jsonl`
 (`{ ts, request_id, tool, model, input_tokens, output_tokens, reasoning_tokens,
 cache_read_tokens, cache_write_tokens, cost_usd, outcome, latency_ms, bytes }`;
@@ -285,7 +285,7 @@ taking precedence over this table's pricing.
 
 research-gateway appends one line per usage record to
 `~/.local/share/usage-tracker/research-gateway.jsonl` — its argo usage record
-verbatim, the same directory and append-only shape as sideclaw's
+verbatim, the same directory and append-only shape as agent-gateway's
 `sideclaw-iu.jsonl`, so the collector reads it by byte offset the same way.
 `source_id` is the dedup key (`<jobId>:lead`, `<jobId>:worker`, `<jobId>:sonar`,
 `<jobId>:tavily`, … or the fixed `tavily-account`); the `tavily-account` snapshot
@@ -324,11 +324,11 @@ history. If the file is absent the collector reports not-present gracefully.
 Each line carries `ts_start` / `ts_end` / `duration_ms`, so the bridge's
 per-request latency is queryable directly.
 
-### Sideclaw attribution
+### agent-gateway attribution
 
-The bridge logger sees only tokens — it has no way to know which sideclaw tool
+The bridge logger sees only tokens — it has no way to know which agent-gateway tool
 (`check`, `review`, `research`, `implement`, …) caused a given request. To
-recover that, sideclaw's `runSession` appends one record per worker to
+recover that, agent-gateway's `runSession` appends one record per worker to
 `~/.local/share/usage-tracker/sideclaw-sessions.jsonl` with
 `{ tool, project, tsStart, tsEnd, outcome, durationMs, turns }`. The litellm
 collector loads this on every run and tags rows whose `ts` falls inside a
@@ -338,14 +338,14 @@ heavy parallel fan-out). Review's three internal phases are tagged separately
 as `review:router` / `review:angle` / `review:synthesis`.
 
 `claude-code.ts`'s `stampLane()` uses the same log for the identical reason,
-via `getSideclawLane()` in `models.ts`, but only when a session has no
-`session_env` line at all: sideclaw's own `session_env` write (since
+via `getAgentGatewayLane()` in `models.ts`, but only when a session has no
+`session_env` line at all: agent-gateway's own `session_env` write (since
 `disableAllHooks` skips the real SessionStart hook) has carried `lane`
-alongside `base_url` since 2026-09-24, so a going-forward sideclaw worker
+alongside `base_url` since 2026-09-24, so a going-forward agent-gateway worker
 resolves its lane straight from `getSessionLane()` like any other spawner-set
 `USAGE_LANE`. This fallback only matters for a pruned or pre-fix line; it is
 never used when a line exists but its lane is null, which would otherwise
-mislabel a plain manual session that happens to overlap a sideclaw window in
+mislabel a plain manual session that happens to overlap an agent-gateway window in
 time. The fallback additionally prefers a window whose `project` matches the
 claude-code row's own `cwd` over the narrowest-window heuristic above —
 claude-code rows carry a cwd, litellm rows don't.
@@ -354,9 +354,9 @@ After the session lane and the window fallback, `stampLane()` falls back to the
 transcript's `entrypoint` (on every line, also kept as `raw.entrypoint`):
 `cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`,
 anything else stays null (`entrypointLane()` in `models.ts`). Precedence is
-explicit session lane, then the sideclaw window, then the entrypoint lane. The
+explicit session lane, then the agent-gateway window, then the entrypoint lane. The
 window fallback only runs when there is no `session_env` line *and* the
-entrypoint is `sdk-cli` or absent: sideclaw workers are always `claude -p`, so a
+entrypoint is `sdk-cli` or absent: agent-gateway workers are always `claude -p`, so a
 `cli` or `claude-desktop` session can never be one. Without that guard, a
 days-old herdr pane whose line was pruned got a random `sideclaw:*` lane from
 whichever window its rows overlapped, and lost its `wave`/`fleet` lane.
@@ -366,13 +366,13 @@ prints per old → new lane row counts and cost without writing) backfills
 history. It scans the transcripts of both roots (subagent files included) for
 `sessionId → entrypoint`, then per session: the *explicit lane* is the most
 frequent existing lane that is neither `interactive`/`headless`/`desktop` nor
-`sideclaw:*` — a sideclaw lane never propagates to other rows. A
+`sideclaw:*` — an agent-gateway lane never propagates to other rows. A
 `cli`/`claude-desktop` session rewrites NULL and `sideclaw:*` rows to its
 explicit lane, else the entrypoint lane; an `sdk-cli` session fills NULL rows
 (explicit lane, else `headless`) and leaves `sideclaw:*` alone; a session whose
 transcript is gone gets NULL rows filled from its own explicit lane only —
 unless it mixes NULL and `sideclaw:*` rows, which only a session outliving its
-pruned line produces (sideclaw workers finish in minutes, these spanned ~23h on
+pruned line produces (agent-gateway workers finish in minutes, these spanned ~23h on
 average), so it is resolved as `cli`. The same pass flips
 `<synthetic>` rows from `iu` to `max` when the session has a non-synthetic `max`
 row. Changed rows get `synced_at = NULL` (like `reprice`) and run in one
@@ -384,7 +384,7 @@ Group by it with `make stats BY=sub_tool`.
 
 Kimi-K2.6 is single-backend (Azure Sweden) and intermittently 5xx/429s, so its
 error rate is a property of the *bridge*, not of any one consumer — every source
-routed through it (Hermes, sideclaw, OpenCode, …) sees the same rate. Rather than
+routed through it (Hermes, agent-gateway, OpenCode, …) sees the same rate. Rather than
 attribute it per source, the logger's `async_log_failure_event` writes a
 token-less `event: "error"` line whenever a request fails, and the collector
 ingests those as `outcome = 'error'` rows. A failed attempt the fallback later

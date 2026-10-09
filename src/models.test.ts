@@ -8,12 +8,12 @@ import {
   entrypointLane,
   getSessionBaseUrl,
   getSessionLane,
-  getSideclawLane,
+  getAgentGatewayLane,
   isBridgeRouted,
   LITELLM_BRIDGE_CUTOFF,
   normalizeModel,
   resetSessionBaseUrlsCacheForTest,
-  resetSideclawWindowsCacheForTest,
+  resetAgentGatewayWindowsCacheForTest,
   useSessionEnvStore,
 } from "./models.ts";
 import { PRICING } from "./pricing.ts";
@@ -120,7 +120,7 @@ describe("normalizeModel", () => {
 
   test("maps the bare deepseek-flash alias onto deepseek-v4-flash", () => {
     // Claude Code's own small/fast-model slot (ANTHROPIC_DEFAULT_HAIKU_MODEL,
-    // pinned by sideclaw's session-runner.ts to "DeepSeek-V4-Flash") comes back
+    // pinned by agent-gateway's session-runner.ts to "DeepSeek-V4-Flash") comes back
     // in the transcript as the bare, unversioned "deepseek-flash" — without this
     // mapping it priced at $0 for every row.
     expect(normalizeModel("deepseek-flash")).toBe("deepseek-v4-flash");
@@ -332,14 +332,14 @@ describe("entrypointLane", () => {
   });
 });
 
-// getSideclawLane is the fallback claude-code.ts's stampLane uses only when a
+// getAgentGatewayLane is the fallback claude-code.ts's stampLane uses only when a
 // session has no session_env line at all (see the doc comment on
-// getSideclawLane in models.ts) — sideclaw's own session_env write has
+// getAgentGatewayLane in models.ts) — agent-gateway's own session_env write has
 // carried `lane` since 2026-09-24, so this fallback now only matters for a
-// pruned or pre-fix line. It joins by time window instead, against sideclaw's
+// pruned or pre-fix line. It joins by time window instead, against agent-gateway's
 // independent attribution log.
 
-describe("getSideclawLane", () => {
+describe("getAgentGatewayLane", () => {
   let dir: string;
 
   beforeEach(() => {
@@ -350,7 +350,7 @@ describe("getSideclawLane", () => {
       [
         {
           tool: "review:router",
-          project: "/Users/jkrumm/SourceRoot/sideclaw",
+          project: "/Users/jkrumm/SourceRoot/agent-gateway",
           tsStart: "2026-09-24T18:22:19.444Z",
           tsEnd: "2026-09-24T18:22:35.797Z",
         },
@@ -366,17 +366,17 @@ describe("getSideclawLane", () => {
         .map((l) => JSON.stringify(l))
         .join("\n") + "\n",
     );
-    resetSideclawWindowsCacheForTest();
+    resetAgentGatewayWindowsCacheForTest();
   });
 
   afterEach(() => {
     delete process.env.SIDECLAW_SESSIONS_LOG;
     rmSync(dir, { recursive: true, force: true });
-    resetSideclawWindowsCacheForTest();
+    resetAgentGatewayWindowsCacheForTest();
   });
 
   test("coarsens the matched tool to sideclaw:<tool>, same as usageLane() would", () => {
-    expect(getSideclawLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/sideclaw")).toBe(
+    expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/agent-gateway")).toBe(
       "sideclaw:review",
     );
   });
@@ -384,17 +384,17 @@ describe("getSideclawLane", () => {
   test("prefers the project-matching window over a wider one it's also inside", () => {
     // 18:22:30 falls inside BOTH windows above; the warden one is wider (and
     // would win a narrowest-span-only tie-break), but the project match wins.
-    expect(getSideclawLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/warden")).toBe(
+    expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/warden")).toBe(
       "sideclaw:dispatch",
     );
   });
 
   test("returns null outside every window", () => {
-    expect(getSideclawLane("2026-09-24T19:00:00.000Z", "/Users/jkrumm/SourceRoot/sideclaw")).toBeNull();
+    expect(getAgentGatewayLane("2026-09-24T19:00:00.000Z", "/Users/jkrumm/SourceRoot/agent-gateway")).toBeNull();
   });
 
   test("returns null for a null/missing ts", () => {
-    expect(getSideclawLane(null, "/Users/jkrumm/SourceRoot/sideclaw")).toBeNull();
+    expect(getAgentGatewayLane(null, "/Users/jkrumm/SourceRoot/agent-gateway")).toBeNull();
   });
 });
 

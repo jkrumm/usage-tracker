@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { entrypointLane, getSessionLane, getSideclawLane, isBridgeRouted, SYNTHETIC_MODEL } from "../models.ts";
+import { entrypointLane, getSessionLane, getAgentGatewayLane, isBridgeRouted, SYNTHETIC_MODEL } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -53,7 +53,7 @@ interface AssistantLine {
   parentUuid?: string;
   timestamp?: string;
   cwd?: string;
-  // "cli" (interactive), "sdk-cli" (`claude -p`, i.e. every sideclaw worker) or
+  // "cli" (interactive), "sdk-cli" (`claude -p`, i.e. every agent-gateway worker) or
   // "claude-desktop"; on every transcript line.
   entrypoint?: string;
   // Set on the local, non-API line a failed request synthesizes in place of a
@@ -201,9 +201,9 @@ function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>):
 /** Stamp sub_tool, same rule for every record this file emits — never
  * overwriting a subTool already set. Precedence:
  *   1. the session's USAGE_LANE from its session_env line;
- *   2. sideclaw's own time-window attribution log, only when there is NO
+ *   2. agent-gateway's own time-window attribution log, only when there is NO
  *      session_env line at all (getSessionLane returns undefined) AND the
- *      entrypoint could be a sideclaw worker (`sdk-cli`, or absent) — sideclaw
+ *      entrypoint could be an agent-gateway worker (`sdk-cli`, or absent) — agent-gateway
  *      workers are always `claude -p`, so a `cli`/`claude-desktop` session that
  *      merely overlaps a window in time must never be stamped with it;
  *   3. the entrypoint lane (interactive / headless / desktop), null if unknown. */
@@ -215,7 +215,7 @@ function stampLane(record: UsageRecord, sessionId: string | undefined, entrypoin
     return;
   }
   if (lane === undefined && (entrypoint === undefined || entrypoint === "sdk-cli")) {
-    const fallback = getSideclawLane(record.ts, record.project);
+    const fallback = getAgentGatewayLane(record.ts, record.project);
     if (fallback) {
       record.subTool = fallback;
       return;
@@ -285,7 +285,7 @@ function parseLine(
   if (obj.message?.model === SYNTHETIC_MODEL) return null; // local, non-API message
 
   const model = obj.message?.model ?? null;
-  // Every id counts — Max, `ca` and sideclaw's `iu` lane all leave the
+  // Every id counts — Max, `ca` and agent-gateway's `iu` lane all leave the
   // transcript as their only record. The one exception is the retired LiteLLM
   // bridge era, where the litellm source already holds the request (see
   // LITELLM_BRIDGE_CUTOFF); billing is classified centrally in db.ts.

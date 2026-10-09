@@ -1,7 +1,7 @@
 {
   "name": "usage-tracker",
   "version": "0.1.0",
-  "description": "Local SQLite token/cost telemetry across Claude Code, Hermes, Feuer and sideclaw",
+  "description": "Local SQLite token/cost telemetry across Claude Code, Hermes, Feuer and agent-gateway",
   "private": true,
   "type": "module",
   "module": "src/cli.ts",

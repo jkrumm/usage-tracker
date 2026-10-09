@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRecord } from "../types.ts";
 
-// Reads offset-incrementally from the NDJSON log sideclaw's `recordIuUsage`
+// Reads offset-incrementally from the NDJSON log agent-gateway's `recordIuUsage`
 // (server/lib/iu-openai.ts) appends to for its multimodal tools (`read_image`,
 // `read_drawing`, `generate_image`) and the `review` adversary critic — plain
 // `fetch` calls straight to the IU OpenAI transport that bypass both the
@@ -20,7 +20,7 @@ import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRe
 // image-output size in bytes for `generate_image` rows and null otherwise.
 //
 // `reasoning_tokens` is thinking spend, billed at the output rate. The IU
-// gateway never reports it directly, so sideclaw derives it (total - input -
+// gateway never reports it directly, so agent-gateway derives it (total - input -
 // output) in normalizeUsage and emits it here. Rows written before that field
 // existed lack it and default to 0, understating those historical Gemini rows;
 // their `total_tokens` survives in `raw.totalTokens` if they ever need fixing up.
@@ -34,14 +34,14 @@ import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRe
 //
 // `cost_usd`, when a number, is the gateway's own reported cost for the
 // request — more accurate than this table's list-price proxy for the
-// Bedrock/Azure-routed models sideclaw calls (gemini, gpt-image, gpt-5.6-*).
+// Bedrock/Azure-routed models agent-gateway calls (gemini, gpt-image, gpt-5.6-*).
 // It's carried through as `authoritativeCostUsd`; db.ts's upsertRecords uses
 // it verbatim (cost_source = "reported") instead of computeCost, and
 // reprice.ts never touches a "reported" row.
 
 const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "sideclaw-iu.jsonl");
 
-interface SideclawIuLine {
+interface AgentGatewayIuLine {
   ts?: string;
   request_id?: string;
   tool?: string | null;
@@ -62,16 +62,16 @@ interface Cursor {
   offset: number;
 }
 
-export const sideclawIuCollector: Collector = {
+export const agentGatewayIuCollector: Collector = {
   source: "sideclaw-iu",
 
   available() {
-    const path = process.env.SIDECLAW_IU_USAGE_LOG ?? DEFAULT_PATH;
+    const path = process.env.AGENT_GATEWAY_IU_USAGE_LOG ?? DEFAULT_PATH;
     return existsSync(path);
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const path = process.env.SIDECLAW_IU_USAGE_LOG ?? DEFAULT_PATH;
+    const path = process.env.AGENT_GATEWAY_IU_USAGE_LOG ?? DEFAULT_PATH;
     if (!existsSync(path)) {
       return { records: [], cursor: ctx.cursor };
     }
@@ -104,9 +104,9 @@ export const sideclawIuCollector: Collector = {
 
 function parseLine(line: string, log: Logger): UsageRecord | null {
   if (!line) return null;
-  let obj: SideclawIuLine;
+  let obj: AgentGatewayIuLine;
   try {
-    obj = JSON.parse(line) as SideclawIuLine;
+    obj = JSON.parse(line) as AgentGatewayIuLine;
   } catch {
     // Half-written trailing line (LaunchAgent tick mid-append) or corrupt row.
     return null;

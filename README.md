@@ -8,12 +8,14 @@ the end of `ingest`), which is where the dashboard lives.
 
 ## What it ingests
 
+> **Legacy names are a data contract.** The service is `agent-gateway` now (renamed 2026-10-09), but its collector/source names (`sideclaw-iu`, `sideclaw-sessions`), the `sideclaw:<tool>` lanes and the `SIDECLAW_SESSIONS_LOG` override are persisted in the database and the jsonl logs. They keep the old prefix on both sides so historical rows and time series stay joinable; a rename would need a data migration.
+
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
 | `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max and IU-direct, every model id, billed by the session's base URL — see below) |
 | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
-| `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — sideclaw's direct IU calls (`read_image`, `read_drawing`, the `review` critic; `generate_image` retired 2026-07, historical rows stay queryable) | message | `request_id` | working |
+| `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — agent-gateway's direct IU calls (`read_image`, `read_drawing`, the `review` critic; `generate_image` retired 2026-07, historical rows stay queryable) | message | `request_id` | working |
 | `research-gateway` | `~/.local/share/usage-tracker/research-gateway.jsonl` (offset-incremental) — research-gateway's argo usage records: lead/worker LLM calls, per-call vendor rows (`sonar`, `tavily`, `render`, …) and the re-sent `tavily-account` snapshot | session | `source_id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `message` (per assistant turn), session-grain fallback if that table is absent | message | message `id` (session `id` on the fallback) | working — OpenCode was re-added 2026-09-23; removed 2026-09-04 → 2026-09-23, historical rows from before the removal stay queryable |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
@@ -26,8 +28,8 @@ computes one comparable cost for every row from its own pricing table
 - `max` — Claude Code orchestrator on the Max subscription. Cost is the
   list-price *value* consumed, not a real bill.
 - `iu` — real per-token IU spend against the IU unified endpoint: Claude Code
-  on the `ca` launcher or sideclaw's `iu` lane (any served id, Claude or not),
-  sideclaw's direct calls, and the agent daemons.
+  on the `ca` launcher or agent-gateway's `iu` lane (any served id, Claude or not),
+  agent-gateway's direct calls, and the agent daemons.
 
 So `stats --by billing` answers "how much Max value am I burning" vs "what am
 I actually paying IU" in one view.
@@ -47,28 +49,28 @@ distinguishable once merged — see "Machine attribution" below.
 
 | Lane | Set by |
 |-|-|
-| `sideclaw:<tool>` (`sideclaw:review`, `sideclaw:dispatch`, `sideclaw:otel`, `sideclaw:check`) | sideclaw's `session-runner.ts`, one per routed tool |
+| `sideclaw:<tool>` (`sideclaw:review`, `sideclaw:dispatch`, `sideclaw:otel`, `sideclaw:check`) | agent-gateway's `session-runner.ts`, one per routed tool |
 | `wave` | `rd wave` |
 | `bg` | legacy — `rd bg` (removed 2026-10-04); historical rows only |
 | `warden` | warden-caused dispatch work |
 | *(unset)* | manual `c`/`ca`/`cs`/`cf` sessions — `sub_tool` stays null |
 
-sideclaw's own `writeSessionEnv()` (needed because its workers run with
+agent-gateway's own `writeSessionEnv()` (needed because its workers run with
 `disableAllHooks`, so the real hook above never fires for them) has written a
 `session_env` line carrying `lane` since 2026-09-24, so a going-forward
-sideclaw worker session resolves both billing (`base_url`) and its lane
+agent-gateway worker session resolves both billing (`base_url`) and its lane
 straight from that join, same as any other spawner-set `USAGE_LANE`.
-`getSideclawLane()` (`src/models.ts`) is the fallback for a session with no
+`getAgentGatewayLane()` (`src/models.ts`) is the fallback for a session with no
 session_env line at all (pruned, or older than the fix) — it re-derives the
 lane by matching the row's timestamp into a [`tsStart`,`tsEnd`] window from
-sideclaw's independent `sideclaw-sessions.jsonl` attribution log (same
+agent-gateway's independent `sideclaw-sessions.jsonl` attribution log (same
 time-window technique the retired `litellm` collector used, since the two logs
 share no session id to join on directly), preferring a window whose `project`
-matches the row's cwd to disambiguate concurrent sideclaw sessions.
+matches the row's cwd to disambiguate concurrent agent-gateway sessions.
 `stampLane()` (`src/collectors/claude-code.ts`) only calls this fallback when
 `getSessionLane()` returns `undefined` (no line at all) — never when a line
 exists but its lane is null, which would otherwise mislabel a plain manual
-session that happens to overlap a sideclaw window in time.
+session that happens to overlap an agent-gateway window in time.
 
 ## Usage
 
@@ -132,7 +134,7 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 ## Source-specific notes
 
 Per-collector mechanics (Claude Code billing classification, the iumac
-MacBook mirror, sideclaw's direct-call log, the retired LiteLLM bridge,
+MacBook mirror, agent-gateway's direct-call log, the retired LiteLLM bridge,
 machine attribution, the Feuer sqlite quirk) and the sharp edges each one
 hit: [`docs/collectors.md`](docs/collectors.md).
 

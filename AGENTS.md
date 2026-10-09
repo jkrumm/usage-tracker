@@ -62,9 +62,9 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   change only, which is what keeps the Argo sync a delta despite hermes/feuer
   re-reading their whole tables every run.
 - claude-code `sub_tool` precedence: the session's `USAGE_LANE` (from
-  `session_env`), then sideclaw's time-window fallback — only when no
+  `session_env`), then agent-gateway's time-window fallback — only when no
   `session_env` line exists *and* the transcript `entrypoint` is `sdk-cli` or
-  absent, since sideclaw workers are always `claude -p` — then the entrypoint
+  absent, since agent-gateway workers are always `claude -p` — then the entrypoint
   lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` →
   `desktop`). Don't loosen the guard: it stops pruned long-lived herdr sessions
   from picking up random `sideclaw:*` lanes. opencode rows without a lane are

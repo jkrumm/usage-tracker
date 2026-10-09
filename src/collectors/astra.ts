@@ -8,7 +8,7 @@ import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 // `astra` (dotfiles' `astra.sh`) is a one-shot OpenAI Responses call —
 // gpt-6-astra, reasoning.mode=pro, effort xhigh — the highest per-call cost in
 // the estate. It isn't a Codex session (no rollout JSONL) and isn't routed
-// through sideclaw's IU transport either, so nothing else in this tracker ever
+// through agent-gateway's IU transport either, so nothing else in this tracker ever
 // sees it. astra.sh appends one JSON object per call to
 // ~/.local/share/usage-tracker/astra.jsonl:
 // { ts, request_id, model, input_tokens, output_tokens, reasoning_tokens,

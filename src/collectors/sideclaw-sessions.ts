@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector, CollectContext, CollectResult, Outcome, UsageRecord } from "../types.ts";
 
-// Reads offset-incrementally from the NDJSON log sideclaw appends one line to
+// Reads offset-incrementally from the NDJSON log agent-gateway appends one line to
 // per worker session (`check`/`review`/`dispatch`/… — every MCP tool tier),
 // distinct from sideclaw-iu.ts's per-request multimodal log and from
 // litellm.ts's use of this same file purely as a time-window join key for
@@ -23,12 +23,12 @@ import type { Collector, CollectContext, CollectResult, Outcome, UsageRecord } f
 //
 // `backend` ("max" | "iu") decides billing directly (see models.ts
 // classifyBilling's sideclaw-sessions branch) rather than the id-based
-// heuristic every other source falls back to — sideclaw dispatches both lanes
+// heuristic every other source falls back to — agent-gateway dispatches both lanes
 // under the same model ids, so the id alone can't tell them apart.
 
 const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "sideclaw-sessions.jsonl");
 
-interface SideclawSessionLine {
+interface AgentGatewaySessionLine {
   sessionId?: string;
   tool?: string | null;
   project?: string | null;
@@ -48,16 +48,16 @@ interface Cursor {
   offset: number;
 }
 
-export const sideclawSessionsCollector: Collector = {
+export const agentGatewaySessionsCollector: Collector = {
   source: "sideclaw-sessions",
 
   available() {
-    const path = process.env.SIDECLAW_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;
+    const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;
     return existsSync(path);
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const path = process.env.SIDECLAW_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;
+    const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;
     if (!existsSync(path)) {
       return { records: [], cursor: ctx.cursor };
     }
@@ -90,9 +90,9 @@ export const sideclawSessionsCollector: Collector = {
 
 function parseLine(line: string): UsageRecord | null {
   if (!line) return null;
-  let obj: SideclawSessionLine;
+  let obj: AgentGatewaySessionLine;
   try {
-    obj = JSON.parse(line) as SideclawSessionLine;
+    obj = JSON.parse(line) as AgentGatewaySessionLine;
   } catch {
     // Half-written trailing line (LaunchAgent tick mid-append) or corrupt row.
     return null;

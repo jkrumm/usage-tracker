@@ -176,27 +176,27 @@ export function entrypointLane(entrypoint: string | null | undefined): string | 
 }
 
 // Fallback for the case getSessionLane can never solve. Until 2026-09-24,
-// sideclaw's own writeSessionEnv() (needed because workers run with
+// agent-gateway's own writeSessionEnv() (needed because workers run with
 // disableAllHooks, so the real SessionStart hook that carries `lane` never
 // fires for them) wrote `{ session, base_url, model, backend }` with no `lane`
 // field at all, so getSessionLane() resolved the *session id* fine (billing
 // classified correctly) but always returned null for the lane, for every
-// sideclaw row. sideclaw's writeSessionEnv now includes `lane` too, so a
-// going-forward sideclaw session_env line resolves its lane directly and this
+// agent-gateway row. agent-gateway's writeSessionEnv now includes `lane` too, so a
+// going-forward agent-gateway session_env line resolves its lane directly and this
 // fallback only matters for a session with no session_env line at all
 // (pruned, or older than the fix) — stampLane (claude-code.ts) only calls it
 // in that case, never when a line exists with a null lane.
 //
-// sideclaw independently writes `~/.local/share/usage-tracker/sideclaw-sessions.jsonl`,
+// agent-gateway independently writes `~/.local/share/usage-tracker/sideclaw-sessions.jsonl`,
 // one record per worker with `{ tool, project, tsStart, tsEnd }` — but keyed by
-// sideclaw's own pre-run UUID, not the transcript session id claude-code
+// agent-gateway's own pre-run UUID, not the transcript session id claude-code
 // records, so there's no id to join on. litellm.ts solved the identical problem
 // for bridge rows by matching a record's timestamp into a session's
 // [tsStart, tsEnd] window instead; this does the same for claude-code rows,
 // additionally preferring a window whose `project` matches the row's cwd to
-// disambiguate concurrent sideclaw sessions (litellm rows carry no cwd, so
+// disambiguate concurrent agent-gateway sessions (litellm rows carry no cwd, so
 // litellm.ts can't do this) — ties fall back to the narrowest window.
-interface SideclawWindow {
+interface AgentGatewayWindow {
   tool: string;
   project: string | null;
   tsStartMs: number;
@@ -204,9 +204,9 @@ interface SideclawWindow {
   /** End - start in ms; used to pick the narrowest match when windows overlap. */
   spanMs: number;
 }
-let sideclawWindows: SideclawWindow[] | null = null;
+let agentGatewayWindows: AgentGatewayWindow[] | null = null;
 
-function sideclawSessionsLogPath(): string {
+function agentGatewaySessionsLogPath(): string {
   return (
     process.env.SIDECLAW_SESSIONS_LOG?.trim() ||
     join(homedir(), ".local", "share", "usage-tracker", "sideclaw-sessions.jsonl")
@@ -215,15 +215,15 @@ function sideclawSessionsLogPath(): string {
 
 /**
  * Test-only: clear the module-level sideclaw-sessions cache so a test can
- * control loadSideclawWindows' input deterministically. Never called from
+ * control loadAgentGatewayWindows' input deterministically. Never called from
  * production code.
  */
-export function resetSideclawWindowsCacheForTest(): void {
-  sideclawWindows = null;
+export function resetAgentGatewayWindowsCacheForTest(): void {
+  agentGatewayWindows = null;
 }
 
-function loadSideclawWindows(): SideclawWindow[] {
-  const path = sideclawSessionsLogPath();
+function loadAgentGatewayWindows(): AgentGatewayWindow[] {
+  const path = agentGatewaySessionsLogPath();
   if (!existsSync(path)) return [];
   let text: string;
   try {
@@ -231,7 +231,7 @@ function loadSideclawWindows(): SideclawWindow[] {
   } catch {
     return [];
   }
-  const windows: SideclawWindow[] = [];
+  const windows: AgentGatewayWindow[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
     try {
@@ -254,21 +254,21 @@ function loadSideclawWindows(): SideclawWindow[] {
 }
 
 /**
- * Coarsened the same way sideclaw's usageLane() would (`sideclaw:<tool before
+ * Coarsened the same way agent-gateway's usageLane() would (`sideclaw:<tool before
  * the first ':'>`) so `review:angle`/`review:synthesis`/… collapse onto one
  * `sideclaw:review` row, same as a correctly-written USAGE_LANE would have.
  * Returns null when no window contains `ts` — a manual `c`/`ca` session, or a
- * sideclaw window this log has already rotated past.
+ * agent-gateway window this log has already rotated past.
  */
-export function getSideclawLane(ts: string | null | undefined, project: string | null | undefined): string | null {
+export function getAgentGatewayLane(ts: string | null | undefined, project: string | null | undefined): string | null {
   if (!ts) return null;
   const rowMs = Date.parse(ts);
   if (!Number.isFinite(rowMs)) return null;
-  if (!sideclawWindows) sideclawWindows = loadSideclawWindows();
+  if (!agentGatewayWindows) agentGatewayWindows = loadAgentGatewayWindows();
 
-  let best: SideclawWindow | undefined;
+  let best: AgentGatewayWindow | undefined;
   let bestIsProjectMatch = false;
-  for (const w of sideclawWindows) {
+  for (const w of agentGatewayWindows) {
     if (rowMs < w.tsStartMs || rowMs > w.tsEndMs) continue;
     const isProjectMatch = project != null && w.project === project;
     if (!best || (isProjectMatch && !bestIsProjectMatch) || (isProjectMatch === bestIsProjectMatch && w.spanMs < best.spanMs)) {
@@ -311,11 +311,11 @@ export function normalizeModel(raw: string | null): string | null {
   // onto their bare alias and produces no unintended collisions.
   m = m.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   // `deepseek-flash` (no version) is Claude Code's own small/fast-model slot
-  // (ANTHROPIC_DEFAULT_HAIKU_MODEL), which sideclaw's session-runner.ts pins to
+  // (ANTHROPIC_DEFAULT_HAIKU_MODEL), which agent-gateway's session-runner.ts pins to
   // the literal id "DeepSeek-V4-Flash" for every non-Claude worker route — the
   // gateway then echoes a shorter alias back in the transcript's `message.model`
   // field instead of the requested id. Evidence: 1758+ claude-code rows since
-  // 2026-09-12 whose project is a sideclaw worktree or `hermes`'s own
+  // 2026-09-12 whose project is an agent-gateway worktree or `hermes`'s own
   // `compression` task (same alias, same gateway); one row's window lines up
   // exactly with a live `review:router` sideclaw-sessions.jsonl entry whose own
   // `model` field is "DeepSeek-V4-Flash". Without this it silently priced at
@@ -338,7 +338,7 @@ export const LITELLM_BRIDGE_CUTOFF = "2026-07-08T00:00:00Z";
 /**
  * True only for the retired-bridge era: a bridge-shaped id (non-`claude-*`, or
  * `-eu`) with a timestamp before LITELLM_BRIDGE_CUTOFF. After the cutoff every
- * id reaches the API directly (the `ca` launcher and sideclaw's `iu` lane both
+ * id reaches the API directly (the `ca` launcher and agent-gateway's `iu` lane both
  * talk to the IU unified endpoint's native Anthropic route, Max serves the rest)
  * and the transcript is the only record of it, so nothing is skipped.
  */
@@ -367,7 +367,7 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * Decide who actually pays for a record.
  *
  *   "max" — Max subscription (`c` launcher, api.anthropic.com)
- *   "iu"  — the IU unified endpoint, per-token: the `ca` launcher, sideclaw's
+ *   "iu"  — the IU unified endpoint, per-token: the `ca` launcher, agent-gateway's
  *           `iu` lane (a `claude -p` session with ANTHROPIC_BASE_URL pointed
  *           at the endpoint's native Anthropic route, any served id), and every
  *           agent daemon.
@@ -413,7 +413,7 @@ export function classifyBilling(
   }
 
   // sideclaw-sessions carries its own backend ("max" | "iu") straight from the
-  // session log — sideclaw dispatches both lanes, so the model id alone can't
+  // session log — agent-gateway dispatches both lanes, so the model id alone can't
   // tell them apart. Older rows written before the field existed fall back to
   // the same id-based heuristic as the no-session_env case above.
   if (source === "sideclaw-sessions") {

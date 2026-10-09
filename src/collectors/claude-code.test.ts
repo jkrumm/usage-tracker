@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetSessionBaseUrlsCacheForTest, resetSideclawWindowsCacheForTest } from "../models.ts";
+import { resetSessionBaseUrlsCacheForTest, resetAgentGatewayWindowsCacheForTest } from "../models.ts";
 import { iumacLogsDir, iumacProjectsDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { claudeCodeCollector, setSyncOverrideForTest } from "./claude-code.ts";
@@ -46,13 +46,13 @@ describe("claude-code two-root collector", () => {
     // tmp dir rather than the real ~/.claude/logs so these tests never read
     // this machine's actual session history.
     process.env.USAGE_CLAUDE_LOGS_DIR = localLogsDir;
-    // Same reasoning for the sideclaw-attribution fallback getSideclawLane()
+    // Same reasoning for the agent-gateway-attribution fallback getAgentGatewayLane()
     // now runs on every unattributed line — point it at a path that doesn't
     // exist so these tests never read this machine's real
     // sideclaw-sessions.jsonl.
     process.env.SIDECLAW_SESSIONS_LOG = join(localLogsDir, "no-such-sideclaw-sessions.jsonl");
     resetSessionBaseUrlsCacheForTest();
-    resetSideclawWindowsCacheForTest();
+    resetAgentGatewayWindowsCacheForTest();
   });
 
   afterEach(() => {
@@ -66,7 +66,7 @@ describe("claude-code two-root collector", () => {
     rmSync(remoteDir, { recursive: true, force: true });
     rmSync(localLogsDir, { recursive: true, force: true });
     resetSessionBaseUrlsCacheForTest();
-    resetSideclawWindowsCacheForTest();
+    resetAgentGatewayWindowsCacheForTest();
   });
 
   test("offsets for local and mirror files coexist without colliding; mirror carries machine, local leaves it null", async () => {
@@ -204,7 +204,7 @@ describe("claude-code two-root collector", () => {
       requestId: "worker-req",
       sessionId: "session-1",
       timestamp: "2026-09-24T18:22:30.000Z",
-      cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+      cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
       message: {
         id: "msg-worker-req",
         model: "deepseek-flash",
@@ -219,7 +219,7 @@ describe("claude-code two-root collector", () => {
       process.env.SIDECLAW_SESSIONS_LOG!,
       `${JSON.stringify({
         tool: "review:router",
-        project: "/Users/jkrumm/SourceRoot/sideclaw",
+        project: "/Users/jkrumm/SourceRoot/agent-gateway",
         tsStart: "2026-09-24T18:22:19.444Z",
         tsEnd: "2026-09-24T18:22:35.797Z",
       })}\n`,
@@ -233,17 +233,17 @@ describe("claude-code two-root collector", () => {
     expect(record?.subTool).toBe("sideclaw:review");
   });
 
-  test("a session_env line without a lane does NOT fall back, even when a sideclaw window matches", async () => {
+  test("a session_env line without a lane does NOT fall back, even when an agent-gateway window matches", async () => {
     // The bug this guards against: a manual `c`/`ca` session (session_env line
     // exists, no USAGE_LANE set) whose timestamp happens to fall inside an
-    // unrelated, concurrent sideclaw window must stay unattributed rather than
-    // being mislabeled as that sideclaw tool.
+    // unrelated, concurrent agent-gateway window must stay unattributed rather than
+    // being mislabeled as that agent-gateway tool.
     const line = `${JSON.stringify({
       type: "assistant",
       requestId: "manual-req",
       sessionId: "session-1",
       timestamp: "2026-09-24T18:22:30.000Z",
-      cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+      cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
       message: {
         id: "msg-manual-req",
         model: "claude-sonnet-5",
@@ -259,7 +259,7 @@ describe("claude-code two-root collector", () => {
       process.env.SIDECLAW_SESSIONS_LOG!,
       `${JSON.stringify({
         tool: "review:router",
-        project: "/Users/jkrumm/SourceRoot/sideclaw",
+        project: "/Users/jkrumm/SourceRoot/agent-gateway",
         tsStart: "2026-09-24T18:22:19.444Z",
         tsEnd: "2026-09-24T18:22:35.797Z",
       })}\n`,
@@ -273,7 +273,7 @@ describe("claude-code two-root collector", () => {
     expect(record?.subTool).toBeFalsy();
   });
 
-  // stampLane precedence: explicit session lane > sideclaw window (only with no
+  // stampLane precedence: explicit session lane > agent-gateway window (only with no
   // session_env line at all and a sdk-cli/absent entrypoint) > entrypoint lane.
   describe("stampLane precedence", () => {
     const windowTs = "2026-09-24T18:22:30.000Z";
@@ -287,19 +287,19 @@ describe("claude-code two-root collector", () => {
           requestId: "req",
           sessionId: "session-1",
           timestamp: windowTs,
-          cwd: "/Users/jkrumm/SourceRoot/sideclaw",
+          cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
           ...(entrypoint ? { entrypoint } : {}),
           message: { id: "msg", model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 } },
         })}\n`,
       );
     }
 
-    function writeSideclawWindow(): void {
+    function writeAgentGatewayWindow(): void {
       writeFileSync(
         process.env.SIDECLAW_SESSIONS_LOG!,
         `${JSON.stringify({
           tool: "review:router",
-          project: "/Users/jkrumm/SourceRoot/sideclaw",
+          project: "/Users/jkrumm/SourceRoot/agent-gateway",
           tsStart: "2026-09-24T18:22:19.444Z",
           tsEnd: "2026-09-24T18:22:35.797Z",
         })}\n`,
@@ -325,21 +325,21 @@ describe("claude-code two-root collector", () => {
       expect(await collectSubTool()).toBe("wave");
     });
 
-    test("a cli session without an env line is never sideclaw-stamped, even inside a window", async () => {
+    test("a cli session without an env line is never agent-gateway-stamped, even inside a window", async () => {
       writeTranscript("cli");
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBe("interactive");
     });
 
-    test("a claude-desktop session without an env line is never sideclaw-stamped either", async () => {
+    test("a claude-desktop session without an env line is never agent-gateway-stamped either", async () => {
       writeTranscript("claude-desktop");
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBe("desktop");
     });
 
-    test("an sdk-cli session without an env line takes the sideclaw window", async () => {
+    test("an sdk-cli session without an env line takes the agent-gateway window", async () => {
       writeTranscript("sdk-cli");
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBe("sideclaw:review");
     });
 
@@ -348,12 +348,12 @@ describe("claude-code two-root collector", () => {
       expect(await collectSubTool()).toBe("headless");
     });
 
-    test("a missing entrypoint without an env line still takes the sideclaw window, else stays null", async () => {
+    test("a missing entrypoint without an env line still takes the agent-gateway window, else stays null", async () => {
       writeTranscript(undefined);
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBe("sideclaw:review");
 
-      resetSideclawWindowsCacheForTest();
+      resetAgentGatewayWindowsCacheForTest();
       writeFileSync(process.env.SIDECLAW_SESSIONS_LOG!, "");
       expect(await collectSubTool()).toBeNull();
     });
@@ -361,14 +361,14 @@ describe("claude-code two-root collector", () => {
     test("an env line without a lane uses the entrypoint lane, never the window", async () => {
       writeTranscript("cli");
       writeEnvLine({ base_url: "https://iu" });
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBe("interactive");
     });
 
     test("an env line without a lane and an unknown entrypoint stays null", async () => {
       writeTranscript("vscode");
       writeEnvLine({});
-      writeSideclawWindow();
+      writeAgentGatewayWindow();
       expect(await collectSubTool()).toBeNull();
     });
 

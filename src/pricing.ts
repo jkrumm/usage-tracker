@@ -186,9 +186,9 @@ export const PRICING: Record<string, Rate> = {
   "gpt-5-mini": { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0.25 },
   "gemini-3-pro-preview": { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
   // Gemini 3.5 Flash standard tier (ai.google.dev/gemini-api/docs/pricing, July
-  // 2026) — sideclaw's vision model. Google bills thinking tokens at the output
+  // 2026) — agent-gateway's vision model. Google bills thinking tokens at the output
   // rate, which is what computeCost already does with `reasoning`; those tokens
-  // sit outside candidatesTokenCount, so sideclaw derives them rather than
+  // sit outside candidatesTokenCount, so agent-gateway derives them rather than
   // reading a field (see its normalizeUsage). Batch/Flex are half these rates
   // and Priority is 1.8x; only standard is tracked.
   "gemini-3.5-flash": { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
@@ -201,9 +201,9 @@ export const PRICING: Record<string, Rate> = {
   "gemini-3.8-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
   // gpt-image-2 is per-token, not flat per-image. It emits image output tokens
   // ($30/M) and consumes text prompt tokens ($5/M) — mapped to output/input
-  // here because sideclaw only does text->image generation. Image *input*
+  // here because agent-gateway only does text->image generation. Image *input*
   // tokens (edits/reference images) bill at $8/M and would need a separate
-  // rate; sideclaw doesn't send them today.
+  // rate; agent-gateway doesn't send them today.
   "gpt-image-2": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   // GPT Image 2.5 Flare / Sunburst (OpenAI pricing table, verified 2026-09-23)
   // — listed on the IU catalog, not yet used by any source. Same schedule as
@@ -212,12 +212,12 @@ export const PRICING: Record<string, Rate> = {
   "gpt-image-2.5-flare": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   "gpt-image-2.5-sunburst": { input: 5.0, output: 30.0, cacheRead: 1.25, cacheWrite: 5.0 },
   "gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
-  // GPT-5.6 Terra (OpenAI list prices, GA 2026-07-09) — sideclaw's `review`
+  // GPT-5.6 Terra (OpenAI list prices, GA 2026-07-09) — agent-gateway's `review`
   // adversary critic, which runs it at reasoning_effort "high". cacheWrite =
   // 1.25x input, cacheRead = 90% off input, both per OpenAI's published rates.
   // Reasoning dominates this model's output: a ~170-token critique carries ~4.3k
   // thinking tokens. OpenAI folds that count inside completion_tokens, so
-  // sideclaw splits it back out (see its normalizeUsage) and reports output and
+  // agent-gateway splits it back out (see its normalizeUsage) and reports output and
   // reasoning separately. Both bill at `output` here, and they sum to the
   // vendor's completion_tokens — so the spend lands once, not twice.
   // Corrected 2026-08-20 from $2.50/$15.00 (the launch price) — OpenAI's
@@ -282,7 +282,7 @@ export const PRICING: Record<string, Rate> = {
     long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 15.0, cacheRead: 0.4, cacheWrite: 5.0 } },
   },
   // GPT-6.1 Sol (OpenAI model page + API pricing table, verified 2026-10-09) —
-  // sideclaw's opencode `iu-responses` escalation. Same in/out/write as
+  // agent-gateway's opencode `iu-responses` escalation. Same in/out/write as
   // gpt-6-sol, but cacheRead is published at 5% of input ($0.10), not 10%.
   "gpt-6.1-sol": {
     input: 2.0,

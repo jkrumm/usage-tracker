@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../types.ts";
-import { sideclawIuCollector } from "./sideclaw-iu.ts";
+import { agentGatewayIuCollector } from "./sideclaw-iu.ts";
 
 // Pins the 2026-09-25 field additions: cache_read_tokens/cache_write_tokens
 // split back out of input_tokens (OpenAI convention, same pattern codex.ts
@@ -24,11 +24,11 @@ describe("sideclaw-iu collector", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "usage-tracker-sideclaw-iu-"));
     file = join(dir, "sideclaw-iu.jsonl");
-    process.env.SIDECLAW_IU_USAGE_LOG = file;
+    process.env.AGENT_GATEWAY_IU_USAGE_LOG = file;
   });
 
   afterEach(() => {
-    delete process.env.SIDECLAW_IU_USAGE_LOG;
+    delete process.env.AGENT_GATEWAY_IU_USAGE_LOG;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -53,7 +53,7 @@ describe("sideclaw-iu collector", () => {
       }),
     );
 
-    const { records } = await sideclawIuCollector.collect({ cursor: null, full: false, log });
+    const { records } = await agentGatewayIuCollector.collect({ cursor: null, full: false, log });
 
     expect(records).toHaveLength(1);
     const r = records[0]!;
@@ -78,7 +78,7 @@ describe("sideclaw-iu collector", () => {
       }),
     );
 
-    const { records } = await sideclawIuCollector.collect({ cursor: null, full: false, log });
+    const { records } = await agentGatewayIuCollector.collect({ cursor: null, full: false, log });
 
     const r = records[0]!;
     expect(r.inputTokens).toBe(178);
@@ -92,7 +92,7 @@ describe("sideclaw-iu collector", () => {
       line({ request_id: "chatcmpl-3", model: "gemini-3.5-flash", input_tokens: 10, output_tokens: 0, outcome: "error" }),
     );
 
-    const { records } = await sideclawIuCollector.collect({ cursor: null, full: false, log });
+    const { records } = await agentGatewayIuCollector.collect({ cursor: null, full: false, log });
 
     expect(records[0]?.outcome).toBe("error");
   });
@@ -112,7 +112,7 @@ describe("sideclaw-iu collector", () => {
       }),
     );
 
-    const { records } = await sideclawIuCollector.collect({ cursor: null, full: false, log });
+    const { records } = await agentGatewayIuCollector.collect({ cursor: null, full: false, log });
 
     const r = records[0]!;
     expect(r.inputTokens).toBe(100);

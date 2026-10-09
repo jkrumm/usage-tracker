@@ -22,7 +22,7 @@ describe("resolveSessionLanes", () => {
     expect(resolveSessionLanes([null, "sideclaw:check"], "claude-desktop")).toEqual(["desktop", "desktop"]);
   });
 
-  test("generic lanes are not explicit evidence and non-sideclaw lanes are left alone", () => {
+  test("generic lanes are not explicit evidence and non-agent-gateway lanes are left alone", () => {
     expect(resolveSessionLanes([null, "interactive", "warden", "headless"], "cli")).toEqual([
       "warden",
       "interactive",
@@ -35,7 +35,7 @@ describe("resolveSessionLanes", () => {
     expect(resolveSessionLanes([null, "bg", "fleet", "fleet"], "cli")).toEqual(["fleet", "bg", "fleet", "fleet"]);
   });
 
-  test("sdk-cli: NULL rows take a non-sideclaw explicit lane, else headless; sideclaw rows stay", () => {
+  test("sdk-cli: NULL rows take a non-agent-gateway explicit lane, else headless; agent-gateway rows stay", () => {
     expect(resolveSessionLanes([null, "sideclaw:review"], "sdk-cli")).toEqual(["headless", "sideclaw:review"]);
     expect(resolveSessionLanes([null, null], "sdk-cli")).toEqual(["headless", "headless"]);
     expect(resolveSessionLanes([null, "sideclaw:review", "wave", "wave"], "sdk-cli")).toEqual([
@@ -46,7 +46,7 @@ describe("resolveSessionLanes", () => {
     ]);
   });
 
-  test("unknown entrypoint: NULL rows take the session's explicit lane, sideclaw rows stay", () => {
+  test("unknown entrypoint: NULL rows take the session's explicit lane, agent-gateway rows stay", () => {
     expect(resolveSessionLanes([null, null], null)).toEqual([null, null]);
     expect(resolveSessionLanes([null, "bg"], null)).toEqual(["bg", "bg"]);
     expect(resolveSessionLanes(["sideclaw:review", "sideclaw:review"], null)).toEqual(["sideclaw:review", "sideclaw:review"]);
@@ -172,7 +172,7 @@ describe("relane end to end", () => {
     expect(rows.get("cli-3")).toMatchObject({ sub_tool: "wave", synced_at: synced });
     expect(rows.get("cli2-1")?.sub_tool).toBe("interactive");
     expect(rows.get("cli2-2")?.sub_tool).toBe("interactive");
-    expect(rows.get("sdk-1")?.sub_tool).toBe("headless"); // a sideclaw lane never propagates to NULL rows
+    expect(rows.get("sdk-1")?.sub_tool).toBe("headless"); // an agent-gateway lane never propagates to NULL rows
     expect(rows.get("sdk2-1")?.sub_tool).toBe("headless");
     expect(rows.get("sdk-2")).toMatchObject({ sub_tool: "sideclaw:implement", synced_at: synced });
     expect(rows.get("gone-1")?.sub_tool).toBe("bg");

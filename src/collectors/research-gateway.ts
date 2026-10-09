@@ -5,7 +5,7 @@ import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRe
 
 // Reads offset-incrementally from the NDJSON log research-gateway appends one
 // line per usage record to — the argo usage record verbatim, in the same
-// directory sideclaw's `sideclaw-iu.jsonl` lives in, so this mirrors
+// directory agent-gateway's `sideclaw-iu.jsonl` lives in, so this mirrors
 // sideclaw-iu.ts's offset handling (including its tolerance for a half-written
 // trailing line, and recovering from a rotation/truncation instead of stalling).
 //

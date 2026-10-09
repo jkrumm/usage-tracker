@@ -148,10 +148,10 @@ function toMessageRecord(row: MessageRow): UsageRecord | null {
     // multi-directory session is attributed correctly); fall back to the
     // session's directory when a message predates `path` being recorded.
     project: data.path?.cwd ?? row.directory ?? null,
-    // sideclaw's dispatch/OpenCode lane writes a session_env line keyed by
+    // agent-gateway's dispatch/OpenCode lane writes a session_env line keyed by
     // this same opencode session id (ses_…) with a `lane` field — the same
     // join claude-code.ts uses for its own sessions, just against a different
-    // id namespace. No sideclaw line (never written, or pruned and never
+    // id namespace. No agent-gateway line (never written, or pruned and never
     // persisted) means a manual `oc` run or an opencode wave pane, both
     // interactive TUIs. The table is re-read whole every run, so this must not
     // fall back to null: the upsert would then erase a lane once its line is gone.

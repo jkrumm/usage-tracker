@@ -236,7 +236,7 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
   // breakdown dimension besides project/model. `task` is a second, orthogonal
   // axis (background_review/title_generation/approval/vision/compression, ''
   // for the main agent loop), so rather than pick one and drop the other we
-  // namespace them the same way sideclaw already does for its own internal
+  // namespace them the same way agent-gateway already does for its own internal
   // phases (`review:angle`, `review:synthesis`, …): channel alone for the main
   // loop (unchanged filtering for the common case), `channel:task` once a row
   // is a side task. This keeps cron/slack/cli distinguishable in every row.

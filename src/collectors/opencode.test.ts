@@ -156,7 +156,7 @@ describe("opencode collector", () => {
     expect(records[0]?.inputTokens).toBe(100);
   });
 
-  test("sub_tool is the sideclaw lane when a session_env line exists, else interactive", async () => {
+  test("sub_tool is the agent-gateway lane when a session_env line exists, else interactive", async () => {
     const db = new Database(dbPath, { create: true });
     db.exec(`
       CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER NOT NULL);
