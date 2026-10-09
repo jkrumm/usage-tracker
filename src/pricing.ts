@@ -281,6 +281,16 @@ export const PRICING: Record<string, Rate> = {
     cacheWrite: 2.5,
     long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 15.0, cacheRead: 0.4, cacheWrite: 5.0 } },
   },
+  // GPT-6.1 Sol (OpenAI model page + API pricing table, verified 2026-10-09) —
+  // sideclaw's opencode `iu-responses` escalation. Same in/out/write as
+  // gpt-6-sol, but cacheRead is published at 5% of input ($0.10), not 10%.
+  "gpt-6.1-sol": {
+    input: 2.0,
+    output: 10.0,
+    cacheRead: 0.1,
+    cacheWrite: 2.5,
+    long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 15.0, cacheRead: 0.2, cacheWrite: 5.0 } },
+  },
   // GPT-6 Astra — dotfiles' `cxa`, and by a distance the most expensive model
   // in this table: 5x Terra's input and ~4x its output. Deliberately opt-in
   // there for that reason, and the reason this collector exists at all. Same
