@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../types.ts";
-import { agentGatewaySessionsCollector } from "./sideclaw-sessions.ts";
+import { agentGatewaySessionsCollector } from "./agent-gateway-sessions.ts";
 
-// Pins the offset-incremental read (same shape as sideclaw-iu.ts), the
+// Pins the offset-incremental read (same shape as agent-gateway-iu.ts), the
 // zero-token/session-grain shape (this source carries no token counts at
 // all), the outcome collapse ("timeout" -> "error", raw.rawOutcome keeps the
 // original), and tolerance for a line missing fields that only landed on the
@@ -17,13 +17,13 @@ function line(obj: Record<string, unknown>): string {
   return `${JSON.stringify(obj)}\n`;
 }
 
-describe("sideclaw-sessions collector", () => {
+describe("agent-gateway-sessions collector", () => {
   let dir: string;
   let file: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "usage-tracker-sideclaw-sessions-"));
-    file = join(dir, "sideclaw-sessions.jsonl");
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-agent-gateway-sessions-"));
+    file = join(dir, "agent-gateway-sessions.jsonl");
     process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = file;
   });
 

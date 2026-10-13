@@ -39,7 +39,7 @@ import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRe
 // it verbatim (cost_source = "reported") instead of computeCost, and
 // reprice.ts never touches a "reported" row.
 
-const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "sideclaw-iu.jsonl");
+const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "agent-gateway-iu.jsonl");
 
 interface AgentGatewayIuLine {
   ts?: string;
@@ -63,7 +63,7 @@ interface Cursor {
 }
 
 export const agentGatewayIuCollector: Collector = {
-  source: "sideclaw-iu",
+  source: "agent-gateway-iu",
 
   available() {
     const path = process.env.AGENT_GATEWAY_IU_USAGE_LOG ?? DEFAULT_PATH;
@@ -115,7 +115,7 @@ function parseLine(line: string, log: Logger): UsageRecord | null {
   // safely. This collector exists to catch spend nothing else sees, so say so
   // rather than dropping it silently — it means recordIuUsage is misbehaving.
   if (!obj.request_id) {
-    log.warn(`sideclaw-iu: dropping row with no request_id: ${line.slice(0, 120)}`);
+    log.warn(`agent-gateway-iu: dropping row with no request_id: ${line.slice(0, 120)}`);
     return null;
   }
 

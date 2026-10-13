@@ -9,7 +9,7 @@ import type { Billing } from "./types.ts";
  * rows, using the transcript `entrypoint` the collector now stamps going
  * forward. Three defects left history wrong: interactive sessions carried a NULL
  * lane, long-lived sessions whose session_env line was pruned got a random
- * `sideclaw:*` lane from the time-window fallback, and `<synthetic>` API-error
+ * `agent-gateway:*` lane from the time-window fallback, and `<synthetic>` API-error
  * rows were billed `iu` inside Max sessions.
  *
  * Changed rows get `synced_at = NULL` so the next `sync` re-pushes them, same as
@@ -59,13 +59,13 @@ export async function scanEntrypoints(): Promise<Map<string, string>> {
 /**
  * New `sub_tool` per row of one session, in input order (unchanged rows come
  * back as-is). The session's explicit lane is its most frequent existing lane
- * that is neither generic nor `sideclaw:*`. An agent-gateway lane is never evidence
+ * that is neither generic nor `agent-gateway:*`. An agent-gateway lane is never evidence
  * for other rows: it was either stamped from the session's own session_env line
  * (then every row has it) or by the time-window fallback, which is the
  * misattribution being repaired.
  *
  * A session with an unknown entrypoint (transcript gone) that mixes NULL and
- * `sideclaw:*` rows is treated as `cli`: that mix only arises when a session
+ * `agent-gateway:*` rows is treated as `cli`: that mix only arises when a session
  * outlives its pruned session_env line (hours to days), and agent-gateway workers
  * finish in minutes.
  */
@@ -73,7 +73,7 @@ export function resolveSessionLanes(
   current: Array<string | null>,
   entrypoint: string | null,
 ): Array<string | null> {
-  const isAgentGateway = (lane: string | null) => lane?.startsWith("sideclaw:") ?? false;
+  const isAgentGateway = (lane: string | null) => lane?.startsWith("agent-gateway:") ?? false;
   const mixed = current.includes(null) && current.some(isAgentGateway);
   const effective = entrypointLane(entrypoint) === null && mixed ? "cli" : entrypoint;
   const generic = entrypointLane(effective);

@@ -8,14 +8,14 @@ the end of `ingest`), which is where the dashboard lives.
 
 ## What it ingests
 
-> **Legacy names are a data contract.** The service is `agent-gateway` now (renamed 2026-10-09), but its collector/source names (`sideclaw-iu`, `sideclaw-sessions`), the `sideclaw:<tool>` lanes and the `SIDECLAW_SESSIONS_LOG` override are persisted in the database and the jsonl logs. They keep the old prefix on both sides so historical rows and time series stay joinable; a rename would need a data migration.
+> **Renamed 2026-10-13.** The `agent-gateway-iu` / `agent-gateway-sessions` sources, the `agent-gateway:<tool>` lanes and the `AGENT_GATEWAY_SESSIONS_USAGE_LOG` override carry the service's name on both sides. Stored rows and jsonl sinks were migrated in place — see `docs/history/agent-gateway-rename-migration.md`.
 
 | Source | Storage read | Grain | Dedup key | Status |
 |-|-|-|-|-|
 | `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max and IU-direct, every model id, billed by the session's base URL — see below) |
 | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
-| `sideclaw-iu` | `~/.local/share/usage-tracker/sideclaw-iu.jsonl` (offset-incremental) — agent-gateway's direct IU calls (`read_image`, `read_drawing`, the `review` critic; `generate_image` retired 2026-07, historical rows stay queryable) | message | `request_id` | working |
+| `agent-gateway-iu` | `~/.local/share/usage-tracker/agent-gateway-iu.jsonl` (offset-incremental) — agent-gateway's direct IU calls (`read_image`, `read_drawing`, the `review` critic; `generate_image` retired 2026-07, historical rows stay queryable) | message | `request_id` | working |
 | `research-gateway` | `~/.local/share/usage-tracker/research-gateway.jsonl` (offset-incremental) — research-gateway's argo usage records: lead/worker LLM calls, per-call vendor rows (`sonar`, `tavily`, `render`, …) and the re-sent `tavily-account` snapshot | session | `source_id` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `message` (per assistant turn), session-grain fallback if that table is absent | message | message `id` (session `id` on the fallback) | working — OpenCode was re-added 2026-09-23; removed 2026-09-04 → 2026-09-23, historical rows from before the removal stay queryable |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
@@ -49,7 +49,7 @@ distinguishable once merged — see "Machine attribution" below.
 
 | Lane | Set by |
 |-|-|
-| `sideclaw:<tool>` (`sideclaw:review`, `sideclaw:dispatch`, `sideclaw:otel`, `sideclaw:check`) | agent-gateway's `session-runner.ts`, one per routed tool |
+| `agent-gateway:<tool>` (`agent-gateway:review`, `agent-gateway:dispatch`, `agent-gateway:otel`, `agent-gateway:check`) | agent-gateway's `session-runner.ts`, one per routed tool |
 | `wave` | `rd wave` |
 | `bg` | legacy — `rd bg` (removed 2026-10-04); historical rows only |
 | `warden` | warden-caused dispatch work |
@@ -63,7 +63,7 @@ straight from that join, same as any other spawner-set `USAGE_LANE`.
 `getAgentGatewayLane()` (`src/models.ts`) is the fallback for a session with no
 session_env line at all (pruned, or older than the fix) — it re-derives the
 lane by matching the row's timestamp into a [`tsStart`,`tsEnd`] window from
-agent-gateway's independent `sideclaw-sessions.jsonl` attribution log (same
+agent-gateway's independent `agent-gateway-sessions.jsonl` attribution log (same
 time-window technique the retired `litellm` collector used, since the two logs
 share no session id to join on directly), preferring a window whose `project`
 matches the row's cwd to disambiguate concurrent agent-gateway sessions.

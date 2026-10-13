@@ -8,7 +8,7 @@ import { computeCost } from "../pricing.ts";
 import type { Logger } from "../types.ts";
 import { researchGatewayCollector } from "./research-gateway.ts";
 
-// Pins the offset-incremental read (same shape as sideclaw-iu.ts), the
+// Pins the offset-incremental read (same shape as agent-gateway-iu.ts), the
 // partial-line and truncation behavior, the three cost rules (model rows are
 // priced centrally, `cost_source:"reported"` keeps the vendor cost, no model /
 // no cost stays null), central machine stamping, and last-line-wins on a

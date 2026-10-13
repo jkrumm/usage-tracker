@@ -244,7 +244,7 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
 
   // Hermes reports reasoning_tokens as a detail NESTED inside output_tokens
   // (same convention as OpenAI/codex — see codex.ts's toRecord), not additive
-  // like Anthropic/sideclaw-iu. pricing.ts's contract is additive (input +
+  // like Anthropic/agent-gateway-iu. pricing.ts's contract is additive (input +
   // output + cacheRead + cacheWrite + reasoning), so it has to be split back
   // out here or reasoning bills twice — this visibly inflated Luna rows before
   // the fix. A negative split means the nesting assumption broke; clamp and

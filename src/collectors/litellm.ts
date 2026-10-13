@@ -15,7 +15,7 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // here as zero-token error rows makes that one rate queryable.
 //
 // Attribution: agent-gateway appends one record per worker session to
-// sideclaw-sessions.jsonl with { tool, project, tsStart, tsEnd }. For each
+// agent-gateway-sessions.jsonl with { tool, project, tsStart, tsEnd }. For each
 // litellm row whose ts falls inside one of those windows we tag the row with
 // the agent-gateway tool that caused it. The two logs share no key, so the join is
 // time-window based; concurrent sessions are disambiguated by picking the
@@ -27,7 +27,7 @@ const AGENT_GATEWAY_SESSIONS_PATH = join(
   ".local",
   "share",
   "usage-tracker",
-  "sideclaw-sessions.jsonl",
+  "agent-gateway-sessions.jsonl",
 );
 
 interface LitellmLine {
@@ -109,7 +109,7 @@ export const litellmCollector: Collector = {
  * have no attribution this run; not an error.
  */
 async function loadAgentGatewaySessions(): Promise<AgentGatewaySession[]> {
-  const path = process.env.SIDECLAW_SESSIONS_LOG ?? AGENT_GATEWAY_SESSIONS_PATH;
+  const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? AGENT_GATEWAY_SESSIONS_PATH;
   if (!existsSync(path)) return [];
   const text = await Bun.file(path).text();
   const sessions: AgentGatewaySession[] = [];

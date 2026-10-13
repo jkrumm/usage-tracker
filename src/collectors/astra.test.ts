@@ -6,7 +6,7 @@ import { iumacUsageJsonlDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { astraCollector } from "./astra.ts";
 
-// Pins the offset-incremental jsonl read (cloned from sideclaw-iu.ts) and the
+// Pins the offset-incremental jsonl read (cloned from agent-gateway-iu.ts) and the
 // input_tokens/cached_tokens split, which mirrors codex.ts's Responses-shaped
 // usage handling: input_tokens is inclusive of cached_tokens, reasoning_tokens
 // is additive (not nested in output_tokens — astra.sh's own log format, not a
@@ -136,7 +136,7 @@ describe("astra collector", () => {
 
 // Mirrors codex.test.ts's iumac-mirror coverage: one shared cursor across
 // local + mirror files, mirror rows carrying the MacBook's machine label, and
-// the basename filter that keeps a sibling jsonl (e.g. sideclaw-iu.jsonl) in
+// the basename filter that keeps a sibling jsonl (e.g. agent-gateway-iu.jsonl) in
 // the same mirror directory from being swallowed by this collector.
 // USAGE_IUMAC_DISABLE keeps collect()'s own syncIumac() call from ever
 // spawning ssh/rsync — the mirror fixture is placed on disk directly instead.
@@ -197,7 +197,7 @@ describe("astra collector — iumac mirror", () => {
       line({ request_id: "mirror-resp", model: "gpt-6-astra", input_tokens: 20, output_tokens: 2 }),
     );
     writeFileSync(
-      join(mirrorDir, "sideclaw-iu.jsonl"),
+      join(mirrorDir, "agent-gateway-iu.jsonl"),
       `${JSON.stringify({ request_id: "agent-gateway-resp", tool: "check" })}\n`,
     );
 

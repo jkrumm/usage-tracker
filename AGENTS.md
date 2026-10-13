@@ -67,7 +67,7 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   absent, since agent-gateway workers are always `claude -p` — then the entrypoint
   lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` →
   `desktop`). Don't loosen the guard: it stops pruned long-lived herdr sessions
-  from picking up random `sideclaw:*` lanes. opencode rows without a lane are
+  from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
   `interactive`, never null (the upsert would erase a lane).
 - `make relane` (`DRYRUN=1` first) backfills those lanes on stored rows and
   clears `synced_at` so the next sync re-pushes them.

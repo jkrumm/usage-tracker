@@ -7,19 +7,19 @@ import { openDb } from "./db.ts";
 import { formatRelane, relane, resolveSessionLanes, scanEntrypoints } from "./relane.ts";
 
 describe("resolveSessionLanes", () => {
-  test("cli: NULL and sideclaw:* rows take the session's explicit lane, else interactive", () => {
-    expect(resolveSessionLanes([null, "sideclaw:review", "wave", "wave"], "cli")).toEqual([
+  test("cli: NULL and agent-gateway:* rows take the session's explicit lane, else interactive", () => {
+    expect(resolveSessionLanes([null, "agent-gateway:review", "wave", "wave"], "cli")).toEqual([
       "wave",
       "wave",
       "wave",
       "wave",
     ]);
-    expect(resolveSessionLanes([null, "sideclaw:check"], "cli")).toEqual(["interactive", "interactive"]);
+    expect(resolveSessionLanes([null, "agent-gateway:check"], "cli")).toEqual(["interactive", "interactive"]);
   });
 
   test("claude-desktop resolves like cli, to desktop", () => {
-    expect(resolveSessionLanes([null, "sideclaw:check", "bg"], "claude-desktop")).toEqual(["bg", "bg", "bg"]);
-    expect(resolveSessionLanes([null, "sideclaw:check"], "claude-desktop")).toEqual(["desktop", "desktop"]);
+    expect(resolveSessionLanes([null, "agent-gateway:check", "bg"], "claude-desktop")).toEqual(["bg", "bg", "bg"]);
+    expect(resolveSessionLanes([null, "agent-gateway:check"], "claude-desktop")).toEqual(["desktop", "desktop"]);
   });
 
   test("generic lanes are not explicit evidence and non-agent-gateway lanes are left alone", () => {
@@ -36,11 +36,11 @@ describe("resolveSessionLanes", () => {
   });
 
   test("sdk-cli: NULL rows take a non-agent-gateway explicit lane, else headless; agent-gateway rows stay", () => {
-    expect(resolveSessionLanes([null, "sideclaw:review"], "sdk-cli")).toEqual(["headless", "sideclaw:review"]);
+    expect(resolveSessionLanes([null, "agent-gateway:review"], "sdk-cli")).toEqual(["headless", "agent-gateway:review"]);
     expect(resolveSessionLanes([null, null], "sdk-cli")).toEqual(["headless", "headless"]);
-    expect(resolveSessionLanes([null, "sideclaw:review", "wave", "wave"], "sdk-cli")).toEqual([
+    expect(resolveSessionLanes([null, "agent-gateway:review", "wave", "wave"], "sdk-cli")).toEqual([
       "wave",
-      "sideclaw:review",
+      "agent-gateway:review",
       "wave",
       "wave",
     ]);
@@ -49,13 +49,13 @@ describe("resolveSessionLanes", () => {
   test("unknown entrypoint: NULL rows take the session's explicit lane, agent-gateway rows stay", () => {
     expect(resolveSessionLanes([null, null], null)).toEqual([null, null]);
     expect(resolveSessionLanes([null, "bg"], null)).toEqual(["bg", "bg"]);
-    expect(resolveSessionLanes(["sideclaw:review", "sideclaw:review"], null)).toEqual(["sideclaw:review", "sideclaw:review"]);
+    expect(resolveSessionLanes(["agent-gateway:review", "agent-gateway:review"], null)).toEqual(["agent-gateway:review", "agent-gateway:review"]);
     expect(resolveSessionLanes([null], "vscode")).toEqual([null]);
   });
 
-  test("unknown entrypoint mixing NULL and sideclaw:* rows is a pruned interactive session", () => {
-    expect(resolveSessionLanes([null, "bg", "sideclaw:review"], null)).toEqual(["bg", "bg", "bg"]);
-    expect(resolveSessionLanes([null, "sideclaw:review"], null)).toEqual(["interactive", "interactive"]);
+  test("unknown entrypoint mixing NULL and agent-gateway:* rows is a pruned interactive session", () => {
+    expect(resolveSessionLanes([null, "bg", "agent-gateway:review"], null)).toEqual(["bg", "bg", "bg"]);
+    expect(resolveSessionLanes([null, "agent-gateway:review"], null)).toEqual(["interactive", "interactive"]);
   });
 });
 
@@ -106,13 +106,13 @@ describe("relane end to end", () => {
 
     db = openDb(join(dir, "usage.db"));
     insert("cli-1", "s-cli", null);
-    insert("cli-2", "s-cli", "sideclaw:review");
+    insert("cli-2", "s-cli", "agent-gateway:review");
     insert("cli-3", "s-cli", "wave");
     insert("cli-4", "s-cli", "wave");
     insert("cli2-1", "s-cli2", null);
-    insert("cli2-2", "s-cli2", "sideclaw:check");
+    insert("cli2-2", "s-cli2", "agent-gateway:check");
     insert("sdk-1", "s-sdk", null);
-    insert("sdk-2", "s-sdk", "sideclaw:implement");
+    insert("sdk-2", "s-sdk", "agent-gateway:implement");
     insert("sdk2-1", "s-sdk2", null);
     insert("gone-1", "s-gone", null);
     insert("gone-2", "s-gone", "bg");
@@ -153,11 +153,11 @@ describe("relane end to end", () => {
     const t = (from: string | null, to: string | null) =>
       result.transitions.find((x) => x.from === from && x.to === to);
     expect(t(null, "wave")).toMatchObject({ rows: 1, costUsd: 1.5 });
-    expect(t("sideclaw:review", "wave")?.rows).toBe(1);
+    expect(t("agent-gateway:review", "wave")?.rows).toBe(1);
     expect(t(null, "interactive")?.rows).toBe(3); // cli2-1 + max-1 + max-2 (synthetic)
-    expect(t("sideclaw:check", "interactive")?.rows).toBe(1);
+    expect(t("agent-gateway:check", "interactive")?.rows).toBe(1);
     expect(t(null, "headless")?.rows).toBe(2); // sdk2-1 + sdk-1
-    expect(t(null, "sideclaw:implement")).toBeUndefined();
+    expect(t(null, "agent-gateway:implement")).toBeUndefined();
     expect(t(null, "bg")?.rows).toBe(1);
     expect(formatRelane(result)).toContain("dry run");
   });
@@ -174,7 +174,7 @@ describe("relane end to end", () => {
     expect(rows.get("cli2-2")?.sub_tool).toBe("interactive");
     expect(rows.get("sdk-1")?.sub_tool).toBe("headless"); // an agent-gateway lane never propagates to NULL rows
     expect(rows.get("sdk2-1")?.sub_tool).toBe("headless");
-    expect(rows.get("sdk-2")).toMatchObject({ sub_tool: "sideclaw:implement", synced_at: synced });
+    expect(rows.get("sdk-2")).toMatchObject({ sub_tool: "agent-gateway:implement", synced_at: synced });
     expect(rows.get("gone-1")?.sub_tool).toBe("bg");
     expect(rows.get("gone-2")).toMatchObject({ sub_tool: "bg", synced_at: synced });
     expect(rows.get("lost-1")).toMatchObject({ sub_tool: null, synced_at: synced });

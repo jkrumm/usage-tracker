@@ -239,7 +239,7 @@ through agent-gateway's IU transport either, so nothing else here ever sees it.
 `~/.local/share/usage-tracker/astra.jsonl`
 (`{ ts, request_id, model, input_tokens, output_tokens, reasoning_tokens,
 cached_tokens, effort, mode, outcome, duration_ms }`); the collector's
-byte-offset jsonl read started as a clone of `sideclaw-iu`'s single-file
+byte-offset jsonl read started as a clone of `agent-gateway-iu`'s single-file
 walker, grain `'message'`, `subTool` set to `mode`.
 
 Same Responses-shaped usage object codex.ts already handles: `input_tokens` is
@@ -259,19 +259,19 @@ started as; a persisted cursor still in that old shape is migrated in place
 (that N becomes the local file's starting offset) rather than dropped, so an
 upgrade doesn't force a full re-read. Both roots are walked and filtered to
 the `astra.jsonl` basename, since the mirror directory also carries other
-one-shot jsonl logs (e.g. `sideclaw-iu.jsonl`) this collector must not
+one-shot jsonl logs (e.g. `agent-gateway-iu.jsonl`) this collector must not
 swallow. Mirror rows carry the MacBook's `machine` label the same way
 claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
 ingest and never flips claude-code's own `ok`/`note` (its own
 `SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
 
-### agent-gateway direct IU calls (`sideclaw-iu`)
+### agent-gateway direct IU calls (`agent-gateway-iu`)
 
 agent-gateway's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
 retired 2026-07, historical rows stay queryable) and the `review` adversary
 critic call the IU OpenAI transport with plain `fetch` — no `claude -p`
 session, so no transcript. agent-gateway's `recordIuUsage` appends one line per
-request to `~/.local/share/usage-tracker/sideclaw-iu.jsonl`
+request to `~/.local/share/usage-tracker/agent-gateway-iu.jsonl`
 (`{ ts, request_id, tool, model, input_tokens, output_tokens, reasoning_tokens,
 cache_read_tokens, cache_write_tokens, cost_usd, outcome, latency_ms, bytes }`;
 the last four added 2026-09-25, older rows lack them and are treated as
@@ -286,7 +286,7 @@ taking precedence over this table's pricing.
 research-gateway appends one line per usage record to
 `~/.local/share/usage-tracker/research-gateway.jsonl` — its argo usage record
 verbatim, the same directory and append-only shape as agent-gateway's
-`sideclaw-iu.jsonl`, so the collector reads it by byte offset the same way.
+`agent-gateway-iu.jsonl`, so the collector reads it by byte offset the same way.
 `source_id` is the dedup key (`<jobId>:lead`, `<jobId>:worker`, `<jobId>:sonar`,
 `<jobId>:tavily`, … or the fixed `tavily-account`); the `tavily-account` snapshot
 is re-sent, and because upsert is keyed on `(source, source_id)` the last line
@@ -329,7 +329,7 @@ per-request latency is queryable directly.
 The bridge logger sees only tokens — it has no way to know which agent-gateway tool
 (`check`, `review`, `research`, `implement`, …) caused a given request. To
 recover that, agent-gateway's `runSession` appends one record per worker to
-`~/.local/share/usage-tracker/sideclaw-sessions.jsonl` with
+`~/.local/share/usage-tracker/agent-gateway-sessions.jsonl` with
 `{ tool, project, tsStart, tsEnd, outcome, durationMs, turns }`. The litellm
 collector loads this on every run and tags rows whose `ts` falls inside a
 window with `sub_tool` and `project`. When concurrent windows overlap, the
@@ -358,7 +358,7 @@ explicit session lane, then the agent-gateway window, then the entrypoint lane. 
 window fallback only runs when there is no `session_env` line *and* the
 entrypoint is `sdk-cli` or absent: agent-gateway workers are always `claude -p`, so a
 `cli` or `claude-desktop` session can never be one. Without that guard, a
-days-old herdr pane whose line was pruned got a random `sideclaw:*` lane from
+days-old herdr pane whose line was pruned got a random `agent-gateway:*` lane from
 whichever window its rows overlapped, and lost its `wave`/`fleet` lane.
 
 `make relane` (`relane` in `src/cli.ts`, logic in `src/relane.ts`; `DRYRUN=1`
@@ -366,12 +366,12 @@ prints per old → new lane row counts and cost without writing) backfills
 history. It scans the transcripts of both roots (subagent files included) for
 `sessionId → entrypoint`, then per session: the *explicit lane* is the most
 frequent existing lane that is neither `interactive`/`headless`/`desktop` nor
-`sideclaw:*` — an agent-gateway lane never propagates to other rows. A
-`cli`/`claude-desktop` session rewrites NULL and `sideclaw:*` rows to its
+`agent-gateway:*` — an agent-gateway lane never propagates to other rows. A
+`cli`/`claude-desktop` session rewrites NULL and `agent-gateway:*` rows to its
 explicit lane, else the entrypoint lane; an `sdk-cli` session fills NULL rows
-(explicit lane, else `headless`) and leaves `sideclaw:*` alone; a session whose
+(explicit lane, else `headless`) and leaves `agent-gateway:*` alone; a session whose
 transcript is gone gets NULL rows filled from its own explicit lane only —
-unless it mixes NULL and `sideclaw:*` rows, which only a session outliving its
+unless it mixes NULL and `agent-gateway:*` rows, which only a session outliving its
 pruned line produces (agent-gateway workers finish in minutes, these spanned ~23h on
 average), so it is resolved as `cli`. The same pass flips
 `<synthetic>` rows from `iu` to `max` when the session has a non-synthetic `max`

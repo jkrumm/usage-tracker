@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../types.ts";
-import { agentGatewayIuCollector } from "./sideclaw-iu.ts";
+import { agentGatewayIuCollector } from "./agent-gateway-iu.ts";
 
 // Pins the 2026-09-25 field additions: cache_read_tokens/cache_write_tokens
 // split back out of input_tokens (OpenAI convention, same pattern codex.ts
@@ -17,13 +17,13 @@ function line(obj: Record<string, unknown>): string {
   return `${JSON.stringify(obj)}\n`;
 }
 
-describe("sideclaw-iu collector", () => {
+describe("agent-gateway-iu collector", () => {
   let dir: string;
   let file: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "usage-tracker-sideclaw-iu-"));
-    file = join(dir, "sideclaw-iu.jsonl");
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-agent-gateway-iu-"));
+    file = join(dir, "agent-gateway-iu.jsonl");
     process.env.AGENT_GATEWAY_IU_USAGE_LOG = file;
   });
 

@@ -5,8 +5,8 @@ import type { Collector, CollectContext, CollectResult, Logger, Outcome, UsageRe
 
 // Reads offset-incrementally from the NDJSON log research-gateway appends one
 // line per usage record to — the argo usage record verbatim, in the same
-// directory agent-gateway's `sideclaw-iu.jsonl` lives in, so this mirrors
-// sideclaw-iu.ts's offset handling (including its tolerance for a half-written
+// directory agent-gateway's `agent-gateway-iu.jsonl` lives in, so this mirrors
+// agent-gateway-iu.ts's offset handling (including its tolerance for a half-written
 // trailing line, and recovering from a rotation/truncation instead of stalling).
 //
 // One line per record: { source, source_id, grain: "session", ts, model,
@@ -122,7 +122,7 @@ function parseLine(line: string, log: Logger): UsageRecord | null {
   // (upsertRecords JSON.stringifies the whole record on the way to the column).
   if (obj.raw !== undefined && obj.raw !== null) raw.raw = obj.raw;
   // "timeout"/other non-ok outcomes collapse into the outcome column's "error";
-  // keep the original string in raw so it isn't lost (same as sideclaw-sessions).
+  // keep the original string in raw so it isn't lost (same as agent-gateway-sessions).
   if (obj.outcome && obj.outcome !== "ok" && obj.outcome !== "error") {
     raw.rawOutcome = obj.outcome;
   }

@@ -151,7 +151,7 @@ export function getSessionBaseUrl(sessionId: string | null | undefined): string 
 }
 
 /**
- * The lane whoever spawned the session set via `USAGE_LANE` (`sideclaw:review`,
+ * The lane whoever spawned the session set via `USAGE_LANE` (`agent-gateway:review`,
  * `wave`, `bg`, `warden`, …), joined the same way classifyBilling joins
  * base_url — by sessionId against the session_env log line. `undefined` means
  * no session_env line was found at all (pruned, or older than the hook);
@@ -187,7 +187,7 @@ export function entrypointLane(entrypoint: string | null | undefined): string | 
 // (pruned, or older than the fix) — stampLane (claude-code.ts) only calls it
 // in that case, never when a line exists with a null lane.
 //
-// agent-gateway independently writes `~/.local/share/usage-tracker/sideclaw-sessions.jsonl`,
+// agent-gateway independently writes `~/.local/share/usage-tracker/agent-gateway-sessions.jsonl`,
 // one record per worker with `{ tool, project, tsStart, tsEnd }` — but keyed by
 // agent-gateway's own pre-run UUID, not the transcript session id claude-code
 // records, so there's no id to join on. litellm.ts solved the identical problem
@@ -208,13 +208,13 @@ let agentGatewayWindows: AgentGatewayWindow[] | null = null;
 
 function agentGatewaySessionsLogPath(): string {
   return (
-    process.env.SIDECLAW_SESSIONS_LOG?.trim() ||
-    join(homedir(), ".local", "share", "usage-tracker", "sideclaw-sessions.jsonl")
+    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG?.trim() ||
+    join(homedir(), ".local", "share", "usage-tracker", "agent-gateway-sessions.jsonl")
   );
 }
 
 /**
- * Test-only: clear the module-level sideclaw-sessions cache so a test can
+ * Test-only: clear the module-level agent-gateway-sessions cache so a test can
  * control loadAgentGatewayWindows' input deterministically. Never called from
  * production code.
  */
@@ -254,9 +254,9 @@ function loadAgentGatewayWindows(): AgentGatewayWindow[] {
 }
 
 /**
- * Coarsened the same way agent-gateway's usageLane() would (`sideclaw:<tool before
+ * Coarsened the same way agent-gateway's usageLane() would (`agent-gateway:<tool before
  * the first ':'>`) so `review:angle`/`review:synthesis`/… collapse onto one
- * `sideclaw:review` row, same as a correctly-written USAGE_LANE would have.
+ * `agent-gateway:review` row, same as a correctly-written USAGE_LANE would have.
  * Returns null when no window contains `ts` — a manual `c`/`ca` session, or a
  * agent-gateway window this log has already rotated past.
  */
@@ -276,7 +276,7 @@ export function getAgentGatewayLane(ts: string | null | undefined, project: stri
       bestIsProjectMatch = isProjectMatch;
     }
   }
-  return best ? `sideclaw:${best.tool.split(":")[0]}` : null;
+  return best ? `agent-gateway:${best.tool.split(":")[0]}` : null;
 }
 
 /**
@@ -317,7 +317,7 @@ export function normalizeModel(raw: string | null): string | null {
   // field instead of the requested id. Evidence: 1758+ claude-code rows since
   // 2026-09-12 whose project is an agent-gateway worktree or `hermes`'s own
   // `compression` task (same alias, same gateway); one row's window lines up
-  // exactly with a live `review:router` sideclaw-sessions.jsonl entry whose own
+  // exactly with a live `review:router` agent-gateway-sessions.jsonl entry whose own
   // `model` field is "DeepSeek-V4-Flash". Without this it silently priced at
   // $0 (no PRICING entry for the bare alias).
   if (m === "deepseek-flash") m = "deepseek-v4-flash";
@@ -412,16 +412,16 @@ export function classifyBilling(
     return "max";
   }
 
-  // sideclaw-sessions carries its own backend ("max" | "iu") straight from the
+  // agent-gateway-sessions carries its own backend ("max" | "iu") straight from the
   // session log — agent-gateway dispatches both lanes, so the model id alone can't
   // tell them apart. Older rows written before the field existed fall back to
   // the same id-based heuristic as the no-session_env case above.
-  if (source === "sideclaw-sessions") {
+  if (source === "agent-gateway-sessions") {
     if (backend === "max" || backend === "iu") return backend;
     return isIuOnlyModel(rawModel) ? "iu" : "max";
   }
 
-  // hermes / feuer / opencode / sideclaw-iu all bill per-token against the IU
+  // hermes / feuer / opencode / agent-gateway-iu all bill per-token against the IU
   // unified endpoint.
   return "iu";
 }

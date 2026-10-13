@@ -5,7 +5,7 @@ import type { Collector, CollectContext, CollectResult, Outcome, UsageRecord } f
 
 // Reads offset-incrementally from the NDJSON log agent-gateway appends one line to
 // per worker session (`check`/`review`/`dispatch`/… — every MCP tool tier),
-// distinct from sideclaw-iu.ts's per-request multimodal log and from
+// distinct from agent-gateway-iu.ts's per-request multimodal log and from
 // litellm.ts's use of this same file purely as a time-window join key for
 // attributing *its* rows. This collector turns each session line into its own
 // usage_record instead, which is the only place session-level outcome,
@@ -16,17 +16,17 @@ import type { Collector, CollectContext, CollectResult, Outcome, UsageRecord } f
 // One line per session: { sessionId, tool, project, model, backend, tsStart,
 // tsEnd, outcome, durationMs, turns, exitCode, apiErrorStatus, reason }. No
 // token counts are carried here — those are billed once already via litellm
-// or claude-code/sideclaw-iu; this source exists purely for the operational
+// or claude-code/agent-gateway-iu; this source exists purely for the operational
 // fields those don't have. New fields have landed on this log over time
 // (`backend`, `reason`, …), so every field below is read defensively rather
 // than assumed present.
 //
 // `backend` ("max" | "iu") decides billing directly (see models.ts
-// classifyBilling's sideclaw-sessions branch) rather than the id-based
+// classifyBilling's agent-gateway-sessions branch) rather than the id-based
 // heuristic every other source falls back to — agent-gateway dispatches both lanes
 // under the same model ids, so the id alone can't tell them apart.
 
-const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "sideclaw-sessions.jsonl");
+const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "agent-gateway-sessions.jsonl");
 
 interface AgentGatewaySessionLine {
   sessionId?: string;
@@ -49,7 +49,7 @@ interface Cursor {
 }
 
 export const agentGatewaySessionsCollector: Collector = {
-  source: "sideclaw-sessions",
+  source: "agent-gateway-sessions",
 
   available() {
     const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;

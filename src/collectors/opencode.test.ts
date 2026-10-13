@@ -178,13 +178,13 @@ describe("opencode collector", () => {
       join(process.env.USAGE_CLAUDE_LOGS_DIR!, "2026-10-06.jsonl"),
       `${JSON.stringify({
         event: "session_env",
-        data: { session: "ses_worker", base_url: null, lane: "sideclaw:implement" },
+        data: { session: "ses_worker", base_url: null, lane: "agent-gateway:implement" },
       })}\n`,
     );
 
     const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
 
-    expect(records.find((r) => r.sourceId === "msg-ses_worker")?.subTool).toBe("sideclaw:implement");
+    expect(records.find((r) => r.sourceId === "msg-ses_worker")?.subTool).toBe("agent-gateway:implement");
     expect(records.find((r) => r.sourceId === "msg-ses_manual")?.subTool).toBe("interactive");
   });
 });

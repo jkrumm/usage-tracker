@@ -23,7 +23,7 @@ USAGE
 COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
-    --source <name>      Only run one collector (claude-code|hermes|feuer|opencode|litellm|sideclaw-iu)
+    --source <name>      Only run one collector (claude-code|hermes|feuer|opencode|litellm|agent-gateway-iu)
   sync                   Push eligible usage_record rows to the Argo API
   reprice                Re-cost stored rows against the current pricing table
     --model <norm>       Only this model_norm

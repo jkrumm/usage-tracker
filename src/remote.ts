@@ -57,7 +57,7 @@ export function iumacCodexDir(): string {
 
 /**
  * Local mirror of iumac's `~/.local/share/usage-tracker` — the MacBook's
- * one-shot jsonl logs (astra.jsonl, sideclaw-iu.jsonl, …), walked by astra.ts
+ * one-shot jsonl logs (astra.jsonl, agent-gateway-iu.jsonl, …), walked by astra.ts
  * the same way it walks its local root. That remote directory also holds a
  * stale, decommissioned (2026-07-27) `usage.db` (+ WAL/SHM siblings) from
  * when the MacBook itself ran usage-tracker directly; rsyncDir's shared

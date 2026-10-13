@@ -61,7 +61,7 @@ export interface UsageRecord {
   /**
    * Vendor-reported cost that must be stored verbatim instead of being derived
    * from tokens — research-gateway's `sonar` rows (billed per call, not per
-   * token) and sideclaw-iu's gateway `usage.cost` (more accurate than this
+   * token) and agent-gateway-iu's gateway `usage.cost` (more accurate than this
    * table's list-price proxy for its Bedrock/Azure-routed models). When set,
    * upsertRecords stores it with `cost_source = "reported"` and reprice.ts
    * never rewrites it; when omitted the row is priced from the token counts as

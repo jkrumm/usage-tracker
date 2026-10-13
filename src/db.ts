@@ -136,7 +136,7 @@ export function upsertRecords(
   const tx = db.transaction((rows: UsageRecord[]) => {
     for (const r of rows) {
       const modelNorm = normalizeModel(r.model);
-      // A vendor-reported cost (research-gateway's sonar rows, sideclaw-iu's
+      // A vendor-reported cost (research-gateway's sonar rows, agent-gateway-iu's
       // gateway `usage.cost`) is authoritative — more accurate than this
       // table's pricing for a per-call vendor bill or a Bedrock/Azure-routed
       // model with no real cost field — and stored verbatim; everything else

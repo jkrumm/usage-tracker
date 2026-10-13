@@ -35,7 +35,7 @@ import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 // tagged with the MacBook's machine label the same way, local rows left
 // unset so upsertRecords stamps the local host. Both roots are walked with
 // walkJsonlFiles and filtered to the `astra.jsonl` basename, since the mirror
-// dir also holds other one-shot jsonl logs (e.g. sideclaw-iu.jsonl) this
+// dir also holds other one-shot jsonl logs (e.g. agent-gateway-iu.jsonl) this
 // collector must not swallow.
 
 const FILENAME = "astra.jsonl";
@@ -197,7 +197,7 @@ function parseCursor(cursor: string | null): Cursor {
   if (!parsed || typeof parsed !== "object") return {};
 
   // Migrate the pre-two-root cursor shape ({"offset": N}), from when this
-  // collector was a single-file offset walker cloned from sideclaw-iu.ts.
+  // collector was a single-file offset walker cloned from agent-gateway-iu.ts.
   // Treat that N as the local astra.jsonl file's starting offset so the
   // upgrade doesn't re-read its whole history — rows dedup on request_id
   // either way, but that's a pointless full re-read to avoid in three lines.

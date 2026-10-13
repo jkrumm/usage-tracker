@@ -203,7 +203,7 @@ describe("getSessionLane", () => {
     writeFileSync(
       join(localDir, "2026-09-10.jsonl"),
       [
-        { event: "session_env", data: { session: "lane-session", base_url: null, lane: "sideclaw:review" } },
+        { event: "session_env", data: { session: "lane-session", base_url: null, lane: "agent-gateway:review" } },
         { event: "session_env", data: { session: "no-lane-session", base_url: null } },
       ]
         .map((l) => JSON.stringify(l))
@@ -220,7 +220,7 @@ describe("getSessionLane", () => {
   });
 
   test("returns the lane a spawner set via USAGE_LANE", () => {
-    expect(getSessionLane("lane-session")).toBe("sideclaw:review");
+    expect(getSessionLane("lane-session")).toBe("agent-gateway:review");
   });
 
   test("returns null when the session_env line has no lane", () => {
@@ -232,7 +232,7 @@ describe("getSessionLane", () => {
   });
 
   test("resetSessionBaseUrlsCacheForTest clears the shared cache so a new log dir is picked up", () => {
-    expect(getSessionLane("lane-session")).toBe("sideclaw:review");
+    expect(getSessionLane("lane-session")).toBe("agent-gateway:review");
 
     rmSync(localDir, { recursive: true, force: true });
     localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
@@ -343,10 +343,10 @@ describe("getAgentGatewayLane", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "usage-tracker-sideclaw-sessions-"));
-    process.env.SIDECLAW_SESSIONS_LOG = join(dir, "sideclaw-sessions.jsonl");
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-agent-gateway-sessions-"));
+    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = join(dir, "agent-gateway-sessions.jsonl");
     writeFileSync(
-      process.env.SIDECLAW_SESSIONS_LOG,
+      process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG,
       [
         {
           tool: "review:router",
@@ -370,14 +370,14 @@ describe("getAgentGatewayLane", () => {
   });
 
   afterEach(() => {
-    delete process.env.SIDECLAW_SESSIONS_LOG;
+    delete process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG;
     rmSync(dir, { recursive: true, force: true });
     resetAgentGatewayWindowsCacheForTest();
   });
 
-  test("coarsens the matched tool to sideclaw:<tool>, same as usageLane() would", () => {
+  test("coarsens the matched tool to agent-gateway:<tool>, same as usageLane() would", () => {
     expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/agent-gateway")).toBe(
-      "sideclaw:review",
+      "agent-gateway:review",
     );
   });
 
@@ -385,7 +385,7 @@ describe("getAgentGatewayLane", () => {
     // 18:22:30 falls inside BOTH windows above; the warden one is wider (and
     // would win a narrowest-span-only tie-break), but the project match wins.
     expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/warden")).toBe(
-      "sideclaw:dispatch",
+      "agent-gateway:dispatch",
     );
   });
 
@@ -462,16 +462,16 @@ describe("classifyBilling", () => {
 
   test("every other source bills iu", () => {
     expect(classifyBilling("hermes", "gpt-5.6-luna")).toBe("iu");
-    expect(classifyBilling("sideclaw-iu", "gemini-3.5-flash")).toBe("iu");
+    expect(classifyBilling("agent-gateway-iu", "gemini-3.5-flash")).toBe("iu");
   });
 
-  test("sideclaw-sessions follows its own backend field, not the session log", () => {
-    expect(classifyBilling("sideclaw-sessions", "claude-sonnet-5[1m]", null, "max")).toBe("max");
-    expect(classifyBilling("sideclaw-sessions", "gemini-3.5-flash", null, "iu")).toBe("iu");
+  test("agent-gateway-sessions follows its own backend field, not the session log", () => {
+    expect(classifyBilling("agent-gateway-sessions", "claude-sonnet-5[1m]", null, "max")).toBe("max");
+    expect(classifyBilling("agent-gateway-sessions", "gemini-3.5-flash", null, "iu")).toBe("iu");
   });
 
-  test("sideclaw-sessions without a backend falls back to the id heuristic", () => {
-    expect(classifyBilling("sideclaw-sessions", "claude-sonnet-5", null, null)).toBe("max");
-    expect(classifyBilling("sideclaw-sessions", "gemini-3.5-flash", null, null)).toBe("iu");
+  test("agent-gateway-sessions without a backend falls back to the id heuristic", () => {
+    expect(classifyBilling("agent-gateway-sessions", "claude-sonnet-5", null, null)).toBe("max");
+    expect(classifyBilling("agent-gateway-sessions", "gemini-3.5-flash", null, null)).toBe("iu");
   });
 });
