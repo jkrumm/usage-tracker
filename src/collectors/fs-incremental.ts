@@ -15,12 +15,20 @@ import { join } from "node:path";
  * YYYY/MM/DD buckets), and a layout change should not silently drop files out
  * of the numbers — which is exactly how workflow agents once went uncounted.
  */
-export async function walkJsonlFiles(root: string): Promise<string[]> {
+export async function walkJsonlFiles(root: string, nested = false): Promise<string[]> {
   const out: string[] = [];
-  const entries = await readdir(root, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    // A subdirectory deleted between the parent's listing and this scan (an agent worktree
+    // torn down mid-run) holds nothing to count. A missing root still throws: callers decide.
+    if (nested && (err as NodeJS.ErrnoException).code === "ENOENT") return out;
+    throw err;
+  }
   for (const e of entries) {
     const path = join(root, e.name);
-    if (e.isDirectory()) out.push(...(await walkJsonlFiles(path)));
+    if (e.isDirectory()) out.push(...(await walkJsonlFiles(path, true)));
     else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(path);
   }
   return out;
