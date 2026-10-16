@@ -56,7 +56,7 @@ verify: ## Probe the running LaunchAgent (exit 0 = loaded, log fresh)
 
 uninstall-agent: ## Stop + remove the LaunchAgent
 	launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null || true
-	rm -f $$HOME/Library/LaunchAgents/$(LABEL).plist
+	rm -f $$HOME/Library/LaunchAgents/$(LABEL).plist $$HOME/.local/state/jobs/$(LABEL).json
 	@echo "removed $(LABEL)"
 
 logs: ## Tail the last 50 lines of the LaunchAgent logs (~/Library/Logs, never /tmp)

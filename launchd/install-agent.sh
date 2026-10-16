@@ -39,6 +39,12 @@ if [[ -z "$BUN" ]]; then
   exit 1
 fi
 
+JOBRUN="$HOME/.local/bin/jobrun"
+if [[ ! -x "$JOBRUN" ]]; then
+  echo "error: $JOBRUN missing — run 'make setup' in dotfiles" >&2
+  exit 1
+fi
+
 ARGO_REF="op://common/api/SECRET"
 ARGO_URL="https://argo.jkrumm.com/api"
 
@@ -93,7 +99,7 @@ cat > "$TMP" <<EOF
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>T=\$(${SECRETS_RUN} read ${ARGO_REF} 2&gt;/dev/null) &amp;&amp; [ -n "\$T" ] &amp;&amp; export ARGO_TOKEN="\$T" || echo "usage-tracker: ARGO_TOKEN unresolvable via secrets-run (${ARGO_REF}) — argo sync disabled" &gt;&amp;2; exec ${BUN} run ${REPO}/src/cli.ts ingest</string>
+        <string>T=\$(${SECRETS_RUN} read ${ARGO_REF} 2&gt;/dev/null) &amp;&amp; [ -n "\$T" ] &amp;&amp; export ARGO_TOKEN="\$T" || echo "usage-tracker: ARGO_TOKEN unresolvable via secrets-run (${ARGO_REF}) — argo sync disabled" &gt;&amp;2; exec ${JOBRUN} ${LABEL} --owner usage-tracker --every 900 --timeout 600 -- ${BUN} run ${REPO}/src/cli.ts ingest</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -102,7 +108,10 @@ cat > "$TMP" <<EOF
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Incremental ingest every 15 minutes. -->
+    <!-- Incremental ingest every 15 minutes, under \`jobrun\` (dotfiles): each run
+         is recorded in ~/.local/state/jobs and graded by \`jobs-grade\` (the
+         heartbeat's \`jobs\` component and warden's \`job\` source), with a 10-minute
+         deadline. That replaced the heartbeat's log-mtime check. -->
     <key>StartInterval</key>
     <integer>900</integer>
 

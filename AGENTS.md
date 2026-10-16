@@ -36,7 +36,8 @@ under `mkdtemp`, and the suite is the only validation the repo has.
 (`launchd/install-agent.sh`): it renders
 `~/Library/LaunchAgents/com.jkrumm.usage-tracker.plist`, then
 bootout/bootstrap/kickstart it. The agent runs
-`bun run src/cli.ts ingest` every 900s. Re-running the installer is idempotent,
+`bun run src/cli.ts ingest` every 900s under `jobrun` (dotfiles; `--timeout 600`,
+state in `~/.local/state/jobs/`, graded by `jobs-grade`). Re-running the installer is idempotent,
 so deploying a merged default branch is just `make deploy`. There is no CI and
 no rollback path: revert the offending commit and `make deploy` again. The Argo
 bearer is resolved at spawn via `secrets-run read` and is never written to disk.
@@ -44,8 +45,8 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
 ## Verify & Monitor
 
 - Health URL: none — this is a batch LaunchAgent, not a server.
-- Kuma monitor: none dedicated; usage-tracker's liveness ("log mtime < 30 min")
-  is one component of the shared `MacMini Dev Host - Push` monitor.
+- Kuma monitor: none dedicated; liveness is the `jobs` grade (`jobs-grade --table`),
+  relayed by `make doctor` and the `MacMini Dev Host - Push` heartbeat (WARN-only).
 - OTel `service.name`: none — the repo emits no OTel.
 - `make verify` exits non-zero unless `launchctl print` sees
   `com.jkrumm.usage-tracker` and `~/Library/Logs/usage-tracker.log` is younger
