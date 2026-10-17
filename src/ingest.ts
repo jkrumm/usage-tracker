@@ -30,6 +30,10 @@ export interface IngestOptions {
   full?: boolean;
   /** Limit the run to a single source. */
   only?: string;
+  /** Replace the collector registry (tests). */
+  collectors?: Collector[];
+  /** Replace the iumac mirror sync (tests). */
+  syncIumac?: () => Promise<SyncResult>;
 }
 
 /**
@@ -38,9 +42,8 @@ export interface IngestOptions {
  * aborts the others.
  */
 export async function runIngest(db: Database, opts: IngestOptions = {}): Promise<IngestSummary> {
-  const targets = opts.only
-    ? allCollectors.filter((c) => c.source === opts.only)
-    : allCollectors;
+  const registry = opts.collectors ?? allCollectors;
+  const targets = opts.only ? registry.filter((c) => c.source === opts.only) : registry;
 
   if (opts.only && targets.length === 0) {
     throw new Error(`unknown source "${opts.only}"`);
@@ -51,7 +54,7 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
   // until the first lookup, which lands after claude-code has synced the mirror.
   useSessionEnvStore(db);
 
-  const iumacSync = once(() => syncIumac(log));
+  const iumacSync = once(opts.syncIumac ?? (() => syncIumac(log)));
   const results: SourceResult[] = [];
   for (const c of targets) {
     results.push(await runOne(db, c, opts, iumacSync));
