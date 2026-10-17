@@ -4,6 +4,8 @@ import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
 import { useSessionEnvStore } from "./models.ts";
 import { unpricedByModel, type UnpricedModel } from "./report.ts";
+import { syncIumac } from "./remote.ts";
+import type { SyncResult } from "./remote.ts";
 import { sync } from "./sync.ts";
 import type { Collector } from "./types.ts";
 
@@ -49,9 +51,10 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
   // until the first lookup, which lands after claude-code has synced the mirror.
   useSessionEnvStore(db);
 
+  const iumacSync = once(() => syncIumac(log));
   const results: SourceResult[] = [];
   for (const c of targets) {
-    results.push(await runOne(db, c, opts));
+    results.push(await runOne(db, c, opts, iumacSync));
   }
 
   let synced = 0;
@@ -92,7 +95,17 @@ export function formatRunSummary(summary: IngestSummary, now = new Date()): stri
   return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} sync=${summary.synced} unpriced=${unpricedTotal}`;
 }
 
-async function runOne(db: Database, c: Collector, opts: IngestOptions): Promise<SourceResult> {
+function once<T>(fn: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+  return () => (pending ??= fn());
+}
+
+async function runOne(
+  db: Database,
+  c: Collector,
+  opts: IngestOptions,
+  syncIumac: () => Promise<SyncResult>,
+): Promise<SourceResult> {
   if (!c.available()) {
     return { source: c.source, status: "skipped", processed: 0, newRows: 0, note: "not present" };
   }
@@ -102,6 +115,7 @@ async function runOne(db: Database, c: Collector, opts: IngestOptions): Promise<
       cursor: opts.full ? null : loadCursor(db, c.source),
       full: opts.full ?? false,
       log,
+      syncIumac,
     });
     const { processed, newRows } = upsertRecords(db, c.source, result.records, {
       defaultWorkspace: c.workspace ?? null,
