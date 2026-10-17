@@ -1,3 +1,5 @@
+import type { SyncResult } from "./remote.ts";
+
 // Shared contracts for the usage tracker.
 //
 // A "usage record" is one billable unit from one source. The grain differs by
@@ -91,6 +93,11 @@ export interface CollectContext {
   /** When true, ignore the cursor and re-scan everything. */
   full: boolean;
   log: Logger;
+  /**
+   * Shared iumac mirror sync for this ingest pass: runs at most once, on first
+   * use. Absent for direct callers, which sync on their own.
+   */
+  syncIumac?: () => Promise<SyncResult>;
 }
 
 export interface CollectResult {

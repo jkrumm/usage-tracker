@@ -82,13 +82,11 @@ export const astraCollector: Collector = {
     const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor);
     const records: UsageRecord[] = [];
 
-    // Refresh the mirror before reading it. Same call codex.ts/claude-code.ts
-    // make at the top of their own collect() — kept independent rather than
-    // shared so `ingest --source astra` alone still refreshes the mirror
-    // instead of silently reading stale (or absent) data; when several
-    // collectors run in the same ingest cycle the extra rsync calls are cheap
-    // no-ops (nothing changed since the first one ran).
-    const sync = await syncIumac(ctx.log);
+    // Refresh the mirror before reading it. Shared with the other collectors
+    // in this ingest pass via ctx.syncIumac, so the mirror is swept once per
+    // run; `ingest --source astra` alone still syncs, since runIngest always
+    // supplies it.
+    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
     if (!sync.usageJsonlOk) ctx.log.warn("astra: iumac usage-jsonl mirror sync failed");
 
     const mirrorDir = iumacUsageJsonlDir();

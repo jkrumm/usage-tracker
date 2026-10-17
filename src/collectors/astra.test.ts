@@ -113,6 +113,20 @@ describe("astra collector", () => {
     expect(warnings).toHaveLength(1);
   });
 
+  test("uses the ingest pass's shared iumac sync instead of syncing itself", async () => {
+    writeFileSync(file, line({ request_id: "resp-1", model: "gpt-6-astra", input_tokens: 10, output_tokens: 1 }));
+    let calls = 0;
+    const syncIumac = async () => {
+      calls++;
+      return { ok: true, logsOk: true, codexOk: true, usageJsonlOk: true };
+    };
+
+    const { records } = await astraCollector.collect({ cursor: null, full: false, log, syncIumac });
+
+    expect(calls).toBe(1);
+    expect(records).toHaveLength(1);
+  });
+
   test("available() is false when the log is absent, without throwing", () => {
     rmSync(dir, { recursive: true, force: true });
     expect(astraCollector.available()).toBe(false);

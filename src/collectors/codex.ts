@@ -103,15 +103,13 @@ export const codexCollector: Collector = {
     const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor);
     const records: UsageRecord[] = [];
 
-    // Refresh the mirror before reading it. Same call claude-code.ts makes at
-    // the top of its own collect() — kept independent rather than shared so
-    // `ingest --source codex` alone still refreshes the mirror instead of
-    // silently reading stale (or absent) data; when both collectors run in
-    // the same ingest cycle the second call is a cheap no-op rsync (nothing
-    // changed since the first). Never throws; a failed codex leg only logs a
-    // warning and local ingest continues (see SyncResult.codexOk in remote.ts
-    // for why this never touches `note`/`ok`).
-    const sync = await syncIumac(ctx.log);
+    // Refresh the mirror before reading it. Shared with the other collectors
+    // in this ingest pass via ctx.syncIumac, so the mirror is swept once per
+    // run; `ingest --source codex` alone still syncs, since runIngest always
+    // supplies it. Never throws; a failed codex leg only logs a warning and
+    // local ingest continues (see SyncResult.codexOk in remote.ts for why
+    // this never touches `note`/`ok`).
+    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
     if (!sync.codexOk) ctx.log.warn("codex: iumac codex-sessions mirror sync failed");
 
     await collectRoot(sessionsDir(), cursor, records, null, ctx.log);

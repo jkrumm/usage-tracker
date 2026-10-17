@@ -102,7 +102,7 @@ export const claudeCodeCollector: Collector = {
 
     // Refresh the mirror before reading it. Never lets a sync failure abort
     // local ingest.
-    const sync = await (syncOverrideForTest ? syncOverrideForTest() : syncIumac(ctx.log));
+    const sync = await (syncOverrideForTest ?? ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
     if (!sync.ok) ctx.log.warn(`claude-code: ${sync.note}`);
 
     await collectRoot(localProjectsDir(), offsets, records, null, { advanceOffsets: true });
