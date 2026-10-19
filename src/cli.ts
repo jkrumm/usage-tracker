@@ -12,6 +12,7 @@ import {
   type GroupBy,
 } from "./report.ts";
 import { formatRelane, relane, scanEntrypoints } from "./relane.ts";
+import { checkPricingDrift, fetchRequestyModels } from "./pricing-drift.ts";
 import { formatReprice, reprice } from "./reprice.ts";
 import { sync } from "./sync.ts";
 
@@ -37,6 +38,7 @@ COMMANDS
   billing-audit          Per-session claude-code billing check vs. the live session_env log
     --since <N>          Only the last N days (default 3, matches log retention)
     --session <id>       Only this session
+  pricing-drift          Read-only: compare PRICING peak rates against Requesty's public catalogue (exit 1 on drift >1%)
   help                   This message
 
 ENV
@@ -64,6 +66,12 @@ async function main(): Promise<number> {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     process.stdout.write(HELP);
     return 0;
+  }
+
+  if (cmd === "pricing-drift") {
+    const result = checkPricingDrift(await fetchRequestyModels());
+    process.stdout.write(`${result.lines.join("\n")}\n`);
+    return result.ok ? 0 : 1;
   }
 
   const db = openDb();
