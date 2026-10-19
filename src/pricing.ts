@@ -10,8 +10,8 @@ import type { Grain } from "./types.ts";
 //
 // Rates verified May 2026 against published list prices (Anthropic, OpenAI,
 // Google) and the Feuer agent's configured IU rate for Kimi-K2.6; DeepSeek V4
-// and Opus 4.8 added June 2026, Claude 5 family (Sonnet 5, Fable 5) July 2026
-// (see inline notes). The Requesty-routed non-Claude models (DeepSeek and the
+// and Opus 4.8 added June 2026, Claude 5 family (Sonnet 5, Fable 5) July 2026,
+// Haiku 5.5 added 2026-10-19 (see inline notes). The Requesty-routed non-Claude models (DeepSeek and the
 // August 2026 batch below) are measured directly against the IU unified
 // endpoint's own reported `usage.cost`, 2026-08-28 — solved by least squares
 // across four request shapes per model with a 0.0% residual, and confirmed
@@ -108,6 +108,19 @@ export const PRICING: Record<string, Rate> = {
   "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, cacheWrite1h: 4 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, cacheWrite1h: 6 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2 },
+  // Haiku 5.5 — $0.10/$0.50 standard, cross-checked 2026-10-19 against
+  // Requesty's anthropic/bedrock rows (cached $0.01, cache write $0.125). The
+  // `long` schedule (5x above 100K prompt tokens, cache read and write counted
+  // in the prompt) is the agent-gateway registry figure and is not visible in
+  // the Requesty catalog. Without this exact row, `claude-haiku-5-5` fell back
+  // to the haiku family tier at $1/$5 — 10x too high.
+  "claude-haiku-5-5": {
+    input: 0.1,
+    output: 0.5,
+    cacheRead: 0.01,
+    cacheWrite: 0.125,
+    long: { threshold: 100_000, rate: { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 } },
+  },
   // Opus 5.5 — added 2026-09-24 (platform.claude.com/docs/en/about-claude/pricing).
   // Diverges from the opus-tier FAMILY_PRICING fallback ($5/$25/$0.50/$6.25/$10),
   // which had been silently overcosting every opus-5-5 row until this exact

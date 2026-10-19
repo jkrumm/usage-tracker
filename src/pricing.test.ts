@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { normalizeModel } from "./models.ts";
 import { computeCost, inUtcWindow } from "./pricing.ts";
 import type { TokenCounts } from "./pricing.ts";
 
@@ -331,5 +332,67 @@ describe("off-peak schedule (deepseek-v4.1-flash)", () => {
   test("inUtcWindow handles non-wrapping windows", () => {
     expect(inUtcWindow("2026-09-25T10:00:00Z", "09:00", "11:00")).toBe(true);
     expect(inUtcWindow("2026-09-25T11:00:00Z", "09:00", "11:00")).toBe(false);
+  });
+});
+
+describe("claude-haiku-5-5 exact rate", () => {
+  const base: Omit<TokenCounts, "grain"> = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheWrite1h: 0,
+    reasoning: 0,
+  };
+
+  test("resolves the -eu id to the exact row, not the haiku family tier", () => {
+    const model = normalizeModel("claude-haiku-5-5-eu");
+    expect(model).toBe("claude-haiku-5-5");
+    const result = computeCost(model, { ...base, input: 50_000, grain: "message" });
+    expect(result).toEqual({ usd: 0.005, source: "computed" });
+  });
+
+  test("bills at the standard rate at and below 100K prompt tokens", () => {
+    // 50k input + 50k cache read = exactly 100k, which is not above the threshold.
+    const result = computeCost("claude-haiku-5-5", {
+      ...base,
+      input: 50_000,
+      cacheRead: 50_000,
+      output: 1_000,
+      grain: "message",
+    });
+    expect(result.usd).toBeCloseTo((50_000 * 0.1 + 50_000 * 0.01 + 1_000 * 0.5) / 1e6, 10);
+  });
+
+  test("bills every rate at 5x above 100K prompt tokens", () => {
+    const result = computeCost("claude-haiku-5-5", {
+      ...base,
+      input: 100_000,
+      cacheRead: 100_000,
+      output: 1_000,
+      grain: "message",
+    });
+    expect(result.usd).toBeCloseTo((100_000 * 0.5 + 100_000 * 0.05 + 1_000 * 2.5) / 1e6, 10);
+  });
+
+  test("cache write counts toward the 100K prompt threshold", () => {
+    // input alone (10k) is far below 100K; the 95k cache write tips it over.
+    const result = computeCost("claude-haiku-5-5", {
+      ...base,
+      input: 10_000,
+      cacheWrite: 95_000,
+      grain: "message",
+    });
+    expect(result.usd).toBeCloseTo((10_000 * 0.5 + 95_000 * 0.625) / 1e6, 10);
+  });
+
+  test("the long schedule does not apply to session-grain rows", () => {
+    const result = computeCost("claude-haiku-5-5", {
+      ...base,
+      input: 10_000,
+      cacheWrite: 95_000,
+      grain: "session",
+    });
+    expect(result.usd).toBeCloseTo((10_000 * 0.1 + 95_000 * 0.125) / 1e6, 10);
   });
 });
