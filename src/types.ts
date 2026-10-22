@@ -118,6 +118,12 @@ export interface Collector {
    * from the cwd (claude-code, litellm).
    */
   readonly workspace?: Workspace | null;
+  /**
+   * Expected cadence: hours of silence after which the newest row's `ts` makes
+   * the source stale (`health` / `make verify` go not-ok). `null` = frozen or
+   * legacy by design. Required, so a moved store can never go silent again.
+   */
+  readonly staleAfterHours: number | null;
   /** Cheap check: is this source present on this machine at all? */
   available(): boolean;
   collect(ctx: CollectContext): Promise<CollectResult>;

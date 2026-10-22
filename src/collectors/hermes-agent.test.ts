@@ -78,6 +78,7 @@ describe("hermes-agent collector — session_model_usage", () => {
       source: "hermes",
       dbPath,
       workspace: "private",
+      staleAfterHours: null,
       project: "hermes-agent",
     });
 
@@ -138,6 +139,7 @@ describe("hermes-agent collector — session_model_usage", () => {
       source: "hermes",
       dbPath: dbPath2,
       workspace: "private",
+      staleAfterHours: null,
       project: "hermes-agent",
     });
     const { records } = await collector.collect({ cursor: null, full: false, log });

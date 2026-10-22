@@ -88,6 +88,7 @@ type Offsets = Record<string, number>;
 
 export const claudeCodeCollector: Collector = {
   source: "claude-code",
+  staleAfterHours: 48,
 
   available() {
     // Local-root semantics only, deliberately unchanged: the collector must

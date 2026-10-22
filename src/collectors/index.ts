@@ -9,6 +9,7 @@ import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
 import { researchGatewayCollector } from "./research-gateway.ts";
+import { agentGatewayOpencodeCollector } from "./agent-gateway-opencode.ts";
 import { agentGatewayIuCollector } from "./agent-gateway-iu.ts";
 import { agentGatewaySessionsCollector } from "./agent-gateway-sessions.ts";
 
@@ -21,6 +22,7 @@ export const collectors: Collector[] = [
     source: "hermes",
     dbPath: process.env.HERMES_DB ?? join(homedir(), ".hermes", "state.db"),
     workspace: "private",
+    staleAfterHours: 72,
     project: "hermes-agent",
   }),
   hermesAgentCollector({
@@ -34,12 +36,14 @@ export const collectors: Collector[] = [
     // "Feuer access".
     container: process.env.FEUER_CONTAINER,
     workspace: "work",
+    staleAfterHours: null, // idle since June
     project: "prometheus-feuer-agent",
   }),
   opencodeCollector,
   litellmCollector,
   agentGatewayIuCollector,
   agentGatewaySessionsCollector,
+  agentGatewayOpencodeCollector,
   researchGatewayCollector,
   modelpickCollector,
   astraCollector,

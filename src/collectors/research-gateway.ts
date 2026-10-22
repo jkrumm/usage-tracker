@@ -55,6 +55,7 @@ interface Cursor {
 
 export const researchGatewayCollector: Collector = {
   source: "research-gateway",
+  staleAfterHours: 168,
   workspace: "private",
 
   available() {

@@ -64,6 +64,7 @@ interface Cursor {
 
 export const agentGatewayIuCollector: Collector = {
   source: "agent-gateway-iu",
+  staleAfterHours: 72,
 
   available() {
     const path = process.env.AGENT_GATEWAY_IU_USAGE_LOG ?? DEFAULT_PATH;

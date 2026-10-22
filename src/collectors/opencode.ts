@@ -74,6 +74,7 @@ interface SessionRow {
 
 export const opencodeCollector: Collector = {
   source: "opencode",
+  staleAfterHours: null,
   workspace: "private",
 
   available() {

@@ -46,13 +46,17 @@ install-agent: ## Install + start the 15-min ingest LaunchAgent
 
 deploy: install-agent ## Ship the default branch: (re)install + kickstart the LaunchAgent
 
-verify: ## Probe the running LaunchAgent (exit 0 = loaded, log fresh)
+verify: ## Probe the running LaunchAgent + source freshness (exit 0 = loaded, log fresh, no stale source)
 	@launchctl print gui/$$(id -u)/$(LABEL) >/dev/null 2>&1 || { echo "verify: $(LABEL) not loaded"; exit 1; }
 	@log="$$HOME/Library/Logs/usage-tracker.log"; \
 	  [ -f "$$log" ] || { echo "verify: $$log missing"; exit 1; }; \
 	  age=$$(( $$(date +%s) - $$(stat -f %m "$$log") )); \
 	  [ "$$age" -le 1800 ] || { echo "verify: last output $${age}s old (limit 1800s)"; exit 1; }; \
 	  echo "verify: $(LABEL) loaded, last output $${age}s ago"
+	@bun run src/cli.ts health
+
+health: ## Fail when a source's newest row is older than its expected cadence
+	bun run src/cli.ts health
 
 uninstall-agent: ## Stop + remove the LaunchAgent
 	launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null || true

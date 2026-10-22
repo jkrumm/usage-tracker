@@ -293,3 +293,53 @@ const num = (n: number | null) => (n ?? 0).toLocaleString("en-US");
 const usd = (n: number) => `$${n.toFixed(n < 10 ? 4 : 2)}`;
 const pad = (s: string, w: number) => s.padEnd(w).slice(0, Math.max(w, s.length));
 const r = (s: string, w: number) => s.padStart(w);
+
+export interface StaleSource {
+  source: string;
+  /** Newest row's `ts`, or null when the source has never produced a row. */
+  newestTs: string | null;
+  ageHours: number | null;
+  limitHours: number;
+}
+
+/**
+ * Sources whose newest row is older than their declared cadence. Judged on the
+ * rows themselves, not on collector_state: a collector pointed at a moved store
+ * still reports `ok` with zero records, which is exactly how the agent-gateway
+ * OpenCode spend went missing. Only collectors present on this machine count.
+ */
+export function staleSources(
+  db: Database,
+  collectors: ReadonlyArray<{ source: string; staleAfterHours?: number | null; available(): boolean }>,
+  now = new Date(),
+): StaleSource[] {
+  const stale: StaleSource[] = [];
+  for (const c of collectors) {
+    if (c.staleAfterHours == null) continue;
+    const row = db
+      .query<{ ts: string | null }, [string]>("SELECT max(ts) AS ts FROM usage_record WHERE source = ?")
+      .get(c.source);
+    const newestTs = row?.ts ?? null;
+    // A source that has produced rows but whose store vanished is the moved-store
+    // failure itself; only a source never seen on this machine is exempt.
+    if (!c.available() && newestTs === null) continue;
+    const ageHours = newestTs ? (now.getTime() - Date.parse(newestTs)) / 3_600_000 : null;
+    // A non-finite or future-dated newest row (beyond clock skew) can't prove
+    // freshness, so it counts as stale rather than passing every comparison.
+    const fresh = ageHours !== null && ageHours >= -FUTURE_SKEW_HOURS && ageHours <= c.staleAfterHours;
+    if (!fresh) stale.push({ source: c.source, newestTs, ageHours, limitHours: c.staleAfterHours });
+  }
+  return stale;
+}
+
+const FUTURE_SKEW_HOURS = 1;
+
+export function formatStale(stale: StaleSource[]): string {
+  return stale
+    .map((s) =>
+      s.ageHours === null || !Number.isFinite(s.ageHours)
+        ? `stale: ${s.source} has no rows (limit ${s.limitHours}h)`
+        : `stale: ${s.source} newest row ${s.newestTs} is ${s.ageHours.toFixed(1)}h old (limit ${s.limitHours}h)`,
+    )
+    .join("\n");
+}

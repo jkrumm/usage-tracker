@@ -68,6 +68,7 @@ type Cursor = Record<string, FileState>;
 
 export const astraCollector: Collector = {
   source: "astra",
+  staleAfterHours: null,
   workspace: "private",
 
   available() {

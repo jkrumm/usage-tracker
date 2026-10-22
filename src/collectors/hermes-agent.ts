@@ -53,6 +53,8 @@ export function hermesAgentCollector(opts: {
   container?: string;
   /** Workspace this collector emits — the daemon is pinned, not the records. */
   workspace: Workspace;
+  /** Hours of silence before the source counts as stale; null = dormant. */
+  staleAfterHours: number | null;
   /**
    * Repo this daemon lives in. The Hermes `session.source` column is an
    * invocation channel (`cron`/`cli`/…); we route that to `subTool` and pin
@@ -63,6 +65,7 @@ export function hermesAgentCollector(opts: {
 }): Collector {
   return {
     source: opts.source,
+    staleAfterHours: opts.staleAfterHours,
     workspace: opts.workspace,
 
     available() {

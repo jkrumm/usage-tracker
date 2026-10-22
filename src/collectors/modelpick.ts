@@ -51,6 +51,7 @@ interface BenchRunRow {
 
 export const modelpickCollector: Collector = {
   source: "modelpick",
+  staleAfterHours: null,
   workspace: "private",
 
   available() {

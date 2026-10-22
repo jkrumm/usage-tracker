@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
+import { collectors } from "./collectors/index.ts";
 import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
   formatBillingAudit,
   formatSources,
+  formatStale,
   formatStats,
   sessionBillingAudit,
   sourceStatus,
+  staleSources,
   stats,
   unpricedByModel,
   type GroupBy,
@@ -35,6 +38,7 @@ COMMANDS
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
+  health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
   billing-audit          Per-session claude-code billing check vs. the live session_env log
     --since <N>          Only the last N days (default 3, matches log retention)
     --session <id>       Only this session
@@ -88,12 +92,27 @@ async function main(): Promise<number> {
         );
       }
       const failed = summary.results.some((r) => r.status === "error");
+      // Silent sources fail the run too, so jobrun/jobs-grade (and through it
+      // the dev-host heartbeat) sees a moved or dead store.
+      const only = flag(rest, "--source");
+      const stale = staleSources(db, only ? collectors.filter((c) => c.source === only) : collectors);
+      if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`);
       process.stdout.write(`\ndb: ${dbPath()}\n${formatRunSummary(summary)}\n`);
       if (summary.unpriced.length > 0) {
         const breakdown = summary.unpriced.map((m) => `${m.model}=${m.rows}`).join(" ");
         process.stdout.write(`unpriced by model: ${breakdown}\n`);
       }
-      return failed ? 1 : 0;
+      return failed || stale.length > 0 ? 1 : 0;
+    }
+
+    if (cmd === "health") {
+      const stale = staleSources(db, collectors);
+      if (stale.length === 0) {
+        process.stdout.write("health: every source within its expected cadence\n");
+        return 0;
+      }
+      process.stderr.write(`${formatStale(stale)}\n`);
+      return 1;
     }
 
     if (cmd === "sync") {

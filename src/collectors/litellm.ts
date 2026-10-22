@@ -63,6 +63,7 @@ interface Cursor {
 
 export const litellmCollector: Collector = {
   source: "litellm",
+  staleAfterHours: null,
 
   available() {
     const path = process.env.LITELLM_USAGE_LOG ?? DEFAULT_PATH;

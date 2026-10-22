@@ -90,6 +90,7 @@ type Cursor = Record<string, FileState>;
 
 export const codexCollector: Collector = {
   source: "codex",
+  staleAfterHours: null,
 
   available() {
     // Local-root semantics only, deliberately unchanged (same reasoning as

@@ -10,7 +10,7 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `reprice`, `relane`,
-  `stats`, `sources`, `billing-audit`.
+  `stats`, `sources`, `health`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
@@ -49,12 +49,28 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   relayed by `make doctor` and the `MacMini Dev Host - Push` heartbeat (WARN-only).
 - OTel `service.name`: none — the repo emits no OTel.
 - `make verify` exits non-zero unless `launchctl print` sees
-  `com.jkrumm.usage-tracker` and `~/Library/Logs/usage-tracker.log` is younger
-  than 1800s.
+  `com.jkrumm.usage-tracker`, `~/Library/Logs/usage-tracker.log` is younger
+  than 1800s, and `health` finds no stale source.
 - Logs live in `~/Library/Logs/usage-tracker.{log,err}`; `make logs` tails the
   last 50 lines.
 
 ## Gotchas
+
+- **agent-gateway spend is three disjoint sources — never fold them.**
+  `agent-gateway-opencode` = every OpenCode worker session (review angles/synthesis,
+  dispatch, check, bench, overview…) read from agw's own OpenCode store: tokens and exact
+  `cost`, `raw.jobId`. `agent-gateway-iu` = agw's own direct IU `fetch`es (review
+  adversary/router/OCR, read_image, prose, triage, decide…), logged to
+  `agent-gateway-iu.jsonl`. `agent-gateway-sessions` = the per-job operational log,
+  zero tokens and zero cost by design (outcome/duration only). Reconcile a day:
+  `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`
+  — no `sub_tool` should carry cost under `-sessions`, and `source_id`s never collide
+  across sources. The legacy `opencode` collector reads only the interactive `oc` store.
+- **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or
+  `null` for legacy/dormant — enforced by `health.test.ts`). `bun run src/cli.ts health`
+  (`make health`) and `ingest` exit 1 when an available source's newest row is older
+  than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so
+  the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
 
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
   `billing` and `cost_usd` centrally.

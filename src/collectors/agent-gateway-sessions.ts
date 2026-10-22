@@ -50,6 +50,7 @@ interface Cursor {
 
 export const agentGatewaySessionsCollector: Collector = {
   source: "agent-gateway-sessions",
+  staleAfterHours: 48,
 
   available() {
     const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? DEFAULT_PATH;

@@ -206,6 +206,21 @@ so a null would make the upsert erase an agent-gateway lane once its log line is
 pruned and not yet in the `session_env` table (only rows since 2026-10-06 still
 carry agent-gateway lanes).
 
+### agent-gateway OpenCode store (`agent-gateway-opencode`)
+
+Since 2026-10-14 agent-gateway runs its OpenCode v2 server on its own store,
+`~/.local/share/agent-gateway/opencode/opencode.db` (override `USAGE_AGW_OPENCODE_DB`),
+not the interactive `oc` store the legacy `opencode` collector reads (frozen at
+2026-10-13, kept for history). Schema: `session_v2` (`metadata` JSON
+`{agw:{jobId,tool}}`, `directory`) and `session_message` (`type='assistant'`, `data`
+JSON with `cost`, `tokens`, `model{id,providerID}`, `time`). One record per assistant
+message; the message `cost` is stored verbatim (`cost_source='reported'`, the session
+cost column is the exact sum of its messages). `sub_tool` = `agw.tool` (`bench:*`
+collapses to `bench`), `raw.jobId` carries the agw job id, `project` is the session
+directory, workspace is `work` under `/IuRoot/`, else `private`. Incremental on
+`session_message.time_updated >= cursor` (assistant rows are rewritten while
+streaming). Billing is `iu` (every provider in the store is `iu-*`).
+
 ### modelpick benchmark spend (`modelpick`)
 
 `~/SourceRoot/modelpick/modelpick.db` records real spend that otherwise never
