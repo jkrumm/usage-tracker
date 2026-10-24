@@ -1,9 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, upsertRecords } from "./db.ts";
+import { resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
 import type { UsageRecord } from "./types.ts";
 
 // upsertRecords' machine precedence (r.machine ?? batchMachine) is the one
@@ -103,5 +104,92 @@ describe("upsertRecords ingested_at", () => {
 
     upsertRecords(db, "hermes", [{ ...record, outputTokens: record.outputTokens + 1 }]);
     expect(ingestedAt(record.sourceId)).not.toBe("2000-01-01 00:00:00");
+  });
+});
+
+describe("agent-gateway-sessions account attribution", () => {
+  let dir: string;
+  let path: string;
+  let db: Database;
+
+  const session = (id: string, overrides: Partial<UsageRecord> = {}) =>
+    baseRecord({
+      sourceId: id,
+      grain: "session",
+      raw: { sessionId: id, backend: "max" },
+      ...overrides,
+    });
+  const rows = () =>
+    db
+      .query<{ source_id: string; account: string | null; synced_at: string | null }, []>(
+        "SELECT source_id, account, synced_at FROM usage_record ORDER BY source_id",
+      )
+      .all();
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-sessions-account-"));
+    Bun.spawnSync(["mkdir", "-p", join(dir, "logs")]);
+    process.env.USAGE_CLAUDE_LOGS_DIR = join(dir, "logs");
+    path = join(dir, "usage.db");
+    db = openDb(path);
+    useSessionEnvStore(db);
+  });
+
+  afterEach(() => {
+    resetSessionBaseUrlsCacheForTest();
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("me session -> me, no session_env -> iu, iu backend -> NULL, line-level account wins", () => {
+    writeFileSync(
+      join(dir, "logs", "2026-10-24.jsonl"),
+      [
+        { session: "s-me", base_url: "", lane: null, account: "me" },
+        { session: "s-line", base_url: "", lane: null, account: "me" },
+      ]
+        .map((data) => JSON.stringify({ event: "session_env", data }))
+        .join("\n") + "\n",
+    );
+    upsertRecords(db, "agent-gateway-sessions", [
+      session("s-me"),
+      session("s-none"),
+      session("s-iu", { raw: { sessionId: "s-iu", backend: "iu" } }),
+      session("s-line", { raw: { sessionId: "s-line", backend: "max", account: "iu" } }),
+    ]);
+
+    expect(Object.fromEntries(rows().map((r) => [r.source_id, r.account]))).toEqual({
+      "s-me": "me",
+      "s-none": "iu",
+      "s-iu": null,
+      "s-line": "iu",
+    });
+  });
+
+  test("a NULL Max row written after the migration stays NULL on reopen", () => {
+    upsertRecords(db, "agent-gateway-sessions", [session("s-1")]);
+    db.exec("UPDATE usage_record SET account = NULL");
+    db.close();
+
+    db = openDb(path);
+    expect(rows()).toEqual([{ source_id: "s-1", account: null, synced_at: null }]);
+  });
+
+  test("migration re-attributes mismatching agent-gateway-sessions rows and re-queues only those", () => {
+    upsertRecords(db, "agent-gateway-sessions", [session("s-wrong"), session("s-ok"), session("s-noenv")]);
+    db.exec(`INSERT INTO session_env (session, base_url, lane, account, seen_at) VALUES
+      ('s-wrong','',NULL,'me','2026-10-24'), ('s-ok','',NULL,'iu','2026-10-24')`);
+    db.exec("UPDATE usage_record SET account = 'iu', synced_at = '2026-10-24'");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+
+    db = openDb(path);
+    expect(rows()).toEqual([
+      { source_id: "s-noenv", account: "iu", synced_at: "2026-10-24" },
+      { source_id: "s-ok", account: "iu", synced_at: "2026-10-24" },
+      { source_id: "s-wrong", account: "me", synced_at: null },
+    ]);
+    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
   });
 });

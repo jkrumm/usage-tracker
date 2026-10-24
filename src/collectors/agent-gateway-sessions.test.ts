@@ -110,7 +110,23 @@ describe("agent-gateway-sessions collector", () => {
     expect(r.outcome).toBe("ok");
     expect(r.model).toBeNull();
     expect(r.durationMs).toBeNull();
-    expect(r.raw).toBeUndefined();
+    expect(r.raw).toEqual({ sessionId: "sess-4" });
+  });
+
+  test("raw carries sessionId (db resolves the session_env account from it); a line-level account is kept, legacy ids mapped", async () => {
+    writeFileSync(
+      file,
+      line({ sessionId: "sess-5", backend: "max" }) + line({ sessionId: "sess-6", backend: "max", account: "me" }) +
+        line({ sessionId: "sess-7", backend: "max", account: "b" }),
+    );
+
+    const { records } = await agentGatewaySessionsCollector.collect({ cursor: null, full: false, log });
+
+    expect(records.map((r) => [r.raw?.sessionId, r.raw?.account])).toEqual([
+      ["sess-5", undefined],
+      ["sess-6", "me"],
+      ["sess-7", "me"],
+    ]);
   });
 
   test("drops a row with no sessionId", async () => {
