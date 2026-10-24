@@ -63,12 +63,12 @@ function migrate(db: Database): void {
   }
   if (!cols.has("account")) {
     db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
-    db.exec("CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_record (account)");
+    // One-off backfill: every Max row predates account B, so it is account A.
+    // synced_at is cleared so the next sync re-pushes them and Argo receives it.
+    db.exec(
+      "UPDATE usage_record SET account = 'a', synced_at = NULL WHERE billing = 'max'",
+    );
   }
-  // Every Max row predates account B, so it is account A. Runs on every open
-  // (idempotent: only NULL rows match) and leaves synced_at alone — Argo gets
-  // the value through the normal delta once it stores the field.
-  db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
   const envCols = db
     .query<{ name: string }, []>("PRAGMA table_info(session_env)")
     .all()
@@ -190,7 +190,7 @@ export function upsertRecords(
         $account: classifyAccount(
           billing,
           sessionId,
-          typeof r.raw?.account === "string" ? r.raw.account : undefined,
+          r.raw?.account,
         ),
         $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",

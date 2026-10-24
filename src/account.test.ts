@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, upsertRecords } from "./db.ts";
 import { resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
+import { relane } from "./relane.ts";
 import { formatBillingAudit, sessionBillingAudit, stats } from "./report.ts";
 import type { UsageRecord } from "./types.ts";
 
@@ -112,7 +113,7 @@ describe("usage_record.account", () => {
     expect(row?.ingested_at).toBe("2000-01-01 00:00:00");
   });
 
-  test("backfill: legacy max rows -> a, iu rows untouched, idempotent, synced_at kept", () => {
+  test("backfill: legacy max rows -> a and re-queued for sync, iu untouched, runs once", () => {
     const path = join(dir, "legacy.db");
     const legacy = new Database(path, { create: true });
     legacy.exec(`CREATE TABLE usage_record (
@@ -134,8 +135,10 @@ describe("usage_record.account", () => {
         .all();
       expect(rows).toEqual([
         { source_id: "i1", account: null, synced_at: "2026-01-02" },
-        { source_id: "m1", account: "a", synced_at: "2026-01-02" },
+        { source_id: "m1", account: "a", synced_at: i === 0 ? null : "2026-01-03" },
       ]);
+      // simulate the sync marking it pushed: a second open must not re-queue it
+      migrated.exec("UPDATE usage_record SET synced_at = '2026-01-03' WHERE source_id = 'm1'");
       const envCols = migrated.query<{ name: string }, []>("PRAGMA table_info(session_env)").all();
       expect(envCols.map((c) => c.name)).toContain("account");
       migrated.close();
@@ -155,5 +158,44 @@ describe("usage_record.account", () => {
     const audit = sessionBillingAudit(db);
     expect(audit.find((r) => r.sessionId === "s-b")?.accounts).toBe("b");
     expect(formatBillingAudit(audit)).toContain("acct");
+  });
+
+  test("a later line without account keeps the stored account", () => {
+    writeEnv([{ session: "s-b", base_url: "", lane: null, account: "b" }]);
+    upsertRecords(db, "claude-code", [rec("s-b")]);
+    writeEnv([{ session: "s-b", base_url: "", lane: null }]);
+    resetSessionBaseUrlsCacheForTest();
+    useSessionEnvStore(db);
+
+    const later = rec("s-b");
+    upsertRecords(db, "claude-code", [later]);
+    expect(accountOf(later.sourceId)?.account).toBe("b");
+    const stored = db.query<{ account: string | null }, []>("SELECT account FROM session_env").get();
+    expect(stored?.account).toBe("b");
+  });
+
+  test("an unknown account value falls back to a", () => {
+    writeEnv([{ session: "s-x", base_url: "", lane: null, account: "c" }]);
+    const r = rec("s-x");
+    upsertRecords(db, "claude-code", [r]);
+    expect(accountOf(r.sourceId)?.account).toBe("a");
+  });
+
+  test("relane: synthetic iu row in a b session flipped to max gets b; max->iu clears it", () => {
+    writeEnv([{ session: "s-b", base_url: "", lane: null, account: "b" }]);
+    const real = rec("s-b");
+    const synthetic = rec("s-b", { model: "<synthetic>" });
+    upsertRecords(db, "claude-code", [real, synthetic]);
+    // simulate the pre-fix slip: synthetic row stored as iu
+    db.exec("UPDATE usage_record SET billing = 'iu', account = NULL WHERE model = '<synthetic>'");
+
+    relane(db, new Map([["s-b", "cli"]]));
+    expect(accountOf(synthetic.sourceId)).toEqual({ account: "b", billing: "max" });
+
+    // a max row reclassified to a non-max billing (iu) must carry NULL
+    db.exec("UPDATE usage_record SET sub_tool = NULL WHERE source_id = '" + real.sourceId + "'");
+    db.exec("UPDATE usage_record SET billing = 'iu' WHERE source_id = '" + real.sourceId + "'");
+    relane(db, new Map([["s-b", "cli"]]));
+    expect(accountOf(real.sourceId)?.account).toBeNull();
   });
 });
