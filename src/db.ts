@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { homedir } from "node:os";
 import { SCHEMA } from "./schema.ts";
 import { currentMachine } from "./machine.ts";
-import { classifyBilling, normalizeModel } from "./models.ts";
+import { classifyAccount, classifyBilling, normalizeModel } from "./models.ts";
 import { computeCost } from "./pricing.ts";
 import type { CollectResult, UsageRecord, Workspace } from "./types.ts";
 
@@ -61,6 +61,21 @@ function migrate(db: Database): void {
       "ALTER TABLE usage_record ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0",
     );
   }
+  if (!cols.has("account")) {
+    db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_usage_account ON usage_record (account)");
+  }
+  // Every Max row predates account B, so it is account A. Runs on every open
+  // (idempotent: only NULL rows match) and leaves synced_at alone — Argo gets
+  // the value through the normal delta once it stores the field.
+  db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
+  const envCols = db
+    .query<{ name: string }, []>("PRAGMA table_info(session_env)")
+    .all()
+    .map((r) => r.name);
+  if (!envCols.includes("account")) {
+    db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
+  }
 }
 
 export interface UpsertSummary {
@@ -70,18 +85,18 @@ export interface UpsertSummary {
 
 const UPSERT_SQL = `
 INSERT INTO usage_record
-  (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, machine, outcome,
+  (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, account, machine, outcome,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, reasoning_tokens, duration_ms,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
-  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $machine, $outcome,
+  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $account, $machine, $outcome,
    $input, $output, $cache_read, $cache_write, $cache_write_1h, $reasoning, $duration_ms,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
   model_norm=excluded.model_norm, project=excluded.project, workspace=excluded.workspace,
   sub_tool=excluded.sub_tool,
-  billing=excluded.billing, machine=excluded.machine, outcome=excluded.outcome,
+  billing=excluded.billing, account=excluded.account, machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
   cache_write_1h_tokens=excluded.cache_write_1h_tokens,
@@ -90,7 +105,7 @@ ON CONFLICT (source, source_id) DO UPDATE SET
   ingested_at=datetime('now')
 WHERE (usage_record.grain, usage_record.ts, usage_record.model, usage_record.model_norm,
        usage_record.project, usage_record.workspace, usage_record.sub_tool, usage_record.billing,
-       usage_record.machine, usage_record.outcome,
+       usage_record.account, usage_record.machine, usage_record.outcome,
        usage_record.input_tokens, usage_record.output_tokens, usage_record.cache_read_tokens,
        usage_record.cache_write_tokens, usage_record.cache_write_1h_tokens,
        usage_record.reasoning_tokens, usage_record.duration_ms,
@@ -98,7 +113,7 @@ WHERE (usage_record.grain, usage_record.ts, usage_record.model, usage_record.mod
   IS NOT
       (excluded.grain, excluded.ts, excluded.model, excluded.model_norm,
        excluded.project, excluded.workspace, excluded.sub_tool, excluded.billing,
-       excluded.machine, excluded.outcome,
+       excluded.account, excluded.machine, excluded.outcome,
        excluded.input_tokens, excluded.output_tokens, excluded.cache_read_tokens,
        excluded.cache_write_tokens, excluded.cache_write_1h_tokens,
        excluded.reasoning_tokens, excluded.duration_ms,
@@ -154,6 +169,13 @@ export function upsertRecords(
               grain: r.grain,
               ts: r.ts,
             });
+      const sessionId = typeof r.raw?.sessionId === "string" ? r.raw.sessionId : undefined;
+      const billing = classifyBilling(
+        source,
+        r.model,
+        sessionId,
+        typeof r.raw?.backend === "string" ? r.raw.backend : undefined,
+      );
       stmt.run({
         $source: source,
         $source_id: r.sourceId,
@@ -164,11 +186,11 @@ export function upsertRecords(
         $project: r.project,
         $workspace: r.workspace ?? defaultWorkspace,
         $sub_tool: r.subTool ?? null,
-        $billing: classifyBilling(
-          source,
-          r.model,
-          typeof r.raw?.sessionId === "string" ? r.raw.sessionId : undefined,
-          typeof r.raw?.backend === "string" ? r.raw.backend : undefined,
+        $billing: billing,
+        $account: classifyAccount(
+          billing,
+          sessionId,
+          typeof r.raw?.account === "string" ? r.raw.account : undefined,
         ),
         $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",

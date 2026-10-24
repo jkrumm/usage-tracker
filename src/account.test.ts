@@ -1,0 +1,159 @@
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDb, upsertRecords } from "./db.ts";
+import { resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
+import { formatBillingAudit, sessionBillingAudit, stats } from "./report.ts";
+import type { UsageRecord } from "./types.ts";
+
+// The account dimension: Max rows take the session_env line's account (absent
+// = "a"), every non-Max row is NULL, and the backfill/upsert stay idempotent.
+
+function rec(sessionId: string, overrides: Partial<UsageRecord> = {}): UsageRecord {
+  return {
+    sourceId: crypto.randomUUID(),
+    grain: "message",
+    ts: new Date().toISOString(),
+    model: "claude-sonnet-5",
+    project: null,
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    raw: { sessionId },
+    ...overrides,
+  };
+}
+
+describe("usage_record.account", () => {
+  let dir: string;
+  let logs: string;
+  let db: Database;
+
+  const accountOf = (sourceId: string) =>
+    db
+      .query<{ account: string | null; billing: string }, [string]>(
+        "SELECT account, billing FROM usage_record WHERE source_id = ?",
+      )
+      .get(sourceId);
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "usage-tracker-account-"));
+    logs = join(dir, "logs");
+    Bun.spawnSync(["mkdir", "-p", logs]);
+    process.env.USAGE_CLAUDE_LOGS_DIR = logs;
+    db = openDb(join(dir, "usage.db"));
+    useSessionEnvStore(db);
+  });
+
+  afterEach(() => {
+    resetSessionBaseUrlsCacheForTest();
+    delete process.env.USAGE_CLAUDE_LOGS_DIR;
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const writeEnv = (lines: Array<Record<string, unknown>>) =>
+    writeFileSync(
+      join(logs, "2026-10-24.jsonl"),
+      lines.map((data) => JSON.stringify({ event: "session_env", data })).join("\n") + "\n",
+    );
+
+  test("a line with account b -> b; a line without account -> a; iu -> NULL", () => {
+    writeEnv([
+      { session: "s-b", base_url: "", lane: null, account: "b" },
+      { session: "s-old", base_url: "", lane: null },
+      { session: "s-iu", base_url: "https://iu.example", lane: null, account: "b" },
+    ]);
+    const b = rec("s-b");
+    const old = rec("s-old");
+    const iu = rec("s-iu");
+    upsertRecords(db, "claude-code", [b, old, iu]);
+
+    expect(accountOf(b.sourceId)).toEqual({ account: "b", billing: "max" });
+    expect(accountOf(old.sourceId)).toEqual({ account: "a", billing: "max" });
+    expect(accountOf(iu.sourceId)).toEqual({ account: null, billing: "iu" });
+  });
+
+  test("account survives log pruning via the session_env table", () => {
+    writeEnv([{ session: "s-b", base_url: "", lane: null, account: "b" }]);
+    upsertRecords(db, "claude-code", [rec("s-b")]);
+    rmSync(join(logs, "2026-10-24.jsonl"));
+    resetSessionBaseUrlsCacheForTest();
+    useSessionEnvStore(db);
+
+    const later = rec("s-b");
+    upsertRecords(db, "claude-code", [later]);
+    expect(accountOf(later.sourceId)?.account).toBe("b");
+  });
+
+  test("no session line: max defaults to a, a source-carried account is accepted, non-claude-code sources stay NULL", () => {
+    const noLine = rec("ghost");
+    const carried = rec("ghost2", { raw: { sessionId: "ghost2", account: "b" } });
+    const hermes = rec("x");
+    upsertRecords(db, "claude-code", [noLine, carried]);
+    upsertRecords(db, "hermes", [hermes]);
+
+    expect(accountOf(noLine.sourceId)?.account).toBe("a");
+    expect(accountOf(carried.sourceId)?.account).toBe("b");
+    expect(accountOf(hermes.sourceId)).toEqual({ account: null, billing: "iu" });
+  });
+
+  test("re-upserting unchanged rows leaves ingested_at alone (delta stays a delta)", () => {
+    writeEnv([{ session: "s-b", base_url: "", lane: null, account: "b" }]);
+    const r = rec("s-b");
+    upsertRecords(db, "claude-code", [r]);
+    db.exec("UPDATE usage_record SET ingested_at = '2000-01-01 00:00:00'");
+    upsertRecords(db, "claude-code", [r]);
+    const row = db.query<{ ingested_at: string }, []>("SELECT ingested_at FROM usage_record").get();
+    expect(row?.ingested_at).toBe("2000-01-01 00:00:00");
+  });
+
+  test("backfill: legacy max rows -> a, iu rows untouched, idempotent, synced_at kept", () => {
+    const path = join(dir, "legacy.db");
+    const legacy = new Database(path, { create: true });
+    legacy.exec(`CREATE TABLE usage_record (
+      id INTEGER PRIMARY KEY, source TEXT NOT NULL, source_id TEXT NOT NULL, grain TEXT NOT NULL,
+      ts TEXT NOT NULL, model_norm TEXT, billing TEXT NOT NULL, ingested_at TEXT NOT NULL, synced_at TEXT,
+      UNIQUE (source, source_id));
+      CREATE TABLE session_env (session TEXT PRIMARY KEY, base_url TEXT, lane TEXT, seen_at TEXT NOT NULL);
+      INSERT INTO usage_record (source, source_id, grain, ts, billing, ingested_at, synced_at) VALUES
+        ('claude-code','m1','message','2026-01-01T00:00:00Z','max','2026-01-01','2026-01-02'),
+        ('claude-code','i1','message','2026-01-01T00:00:00Z','iu','2026-01-01','2026-01-02');`);
+    legacy.close();
+
+    for (let i = 0; i < 2; i++) {
+      const migrated = openDb(path);
+      const rows = migrated
+        .query<{ source_id: string; account: string | null; synced_at: string | null }, []>(
+          "SELECT source_id, account, synced_at FROM usage_record ORDER BY source_id",
+        )
+        .all();
+      expect(rows).toEqual([
+        { source_id: "i1", account: null, synced_at: "2026-01-02" },
+        { source_id: "m1", account: "a", synced_at: "2026-01-02" },
+      ]);
+      const envCols = migrated.query<{ name: string }, []>("PRAGMA table_info(session_env)").all();
+      expect(envCols.map((c) => c.name)).toContain("account");
+      migrated.close();
+    }
+  });
+
+  test("stats --by account and billing-audit show the split", () => {
+    writeEnv([
+      { session: "s-b", base_url: "", lane: null, account: "b" },
+      { session: "s-a", base_url: "", lane: null },
+    ]);
+    upsertRecords(db, "claude-code", [rec("s-b"), rec("s-b"), rec("s-a")]);
+
+    const byAccount = Object.fromEntries(stats(db, { by: "account" }).map((r) => [r.key, r.records]));
+    expect(byAccount).toEqual({ a: 1, b: 2 });
+
+    const audit = sessionBillingAudit(db);
+    expect(audit.find((r) => r.sessionId === "s-b")?.accounts).toBe("b");
+    expect(formatBillingAudit(audit)).toContain("acct");
+  });
+});

@@ -19,6 +19,8 @@ import type { Billing } from "./types.ts";
 interface SessionEnv {
   base_url: string | null;
   lane: string | null;
+  /** Claude Max account id ("a" | "b"); null on lines older than the account field. */
+  account: string | null;
 }
 let sessionEnvs: Map<string, SessionEnv> | null = null;
 let sessionEnvStore: Database | null = null;
@@ -77,24 +79,31 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
   const map = new Map<string, SessionEnv>();
   try {
     for (const row of db
-      .query<{ session: string; base_url: string | null; lane: string | null }, []>(
-        "SELECT session, base_url, lane FROM session_env",
+      .query<{ session: string; base_url: string | null; lane: string | null; account: string | null }, []>(
+        "SELECT session, base_url, lane, account FROM session_env",
       )
       .all()) {
-      map.set(row.session, { base_url: row.base_url, lane: row.lane });
+      map.set(row.session, { base_url: row.base_url, lane: row.lane, account: row.account });
     }
     // A log entry wins over the stored row for the same session: the latest
     // SessionStart is the truth (a resume can change base_url or lane).
     const upsert = db.prepare(
-      `INSERT INTO session_env (session, base_url, lane, seen_at)
-       VALUES ($session, $base_url, $lane, $seen_at)
+      `INSERT INTO session_env (session, base_url, lane, account, seen_at)
+       VALUES ($session, $base_url, $lane, $account, $seen_at)
        ON CONFLICT (session) DO UPDATE SET
-         base_url=excluded.base_url, lane=excluded.lane, seen_at=excluded.seen_at`,
+         base_url=excluded.base_url, lane=excluded.lane, account=excluded.account,
+         seen_at=excluded.seen_at`,
     );
     const seenAt = new Date().toISOString();
     db.transaction(() => {
       for (const [session, env] of logged) {
-        upsert.run({ $session: session, $base_url: env.base_url, $lane: env.lane, $seen_at: seenAt });
+        upsert.run({
+          $session: session,
+          $base_url: env.base_url,
+          $lane: env.lane,
+          $account: env.account,
+          $seen_at: seenAt,
+        });
       }
     })();
   } catch (err) {
@@ -124,12 +133,13 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
           try {
             const entry = JSON.parse(line) as {
               event?: string;
-              data?: { session?: string; base_url?: string | null; lane?: string | null };
+              data?: { session?: string; base_url?: string | null; lane?: string | null; account?: string | null };
             };
             if (entry.event === "session_env" && entry.data?.session) {
               map.set(entry.data.session, {
                 base_url: entry.data.base_url ?? null,
                 lane: entry.data.lane ?? null,
+                account: entry.data.account ?? null,
               });
             }
           } catch {
@@ -161,6 +171,33 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
   if (!sessionId) return undefined;
   if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
   return sessionEnvs.get(sessionId)?.lane;
+}
+
+/**
+ * The Claude Max account a session ran under, from its session_env line's
+ * `account` field. `undefined`/`null` = no line, or a line older than the
+ * field; classifyAccount treats both as account "a".
+ */
+export function getSessionAccount(sessionId: string | null | undefined): string | null | undefined {
+  if (!sessionId) return undefined;
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  return sessionEnvs.get(sessionId)?.account;
+}
+
+/**
+ * The account dimension, separate from billing: only Max rows have one (IU and
+ * every other non-Max row is NULL). A Max row takes its session's logged
+ * account, then an `account` the source itself carried (agent-gateway session
+ * lines may), else "a" — account A is the only one that existed before the
+ * field, so every historical line means "a".
+ */
+export function classifyAccount(
+  billing: Billing,
+  sessionId?: string | null,
+  sourceAccount?: string | null,
+): string | null {
+  if (billing !== "max") return null;
+  return getSessionAccount(sessionId) || sourceAccount || "a";
 }
 
 /**

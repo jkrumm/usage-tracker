@@ -185,6 +185,7 @@ export function relane(
     const stmt = db.prepare(
       `UPDATE usage_record
        SET sub_tool = $sub_tool, billing = $billing, synced_at = NULL,
+           account = CASE WHEN $billing = 'max' THEN coalesce(account, 'a') ELSE account END,
            raw = CASE WHEN $entrypoint IS NOT NULL AND raw IS NOT NULL
                       THEN json_set(raw, '$.entrypoint', $entrypoint) ELSE raw END
        WHERE id = $id`,
