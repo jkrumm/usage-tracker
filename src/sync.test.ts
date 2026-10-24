@@ -83,3 +83,33 @@ describe("sync result is independent of the account endpoints", () => {
     expect(await sync(db)).toEqual({ pushed: 0, batches: 0 });
   });
 });
+
+describe("post-push mark is conditional on the pushed snapshot", () => {
+  const row = () =>
+    db
+      .query<{ account: string | null; synced_at: string | null }, []>(
+        "SELECT account, synced_at FROM usage_record WHERE source_id = 's1'",
+      )
+      .get()!;
+
+  test("a row whose account changes between select and mark stays queued", async () => {
+    mockFetch(() => new Response("{}"));
+    const inner = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/usage/records") {
+        db.exec("UPDATE usage_record SET account = 'me' WHERE source_id = 's1'");
+      }
+      return inner(input, init);
+    }) as unknown as typeof fetch;
+
+    await sync(db, { maxBatches: 1 });
+
+    expect(row()).toEqual({ account: "me", synced_at: null });
+  });
+
+  test("an unchanged row is marked synced", async () => {
+    mockFetch(() => new Response("{}"));
+    await sync(db);
+    expect(row().synced_at).not.toBeNull();
+  });
+});

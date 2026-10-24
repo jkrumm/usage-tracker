@@ -78,15 +78,15 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
 
 - **`account` is a dimension, not a billing class.** `usage_record.account` (`iu`|`me`; account `iu` ≠ billing `iu`)
-  is set only for `billing='max'` rows — the source's own `account` (agent-gateway-sessions lines may carry
-  one), else session_env's `account`, else `iu` (all historical lines predate it; legacy `a`/`b` map to
+  is set only for `billing='max'` rows — the source's own `raw.account` (agent-gateway session lines carry one; collectors pass it through opaque), else session_env's `account`, else `iu` (all historical lines predate it; legacy `a`/`b` map to
   `iu`/`me` via `parseAccount`); `billing='iu'`/other rows are NULL. Derived in
-  `db.upsertRecords` via `classifyAccount`, never in a collector; a collector must put the session id in
-  `raw.sessionId` for the session_env lookup (agent-gateway-sessions does). The one-off migration
+  `db.upsertRecords` via `resolveAccount` (models.ts, the only place that validates the account), never in a
+  collector; a collector must put the session id in `raw.sessionId` for the session_env lookup
+  (agent-gateway-sessions does). The one-off migration
   (`PRAGMA user_version` 2, never data-gated: a later NULL Max row is a collector bug and stays NULL for
-  `claude-accounts-verify`) backfills old `max` rows to `iu`, renames stored `a`/`b` to `iu`/`me` in
-  `usage_record` and `session_env` (without touching `synced_at`), and re-attributes
-  agent-gateway-sessions `max` rows to their session_env account, re-queuing only those for sync. After Argo
+  `claude-accounts-verify`) backfills old `max` rows to `iu` and renames stored `a`/`b` to `iu`/`me` in
+  `usage_record` and `session_env` (without touching `synced_at`). The post-push `synced_at` mark is
+  conditional on the pushed `account` + `ingested_at`, so a row rewritten mid-push stays queued. After Argo
   stores `account` (W2 of dotfiles `docs/claude-accounts.md`), run
   `bun run src/cli.ts resync-account` once to push it for all `max` rows.
 - **`quota_sample` / `account_pick`** (dotfiles `docs/claude-accounts.md`), filled on every

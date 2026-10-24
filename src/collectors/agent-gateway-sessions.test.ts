@@ -113,10 +113,11 @@ describe("agent-gateway-sessions collector", () => {
     expect(r.raw).toEqual({ sessionId: "sess-4" });
   });
 
-  test("raw carries sessionId (db resolves the session_env account from it); a line-level account is kept, legacy ids mapped", async () => {
+  test("raw carries sessionId; a line-level account is passed through opaque", async () => {
     writeFileSync(
       file,
-      line({ sessionId: "sess-5", backend: "max" }) + line({ sessionId: "sess-6", backend: "max", account: "me" }) +
+      line({ sessionId: "sess-5", backend: "max" }) +
+        line({ sessionId: "sess-6", backend: "max", account: "me" }) +
         line({ sessionId: "sess-7", backend: "max", account: "b" }),
     );
 
@@ -125,7 +126,7 @@ describe("agent-gateway-sessions collector", () => {
     expect(records.map((r) => [r.raw?.sessionId, r.raw?.account])).toEqual([
       ["sess-5", undefined],
       ["sess-6", "me"],
-      ["sess-7", "me"],
+      ["sess-7", "b"],
     ]);
   });
 

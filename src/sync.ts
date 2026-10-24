@@ -88,7 +88,10 @@ async function syncUsage(db: Database, opts: SyncOptions): Promise<SyncResult> {
   const maxBatches = opts.maxBatches ?? 200;
   const stmt = db.query<DbRow, [number]>(ELIGIBLE_SQL);
   const updateStmt = db.prepare(
-    "UPDATE usage_record SET synced_at = datetime('now') WHERE source = $source AND source_id = $source_id",
+    // Conditional on the pushed snapshot: a row rewritten (account, ingested_at)
+    // between the SELECT and this mark stays eligible for the next push.
+    `UPDATE usage_record SET synced_at = datetime('now')
+     WHERE source = $source AND source_id = $source_id AND account IS $account AND ingested_at = $ingested_at`,
   );
 
   let pushed = 0;
@@ -102,12 +105,16 @@ async function syncUsage(db: Database, opts: SyncOptions): Promise<SyncResult> {
 
     if ((await postJson(cfg, "/usage/records", body)) !== "ok") return { pushed, batches };
 
-    const tx = db.transaction((ids: Array<{ source: string; source_id: string }>) => {
-      for (const id of ids) {
-        updateStmt.run({ $source: id.source, $source_id: id.source_id });
+    db.transaction(() => {
+      for (const r of rows) {
+        updateStmt.run({
+          $source: r.source,
+          $source_id: r.source_id,
+          $account: r.account,
+          $ingested_at: r.ingested_at,
+        });
       }
-    });
-    tx(rows.map((r) => ({ source: r.source, source_id: r.source_id })));
+    })();
 
     pushed += rows.length;
     batches += 1;

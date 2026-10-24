@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { claudeCodeRoots } from "./collectors/claude-code.ts";
 import { walkJsonlFiles } from "./collectors/fs-incremental.ts";
-import { classifyAccount, entrypointLane, SYNTHETIC_MODEL, useSessionEnvStore } from "./models.ts";
+import { resolveAccount, entrypointLane, SYNTHETIC_MODEL, useSessionEnvStore } from "./models.ts";
 import type { Billing } from "./types.ts";
 
 /**
@@ -180,7 +180,7 @@ export function relane(
       if (subTool === row.sub_tool && !fixBilling) return;
 
       const billing = fixBilling ? "max" : row.billing;
-      updates.push({ id: row.id, subTool, billing, account: dryRun ? null : classifyAccount(billing, session), entrypoint });
+      updates.push({ id: row.id, subTool, billing, account: dryRun ? null : resolveAccount({ billing, raw: { sessionId: session } }), entrypoint });
       if (fixBilling) billingFixed++;
       if (subTool === row.sub_tool) return;
       const key = `${row.sub_tool}\u0000${subTool}`;
