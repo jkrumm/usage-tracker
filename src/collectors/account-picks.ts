@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadCursor } from "../db.ts";
 import { currentMachine } from "../machine.ts";
+import { parseAccount } from "../models.ts";
 import { readNewLines } from "./fs-incremental.ts";
 
 // The dotfiles account picker appends one JSON line per decision to picks.jsonl.
@@ -25,6 +26,9 @@ interface PickLine {
   [account: string]: unknown;
 }
 
+/** Legacy account ids a/b -> iu/me; anything else (incl. the `spill` sentinel) is kept verbatim. */
+const canonicalId = (id: string): string => parseAccount(id) ?? id;
+
 /** Parse a picks.jsonl line into a row, or null when malformed. */
 export function parsePick(line: string): { ts: number; lane: string; picked: string; reason: string; stale: number; snapshot: string } | null {
   let p: PickLine;
@@ -36,11 +40,12 @@ export function parsePick(line: string): { ts: number; lane: string; picked: str
   if (!p || typeof p !== "object") return null;
   const ts = typeof p.ts === "string" ? Date.parse(p.ts) : Number.NaN;
   if (Number.isNaN(ts) || typeof p.lane !== "string" || typeof p.picked !== "string") return null;
-  const { ts: _ts, lane: _lane, picked: _picked, reason: _reason, stale: _stale, ...snapshot } = p;
+  const { ts: _ts, lane: _lane, picked: _picked, reason: _reason, stale: _stale, ...rest } = p;
+  const snapshot = Object.fromEntries(Object.entries(rest).map(([k, v]) => [canonicalId(k), v]));
   return {
     ts,
     lane: p.lane,
-    picked: p.picked,
+    picked: canonicalId(p.picked),
     reason: typeof p.reason === "string" ? p.reason : "",
     stale: p.stale ? 1 : 0,
     snapshot: JSON.stringify(snapshot),

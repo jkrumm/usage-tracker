@@ -86,6 +86,17 @@ describe("collectPicks", () => {
     expect(rows[0]!.stale).toBe(0);
   });
 
+  test("maps legacy ids a/b to iu/me in picked and snapshot keys; spill stays", async () => {
+    const f = process.env.USAGE_ACCOUNT_PICKS!;
+    const legacy = (ts: string, picked: string) =>
+      `${JSON.stringify({ ts, lane: "fan", picked, reason: "spill", stale: false, a: { s: 1, w: 2 }, b: { s: 3, w: 4 } })}\n`;
+    writeFileSync(f, legacy("2026-10-24T10:00:00.000Z", "a") + legacy("2026-10-24T10:01:00.000Z", "b") + legacy("2026-10-24T10:02:00.000Z", "spill"));
+    expect(await collectPicks(db)).toBe(3);
+    const rows = db.query<{ picked: string; snapshot: string }, []>("SELECT picked, snapshot FROM account_pick ORDER BY ts").all();
+    expect(rows.map((r) => r.picked)).toEqual(["iu", "me", "spill"]);
+    expect(JSON.parse(rows[0]!.snapshot)).toEqual({ iu: { s: 1, w: 2 }, me: { s: 3, w: 4 } });
+  });
+
   test("a truncated file resets the offset", async () => {
     const f = process.env.USAGE_ACCOUNT_PICKS!;
     writeFileSync(f, line("2026-10-24T16:00:00.000Z") + line("2026-10-24T16:01:00.000Z"));
