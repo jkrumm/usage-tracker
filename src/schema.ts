@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   workspace          TEXT,                        -- 'work' | 'private' | NULL (collector-declared or null when Argo classifies)
   sub_tool           TEXT,                        -- e.g. 'check' | 'review' | 'implement' for agent-gateway-attributed rows
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
+  account            TEXT,                        -- Claude Max account 'a' | 'b' for billing='max' rows, NULL otherwise
   machine            TEXT,                        -- host that produced the record (derived at ingest)
   outcome            TEXT    NOT NULL DEFAULT 'ok', -- 'ok' | 'error' (bridge request outcome)
 
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS session_env (
   session   TEXT PRIMARY KEY,
   base_url  TEXT,
   lane      TEXT,
+  account   TEXT,                 -- Claude Max account id from the hook; NULL on pre-account lines
   seen_at   TEXT NOT NULL
 );
 `;

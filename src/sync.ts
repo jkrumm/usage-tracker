@@ -25,6 +25,7 @@ interface DbRow {
   workspace: string | null;
   sub_tool: string | null;
   billing: string;
+  account: string | null;
   machine: string | null;
   outcome: string;
   input_tokens: number;
@@ -41,7 +42,7 @@ interface DbRow {
 
 const ELIGIBLE_SQL = `
 SELECT id, source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool,
-       billing, machine, outcome,
+       billing, account, machine, outcome,
        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
        cost_usd, cost_source, raw, ingested_at
 FROM usage_record
@@ -124,6 +125,7 @@ function rowToPayload(r: DbRow): Record<string, unknown> {
     workspace: r.workspace,
     sub_tool: r.sub_tool,
     billing: r.billing,
+    account: r.account,
     machine: r.machine,
     outcome: r.outcome,
     input_tokens: r.input_tokens,
