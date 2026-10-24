@@ -4,7 +4,7 @@ import { getSessionBaseUrl } from "./models.ts";
 // Read-side queries for the CLI. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool" | "account";
 
 interface StatRow {
   key: string;
@@ -23,6 +23,7 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   day: "substr(ts, 1, 10)",
   machine: "coalesce(machine, '(unknown)')",
   sub_tool: "coalesce(sub_tool, '(none)')",
+  account: "coalesce(account, '(n/a)')",
 };
 
 export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {
@@ -120,6 +121,8 @@ export interface BillingAuditRow {
   records: number;
   models: string;
   billings: string;
+  /** Distinct accounts on the session's Max rows ("" when none, e.g. an IU session). */
+  accounts: string;
   costUsd: number | null;
   firstTs: string;
   lastTs: string;
@@ -133,6 +136,7 @@ interface RawAuditRow {
   records: number;
   models: string | null;
   billings: string | null;
+  accounts: string | null;
   costUsd: number | null;
   firstTs: string;
   lastTs: string;
@@ -166,6 +170,7 @@ export function sessionBillingAudit(
               count(*)                         AS records,
               group_concat(DISTINCT model_norm) AS models,
               group_concat(DISTINCT billing)    AS billings,
+              group_concat(DISTINCT account)    AS accounts,
               sum(cost_usd)                     AS costUsd,
               min(ts)                           AS firstTs,
               max(ts)                           AS lastTs
@@ -186,6 +191,7 @@ export function sessionBillingAudit(
       records: row.records,
       models: row.models ?? "",
       billings: row.billings ?? "",
+      accounts: row.accounts ?? "",
       costUsd: row.costUsd,
       firstTs: row.firstTs,
       lastTs: row.lastTs,
@@ -254,6 +260,7 @@ export function formatBillingAudit(rows: BillingAuditRow[]): string {
     r("rows", 5),
     pad("models", 24),
     pad("billing", 14),
+    pad("acct", 5),
     pad("live", 15),
     pad("last (UTC)", 20),
     "flags",
@@ -271,6 +278,7 @@ export function formatBillingAudit(rows: BillingAuditRow[]): string {
         r(num(row.records), 5),
         pad(row.models, 24),
         pad(row.billings, 14),
+        pad(row.accounts || "-", 5),
         pad(row.liveLabel, 15),
         pad(row.lastTs, 20),
         flags,

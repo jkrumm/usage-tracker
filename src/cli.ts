@@ -35,7 +35,7 @@ COMMANDS
   relane                 Backfill claude-code sub_tool from transcript entrypoints (interactive/headless/desktop)
     --dry-run            Report per old -> new lane counts and cost without writing
   stats                  Aggregated token + cost report (successful requests only)
-    --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool
+    --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
