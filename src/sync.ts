@@ -51,6 +51,15 @@ ORDER BY id
 LIMIT ?
 `;
 
+/**
+ * Re-queue every Max row for the next sync so Argo receives its `account`.
+ * Run once, after Argo's ingest stores the field — before that the push would
+ * be dropped on the floor. Returns the number of rows re-queued.
+ */
+export function resyncAccount(db: Database): number {
+  return db.prepare("UPDATE usage_record SET synced_at = NULL WHERE billing = 'max'").run().changes;
+}
+
 export async function sync(db: Database, opts: SyncOptions = {}): Promise<SyncResult> {
   const argoUrl = process.env.ARGO_URL ?? "https://argo.jkrumm.com/api";
   const argoToken = process.env.ARGO_TOKEN;

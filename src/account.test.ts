@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openDb, upsertRecords } from "./db.ts";
 import { resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
 import { relane } from "./relane.ts";
+import { resyncAccount } from "./sync.ts";
 import { formatBillingAudit, sessionBillingAudit, stats } from "./report.ts";
 import type { UsageRecord } from "./types.ts";
 
@@ -113,7 +114,7 @@ describe("usage_record.account", () => {
     expect(row?.ingested_at).toBe("2000-01-01 00:00:00");
   });
 
-  test("backfill: legacy max rows -> a and re-queued for sync, iu untouched, runs once", () => {
+  test("backfill: legacy max rows -> a with synced_at untouched, iu untouched, runs once; resync-account re-queues max only", () => {
     const path = join(dir, "legacy.db");
     const legacy = new Database(path, { create: true });
     legacy.exec(`CREATE TABLE usage_record (
@@ -135,12 +136,22 @@ describe("usage_record.account", () => {
         .all();
       expect(rows).toEqual([
         { source_id: "i1", account: null, synced_at: "2026-01-02" },
-        { source_id: "m1", account: "a", synced_at: i === 0 ? null : "2026-01-03" },
+        { source_id: "m1", account: "a", synced_at: "2026-01-02" },
       ]);
-      // simulate the sync marking it pushed: a second open must not re-queue it
-      migrated.exec("UPDATE usage_record SET synced_at = '2026-01-03' WHERE source_id = 'm1'");
       const envCols = migrated.query<{ name: string }, []>("PRAGMA table_info(session_env)").all();
       expect(envCols.map((c) => c.name)).toContain("account");
+      if (i === 1) {
+        expect(resyncAccount(migrated)).toBe(1);
+        const synced = migrated
+          .query<{ source_id: string; synced_at: string | null }, []>(
+            "SELECT source_id, synced_at FROM usage_record ORDER BY source_id",
+          )
+          .all();
+        expect(synced).toEqual([
+          { source_id: "i1", synced_at: "2026-01-02" },
+          { source_id: "m1", synced_at: null },
+        ]);
+      }
       migrated.close();
     }
   });
