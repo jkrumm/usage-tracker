@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { claudeCodeRoots } from "./collectors/claude-code.ts";
 import { walkJsonlFiles } from "./collectors/fs-incremental.ts";
-import { entrypointLane, SYNTHETIC_MODEL } from "./models.ts";
+import { classifyAccount, entrypointLane, SYNTHETIC_MODEL, useSessionEnvStore } from "./models.ts";
 import type { Billing } from "./types.ts";
 
 /**
@@ -134,6 +134,9 @@ export function relane(
   opts: { dryRun?: boolean } = {},
 ): RelaneResult {
   const dryRun = opts.dryRun ?? false;
+  // Session accounts come from the log merged with the persisted session_env
+  // table, so a session whose log line was pruned still resolves its account.
+  useSessionEnvStore(db);
   const rows = db
     .query<RelaneRow, []>(
       `SELECT id, json_extract(raw, '$.sessionId') AS session, sub_tool, model, billing, cost_usd
@@ -149,7 +152,13 @@ export function relane(
     bySession.set(row.session, group);
   }
 
-  const updates: Array<{ id: number; subTool: string | null; billing: Billing; entrypoint: string | null }> = [];
+  const updates: Array<{
+    id: number;
+    subTool: string | null;
+    billing: Billing;
+    account: string | null;
+    entrypoint: string | null;
+  }> = [];
   const transitions = new Map<string, RelaneTransition>();
   let billingFixed = 0;
   let unknownEntrypointSessions = 0;
@@ -168,7 +177,8 @@ export function relane(
       const fixBilling = row.model === SYNTHETIC_MODEL && row.billing === "iu" && sessionIsMax;
       if (subTool === row.sub_tool && !fixBilling) return;
 
-      updates.push({ id: row.id, subTool, billing: fixBilling ? "max" : row.billing, entrypoint });
+      const billing = fixBilling ? "max" : row.billing;
+      updates.push({ id: row.id, subTool, billing, account: classifyAccount(billing, session), entrypoint });
       if (fixBilling) billingFixed++;
       if (subTool === row.sub_tool) return;
       const key = `${row.sub_tool}\u0000${subTool}`;
@@ -185,14 +195,20 @@ export function relane(
     const stmt = db.prepare(
       `UPDATE usage_record
        SET sub_tool = $sub_tool, billing = $billing, synced_at = NULL,
-           account = CASE WHEN $billing = 'max' THEN coalesce(account, 'a') ELSE account END,
+           account = $account,
            raw = CASE WHEN $entrypoint IS NOT NULL AND raw IS NOT NULL
                       THEN json_set(raw, '$.entrypoint', $entrypoint) ELSE raw END
        WHERE id = $id`,
     );
     db.transaction((batch: typeof updates) => {
       for (const u of batch) {
-        stmt.run({ $id: u.id, $sub_tool: u.subTool, $billing: u.billing, $entrypoint: u.entrypoint });
+        stmt.run({
+          $id: u.id,
+          $sub_tool: u.subTool,
+          $billing: u.billing,
+          $account: u.account,
+          $entrypoint: u.entrypoint,
+        });
       }
     })(updates);
   }

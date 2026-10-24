@@ -16,11 +16,17 @@ import type { Billing } from "./types.ts";
 // panes run for longer — so when ingest registers the DB as a store
 // (useSessionEnvStore), every line seen is persisted in `session_env` and the
 // cache is built from the table merged with the live logs.
+export type Account = "a" | "b";
+
+export function isAccount(value: unknown): value is Account {
+  return value === "a" || value === "b";
+}
+
 interface SessionEnv {
   base_url: string | null;
   lane: string | null;
-  /** Claude Max account id ("a" | "b"); null on lines older than the account field. */
-  account: string | null;
+  /** Claude Max account id; null on lines older than the account field. */
+  account: Account | null;
 }
 let sessionEnvs: Map<string, SessionEnv> | null = null;
 let sessionEnvStore: Database | null = null;
@@ -83,7 +89,11 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
         "SELECT session, base_url, lane, account FROM session_env",
       )
       .all()) {
-      map.set(row.session, { base_url: row.base_url, lane: row.lane, account: row.account });
+      map.set(row.session, {
+        base_url: row.base_url,
+        lane: row.lane,
+        account: isAccount(row.account) ? row.account : null,
+      });
     }
     // A log entry wins over the stored row for the same session: the latest
     // SessionStart is the truth (a resume can change base_url or lane).
@@ -91,9 +101,14 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
       `INSERT INTO session_env (session, base_url, lane, account, seen_at)
        VALUES ($session, $base_url, $lane, $account, $seen_at)
        ON CONFLICT (session) DO UPDATE SET
-         base_url=excluded.base_url, lane=excluded.lane, account=excluded.account,
-         seen_at=excluded.seen_at`,
+         base_url=excluded.base_url, lane=excluded.lane,
+         account=coalesce(excluded.account, session_env.account), seen_at=excluded.seen_at`,
     );
+    // A later line without `account` (a hook that predates the field) must not
+    // erase a stored one: carry the stored account forward into the merge.
+    for (const [session, env] of logged) {
+      env.account ??= map.get(session)?.account ?? null;
+    }
     const seenAt = new Date().toISOString();
     db.transaction(() => {
       for (const [session, env] of logged) {
@@ -139,7 +154,7 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
               map.set(entry.data.session, {
                 base_url: entry.data.base_url ?? null,
                 lane: entry.data.lane ?? null,
-                account: entry.data.account ?? null,
+                account: isAccount(entry.data.account) ? entry.data.account : null,
               });
             }
           } catch {
@@ -178,7 +193,7 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
  * `account` field. `undefined`/`null` = no line, or a line older than the
  * field; classifyAccount treats both as account "a".
  */
-export function getSessionAccount(sessionId: string | null | undefined): string | null | undefined {
+export function getSessionAccount(sessionId: string | null | undefined): Account | null | undefined {
   if (!sessionId) return undefined;
   if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
   return sessionEnvs.get(sessionId)?.account;
@@ -194,10 +209,10 @@ export function getSessionAccount(sessionId: string | null | undefined): string 
 export function classifyAccount(
   billing: Billing,
   sessionId?: string | null,
-  sourceAccount?: string | null,
-): string | null {
+  sourceAccount?: unknown,
+): Account | null {
   if (billing !== "max") return null;
-  return getSessionAccount(sessionId) || sourceAccount || "a";
+  return getSessionAccount(sessionId) || (isAccount(sourceAccount) ? sourceAccount : null) || "a";
 }
 
 /**

@@ -47,7 +47,9 @@ id resolved from `CLAUDE_CONFIG_DIR`; absent on every historical line).
 `a`; `iu` and every other non-Max row is NULL. `billing` is unchanged — account
 is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
 no collector root changed. The migration backfills existing `max` rows to `a`
-(idempotent; leaves `synced_at` alone). `stats --by account` and `billing-audit`
+once, when the column is added, and clears their `synced_at` so Argo receives it.
+A later line without `account` never erases a stored one; `relane` re-derives it
+when it flips a row's billing. `stats --by account` and `billing-audit`
 show the split. Argo's ingest schema ignores unknown fields, so `account` is
 already in the sync payload; Argo has to store it (follow-up in the Argo repo).
 
