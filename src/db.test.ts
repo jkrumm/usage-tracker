@@ -176,20 +176,21 @@ describe("agent-gateway-sessions account attribution", () => {
     expect(rows()).toEqual([{ source_id: "s-1", account: null, synced_at: null }]);
   });
 
-  test("migration re-attributes mismatching agent-gateway-sessions rows and re-queues only those", () => {
-    upsertRecords(db, "agent-gateway-sessions", [session("s-wrong"), session("s-ok"), session("s-noenv")]);
-    db.exec(`INSERT INTO session_env (session, base_url, lane, account, seen_at) VALUES
-      ('s-wrong','',NULL,'me','2026-10-24'), ('s-ok','',NULL,'iu','2026-10-24')`);
+  test("line account wins with no session_env line", () => {
+    upsertRecords(db, "agent-gateway-sessions", [
+      session("s-line", { raw: { sessionId: "s-line", backend: "max", account: "me" } }),
+    ]);
+    expect(rows()).toEqual([{ source_id: "s-line", account: "me", synced_at: null }]);
+  });
+
+  test("a DB already at user_version 2 with a mismatching row is untouched on open", () => {
+    upsertRecords(db, "agent-gateway-sessions", [session("s-wrong")]);
+    db.exec(`INSERT INTO session_env (session, base_url, lane, account, seen_at) VALUES ('s-wrong','',NULL,'me','2026-10-24')`);
     db.exec("UPDATE usage_record SET account = 'iu', synced_at = '2026-10-24'");
-    db.exec("PRAGMA user_version = 1");
     db.close();
 
     db = openDb(path);
-    expect(rows()).toEqual([
-      { source_id: "s-noenv", account: "iu", synced_at: "2026-10-24" },
-      { source_id: "s-ok", account: "iu", synced_at: "2026-10-24" },
-      { source_id: "s-wrong", account: "me", synced_at: null },
-    ]);
+    expect(rows()).toEqual([{ source_id: "s-wrong", account: "iu", synced_at: "2026-10-24" }]);
     expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
   });
 });

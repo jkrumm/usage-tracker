@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, upsertRecords } from "./db.ts";
-import { getSessionAccount, parseAccount, resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
+import { getSessionAccount, parseAccount, resolveAccount, resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
 import { relane } from "./relane.ts";
 import { resyncAccount } from "./sync.ts";
 import { formatBillingAudit, sessionBillingAudit, stats } from "./report.ts";
@@ -300,5 +300,18 @@ describe("usage_record.account", () => {
       expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
       migrated.close();
     }
+  });
+
+  test("resolveAccount: line account wins (legacy ids mapped); unknown/empty/non-string falls through", () => {
+    const lookup = (id: string) => (id === "s" ? "me" : undefined);
+    const resolve = (account: unknown) =>
+      resolveAccount({ billing: "max", raw: { sessionId: "s", account } }, lookup);
+
+    expect(resolve("iu")).toBe("iu");
+    expect(resolve("a")).toBe("iu");
+    expect(resolve("b")).toBe("me");
+    for (const bad of ["x", "", 5, null, {}]) expect(resolve(bad)).toBe("me");
+    expect(resolveAccount({ billing: "max", raw: { sessionId: "other", account: "x" } }, lookup)).toBe("iu");
+    expect(resolveAccount({ billing: "iu", raw: { account: "me" } }, lookup)).toBeNull();
   });
 });

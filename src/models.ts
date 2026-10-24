@@ -201,7 +201,7 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
 /**
  * The Claude Max account a session ran under, from its session_env line's
  * `account` field. `undefined`/`null` = no line, or a line older than the
- * field; classifyAccount treats both as account "iu".
+ * field; resolveAccount treats both as account "iu".
  */
 export function getSessionAccount(sessionId: string | null | undefined): Account | null | undefined {
   if (!sessionId) return undefined;
@@ -211,18 +211,23 @@ export function getSessionAccount(sessionId: string | null | undefined): Account
 
 /**
  * The account dimension, separate from billing: only Max rows have one (IU and
- * every other non-Max row is NULL). A Max row takes an `account` the source
- * itself carried (agent-gateway session lines may), then its session's logged
- * account, else "iu" — the IU account is the only one that existed before
- * the field, so every historical line means "iu".
+ * every other non-Max row is NULL). A Max row takes the `account` its source
+ * line carried (agent-gateway session lines), validated and legacy-mapped by
+ * parseAccount; a missing/unknown one falls through to the session's logged
+ * account (`lookup` by `raw.sessionId`), else "iu" — the IU account is the only
+ * one that existed before the field, so every historical line means "iu".
  */
-export function classifyAccount(
-  billing: Billing,
-  sessionId?: string | null,
-  sourceAccount?: unknown,
+export function resolveAccount(
+  record: { billing: Billing; raw?: Record<string, unknown> },
+  lookup: (sessionId: string) => Account | null | undefined = getSessionAccount,
 ): Account | null {
-  if (billing !== "max") return null;
-  return parseAccount(sourceAccount) || getSessionAccount(sessionId) || "iu";
+  if (record.billing !== "max") return null;
+  const sessionId = record.raw?.sessionId;
+  return (
+    parseAccount(record.raw?.account) ||
+    (typeof sessionId === "string" ? lookup(sessionId) : null) ||
+    "iu"
+  );
 }
 
 /**

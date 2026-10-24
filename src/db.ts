@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { homedir } from "node:os";
 import { SCHEMA } from "./schema.ts";
 import { currentMachine } from "./machine.ts";
-import { classifyAccount, classifyBilling, normalizeModel } from "./models.ts";
+import { classifyBilling, normalizeModel, resolveAccount } from "./models.ts";
 import { computeCost } from "./pricing.ts";
 import type { CollectResult, UsageRecord, Workspace } from "./types.ts";
 
@@ -65,16 +65,14 @@ function migrate(db: Database): void {
   // rolls back), so an interrupted first run cannot leave a column without its
   // backfill and two concurrent opens cannot both migrate: the columns are
   // re-read inside the write lock. Probes outside it keep every normal open
-  // (stats, health, …) off the write lock. Everything is gated on PRAGMA
+  // (stats, health, …) off the write lock. The repairs are gated on PRAGMA
   // user_version, never on the data: a Max row with a NULL account written after
   // the migration is a collector bug and must stay NULL (visible to
   // `claude-accounts-verify`), not be rewritten on the next open. The migration
-  // (a) repairs pre-account Max rows with a NULL account as 'iu', (b) renames
-  // legacy ids 'a'/'b' to 'iu'/'me', (c) re-attributes agent-gateway-sessions Max
-  // rows whose session_env account differs from the stored one (the collector
-  // used to never resolve it) and re-queues exactly those for sync. Other
-  // rows keep synced_at — re-pushing every Max row while Argo still drops
-  // `account` would be wasted; `resync-account` does it once Argo stores it.
+  // (a) repairs pre-account Max rows with a NULL account as 'iu' and (b) renames
+  // legacy ids 'a'/'b' to 'iu'/'me'. synced_at is left alone on purpose —
+  // re-pushing every Max row while Argo still drops `account` would be wasted;
+  // `resync-account` does it once Argo stores it.
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const needsAccount =
     version < ACCOUNT_MIGRATION_VERSION || !cols.has("account") || !tableColumns(db, "session_env").has("account");
@@ -86,19 +84,11 @@ function migrate(db: Database): void {
     db.exec("UPDATE usage_record SET account = 'iu' WHERE billing = 'max' AND account IS NULL");
     renameLegacyAccounts(db, "usage_record");
     renameLegacyAccounts(db, "session_env");
-    db.exec(`
-      UPDATE usage_record
-         SET account = (SELECT e.account FROM session_env e WHERE e.session = usage_record.source_id),
-             synced_at = NULL
-       WHERE source = 'agent-gateway-sessions' AND billing = 'max'
-         AND EXISTS (SELECT 1 FROM session_env e
-                      WHERE e.session = usage_record.source_id AND e.account IS NOT NULL
-                        AND e.account IS NOT usage_record.account)`);
     db.exec(`PRAGMA user_version = ${ACCOUNT_MIGRATION_VERSION}`);
   }).immediate();
 }
 
-/** user_version once account ids are iu/me and agent-gateway-sessions rows carry their session's account. */
+/** user_version once Max rows have an account and legacy ids a/b are renamed to iu/me. */
 const ACCOUNT_MIGRATION_VERSION = 2;
 
 function tableColumns(db: Database, table: string): Set<string> {
@@ -225,11 +215,7 @@ export function upsertRecords(
         $workspace: r.workspace ?? defaultWorkspace,
         $sub_tool: r.subTool ?? null,
         $billing: billing,
-        $account: classifyAccount(
-          billing,
-          sessionId,
-          r.raw?.account,
-        ),
+        $account: resolveAccount({ billing, raw: r.raw }),
         $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",
         $input: r.inputTokens,
