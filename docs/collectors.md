@@ -47,11 +47,15 @@ id resolved from `CLAUDE_CONFIG_DIR`; absent on every historical line).
 `a`; `iu` and every other non-Max row is NULL. `billing` is unchanged — account
 is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
 no collector root changed. The migration backfills existing `max` rows to `a`
-once, when the column is added, and clears their `synced_at` so Argo receives it.
+once, when the column is added, and leaves `synced_at` alone (re-pushing ~600k rows
+while Argo drops the field would be wasted). Once Argo stores `account`, run
+`bun run src/cli.ts resync-account` once: it clears `synced_at` on every
+`billing='max'` row so the next sync delivers the value.
 A later line without `account` never erases a stored one; `relane` re-derives it
 when it flips a row's billing. `stats --by account` and `billing-audit`
 show the split. Argo's ingest schema ignores unknown fields, so `account` is
-already in the sync payload; Argo has to store it (follow-up in the Argo repo).
+already in the sync payload; Argo has to store it (follow-up in the Argo repo,
+W2 of dotfiles `docs/claude-accounts.md`).
 
 `<synthetic>`, the zero-token model id of an API-error row, is the exception to
 the id rule: it is not a served id, so it follows the session `base_url` and

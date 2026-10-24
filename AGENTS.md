@@ -9,7 +9,7 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 
 ## Layout
 
-- `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `reprice`, `relane`,
+- `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
   `stats`, `sources`, `health`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
@@ -76,7 +76,9 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   is set only for `billing='max'` rows — session_env's `account`, else `a` (all
   historical lines predate it); `iu`/other rows are NULL. Derived in
   `db.upsertRecords` via `classifyAccount`, never in a collector; the migration
-  backfills old `max` rows to `a`.
+  backfills old `max` rows to `a` (without touching `synced_at`). After Argo
+  stores `account` (W2 of dotfiles `docs/claude-accounts.md`), run
+  `bun run src/cli.ts resync-account` once to push it for all `max` rows.
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
   `billing` and `cost_usd` centrally.
 - The upsert is idempotent on `(source, source_id)`, and its UPDATE only fires

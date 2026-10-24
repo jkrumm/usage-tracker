@@ -64,10 +64,10 @@ function migrate(db: Database): void {
   if (!cols.has("account")) {
     db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
     // One-off backfill: every Max row predates account B, so it is account A.
-    // synced_at is cleared so the next sync re-pushes them and Argo receives it.
-    db.exec(
-      "UPDATE usage_record SET account = 'a', synced_at = NULL WHERE billing = 'max'",
-    );
+    // synced_at is left alone on purpose — re-pushing every Max row while Argo
+    // still drops `account` would be wasted; `resync-account` does it once Argo
+    // stores the field.
+    db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max'");
   }
   const envCols = db
     .query<{ name: string }, []>("PRAGMA table_info(session_env)")

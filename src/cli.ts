@@ -17,7 +17,7 @@ import {
 import { formatRelane, relane, scanEntrypoints } from "./relane.ts";
 import { checkPricingDrift, fetchRequestyModels } from "./pricing-drift.ts";
 import { formatReprice, reprice } from "./reprice.ts";
-import { sync } from "./sync.ts";
+import { resyncAccount, sync } from "./sync.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
 
@@ -29,6 +29,7 @@ COMMANDS
     --full               Ignore watermarks and re-scan everything
     --source <name>      Only run one collector (claude-code|hermes|feuer|opencode|litellm|agent-gateway-iu)
   sync                   Push eligible usage_record rows to the Argo API
+  resync-account         Re-queue all billing=max rows for sync (run once, after Argo stores account)
   reprice                Re-cost stored rows against the current pricing table
     --model <norm>       Only this model_norm
     --dry-run            Report what would change without writing
@@ -127,6 +128,11 @@ async function main(): Promise<number> {
         dryRun: rest.includes("--dry-run"),
       });
       process.stdout.write(`${formatReprice(result)}\n`);
+      return 0;
+    }
+
+    if (cmd === "resync-account") {
+      process.stdout.write(`${resyncAccount(db)} max rows re-queued for sync\n`);
       return 0;
     }
 
