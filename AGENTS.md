@@ -94,7 +94,7 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   per line of `~/.local/share/claude-accounts/picks.jsonl` (`USAGE_ACCOUNT_PICKS`), read by
   byte offset kept in `collector_state` under `account-picks`; offset resets when the file
   shrinks, malformed lines are skipped. `picked` is an opaque string — an account id or the
-  `spill` sentinel; `snapshot` is the per-account `{s,w}` JSON. Tables are plain
+  `spill` sentinel; `snapshot` is the per-account `{s,w}` JSON. Legacy ids `a`/`b` are mapped to `iu`/`me` at ingest (in `picked` and snapshot keys); `spill` is kept. Tables are plain
   `CREATE IF NOT EXISTS` (no `user_version` bump needed). `bun run src/cli.ts quota [--days 7]`
   prints the series and lane × picked × reason counts.
 - **Argo endpoints for them** (`sync.ts`, batches ≤1000, `synced=1` on 2xx):
