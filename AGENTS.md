@@ -72,7 +72,7 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so
   the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
 
-- **`account` is a dimension, not a billing class.** `usage_record.account` (`iu`|`me`)
+- **`account` is a dimension, not a billing class.** `usage_record.account` (`iu`|`me`; account `iu` ≠ billing `iu`)
   is set only for `billing='max'` rows — session_env's `account`, else `iu` (all
   historical lines predate it; legacy `a`/`b` map to `iu`/`me` via `parseAccount`);
   `billing='iu'`/other rows are NULL. Derived in

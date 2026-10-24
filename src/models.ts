@@ -16,6 +16,7 @@ import type { Billing } from "./types.ts";
 // panes run for longer — so when ingest registers the DB as a store
 // (useSessionEnvStore), every line seen is persisted in `session_env` and the
 // cache is built from the table merged with the live logs.
+/** Claude Max account id. Unrelated to `billing`: account "iu" is a Max account, billing "iu" is IU-paid API spend. */
 export type Account = "iu" | "me";
 
 /**
