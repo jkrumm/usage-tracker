@@ -10,12 +10,15 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
-  `stats`, `sources`, `health`, `billing-audit`.
+  `stats`, `quota`, `sources`, `health`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
   on `(source, source_id)`; `session_env` table persists the hook's per-session
   `base_url`/`lane` lines past log pruning.
+- `src/collectors/claude-quota.ts`, `src/collectors/account-picks.ts` — not `usage_record`
+  sources: the Claude Max account quota series and the dotfiles picker's decisions
+  (see the `quota_sample` / `account_pick` gotcha).
 - `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
   classification, session_env lookup and the transcript-entrypoint lane map.
 - `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
@@ -81,6 +84,25 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `usage_record` and `session_env` (without touching `synced_at`). After Argo
   stores `account` (W2 of dotfiles `docs/claude-accounts.md`), run
   `bun run src/cli.ts resync-account` once to push it for all `max` rows.
+- **`quota_sample` / `account_pick`** (dotfiles `docs/claude-accounts.md`), filled on every
+  `ingest` (skipped with `--source` or an injected collector set; run summary shows
+  `quota=+N picks=+N`). `quota_sample` PK `(account, sampled_at ms, machine)`: one row per
+  enabled account with at least one known window, from `claude-account usage --json`
+  (cache-only, 5 s timeout, token env scrubbed; missing binary = silent skip,
+  `USAGE_CLAUDE_ACCOUNT_BIN`). `sampled_at = now − min(window ages)`, so an unchanged cached
+  sample dedupes via `INSERT OR IGNORE`. `account_pick` PK `(ts ms, lane, machine)`: one row
+  per line of `~/.local/share/claude-accounts/picks.jsonl` (`USAGE_ACCOUNT_PICKS`), read by
+  byte offset kept in `collector_state` under `account-picks`; offset resets when the file
+  shrinks, malformed lines are skipped. `picked` is an opaque string — an account id or the
+  `spill` sentinel; `snapshot` is the per-account `{s,w}` JSON. Tables are plain
+  `CREATE IF NOT EXISTS` (no `user_version` bump needed). `bun run src/cli.ts quota [--days 7]`
+  prints the series and lane × picked × reason counts.
+- **Argo endpoints for them** (`sync.ts`, batches ≤1000, `synced=1` on 2xx):
+  `POST /usage/quota-samples` `{samples:[{account, sampledAt, machine, fiveHourPct, sevenDayPct,
+  fiveHourResetsAt, sevenDayResetsAt, authOk, exhaustedUntil, source}]}` and
+  `POST /usage/account-picks` `{picks:[{ts, lane, picked, reason, stale, snapshot, machine}]}`
+  (ISO timestamps, nullable resets). A 404/405 leaves rows unsynced, logs once per run at info,
+  and never fails the run or the `usage_record` sync; other failures log an error and retry next run.
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
   `billing` and `cost_usd` centrally.
 - The upsert is idempotent on `(source, source_id)`, and its UPDATE only fires

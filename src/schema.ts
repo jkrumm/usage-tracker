@@ -63,4 +63,35 @@ CREATE TABLE IF NOT EXISTS session_env (
   account   TEXT,                 -- Claude Max account id from the hook; NULL on pre-account lines
   seen_at   TEXT NOT NULL
 );
+
+-- Claude Max account quota history, from "claude-account usage --json".
+-- sampled_at = observation time (now - cache age), so an unchanged cached
+-- sample re-read on the next run collapses into the same row.
+CREATE TABLE IF NOT EXISTS quota_sample (
+  account             TEXT    NOT NULL,
+  sampled_at          INTEGER NOT NULL,            -- epoch ms
+  machine             TEXT    NOT NULL,
+  five_hour_pct       INTEGER,
+  seven_day_pct       INTEGER,
+  five_hour_resets_at INTEGER,                     -- epoch s
+  seven_day_resets_at INTEGER,                     -- epoch s
+  auth_ok             INTEGER,
+  exhausted_until     INTEGER,                     -- epoch s
+  source              TEXT,
+  synced              INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (account, sampled_at, machine)
+);
+
+-- The dotfiles account picker's decisions, from picks.jsonl.
+CREATE TABLE IF NOT EXISTS account_pick (
+  ts       INTEGER NOT NULL,                       -- epoch ms
+  lane     TEXT    NOT NULL,
+  picked   TEXT    NOT NULL,
+  reason   TEXT    NOT NULL,
+  stale    INTEGER NOT NULL DEFAULT 0,
+  snapshot TEXT,                                   -- JSON: per-account {s,w} at pick time
+  machine  TEXT    NOT NULL,
+  synced   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (ts, lane, machine)
+);
 `;

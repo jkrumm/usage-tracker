@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { collectPicks } from "./collectors/account-picks.ts";
+import { collectQuota } from "./collectors/claude-quota.ts";
 import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
@@ -24,6 +26,9 @@ export interface IngestSummary {
   /** Rows priced at nothing (cost_source = 'none'), by model — an unknown
    * model id is otherwise indistinguishable from a genuinely free one. */
   unpriced: UnpricedModel[];
+  /** New quota_sample / account_pick rows this run. */
+  quota: number;
+  picks: number;
 }
 
 export interface IngestOptions {
@@ -34,6 +39,8 @@ export interface IngestOptions {
   collectors?: Collector[];
   /** Replace the iumac mirror sync (tests). */
   syncIumac?: () => Promise<SyncResult>;
+  /** Collect quota samples + picker decisions (default: on unless `only` or `collectors` narrows the run). */
+  accounts?: boolean;
 }
 
 /**
@@ -60,6 +67,21 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     results.push(await runOne(db, c, opts, iumacSync));
   }
 
+  let quota = 0;
+  let picks = 0;
+  if (opts.accounts ?? (!opts.only && !opts.collectors)) {
+    try {
+      quota = await collectQuota(db);
+    } catch (err) {
+      log.error(`claude-quota: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      picks = await collectPicks(db, { full: opts.full });
+    } catch (err) {
+      log.error(`account-picks: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   let synced = 0;
   try {
     const { pushed, batches } = await sync(db);
@@ -73,7 +95,7 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
   }
 
   const unpriced = unpricedByModel(db);
-  return { results, synced, unpriced };
+  return { results, synced, unpriced, quota, picks };
 }
 
 /**
@@ -81,7 +103,7 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
  * summary, not the liveness signal: the heartbeat reads the log's mtime, which
  * the per-source lines above already move. Fixed shape, one token per source:
  *
- *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … sync=12 unpriced=0
+ *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … quota=+1 picks=+3 sync=12 unpriced=0
  *
  * `+new/seen` mirrors the per-source lines above it; a skipped or errored
  * source shows its status instead of counts. `unpriced` is the total row count
@@ -95,7 +117,7 @@ export function formatRunSummary(summary: IngestSummary, now = new Date()): stri
     r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
   );
   const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0);
-  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} sync=${summary.synced} unpriced=${unpricedTotal}`;
+  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} sync=${summary.synced} unpriced=${unpricedTotal}`;
 }
 
 function once<T>(fn: () => Promise<T>): () => Promise<T> {

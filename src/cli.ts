@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
+import { formatQuotaReport } from "./collectors/claude-quota.ts";
 import { collectors } from "./collectors/index.ts";
 import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
@@ -35,6 +36,8 @@ COMMANDS
     --dry-run            Report what would change without writing
   relane                 Backfill claude-code sub_tool from transcript entrypoints (interactive/headless/desktop)
     --dry-run            Report per old -> new lane counts and cost without writing
+  quota                  Claude account 5h/7d quota series + picker decisions
+    --days <N>           Window in days (default 7)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account
     --since <N>          Only the last N days
@@ -56,6 +59,8 @@ ENV
   USAGE_IUMAC_HOST     ssh alias for the MacBook mirror (default "iumac")
   USAGE_IUMAC_MACHINE  Override the mirrored MacBook's machine label
   USAGE_REMOTE_DIR     Mirror root (default ~/.local/share/usage-tracker/remote)
+  USAGE_CLAUDE_ACCOUNT_BIN  claude-account binary (default ~/.local/bin/claude-account)
+  USAGE_ACCOUNT_PICKS  picker log (default ~/.local/share/claude-accounts/picks.jsonl)
   USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `;
 
@@ -139,6 +144,12 @@ async function main(): Promise<number> {
     if (cmd === "relane") {
       const result = relane(db, await scanEntrypoints(), { dryRun: rest.includes("--dry-run") });
       process.stdout.write(`${formatRelane(result)}\n`);
+      return 0;
+    }
+
+    if (cmd === "quota") {
+      const daysRaw = flag(rest, "--days");
+      process.stdout.write(`${formatQuotaReport(db, daysRaw ? Number(daysRaw) : 7)}\n`);
       return 0;
     }
 
