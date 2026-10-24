@@ -19,6 +19,8 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 - `src/collectors/claude-quota.ts`, `src/collectors/account-picks.ts` — not `usage_record`
   sources: the Claude Max account quota series and the dotfiles picker's decisions
   (see the `quota_sample` / `account_pick` gotcha).
+- `src/argo.ts` (`argoConfig`, `postJson`) is the one HTTP path to Argo; `src/sync.ts` pushes
+  `usage_record`, `src/sync-account.ts` the two account tables.
 - `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
   classification, session_env lookup and the transcript-entrypoint lane map.
 - `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
@@ -102,7 +104,10 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   fiveHourResetsAt, sevenDayResetsAt, authOk, exhaustedUntil, source}]}` and
   `POST /usage/account-picks` `{picks:[{ts, lane, picked, reason, stale, snapshot, machine}]}`
   (ISO timestamps, nullable resets). A 404/405 leaves rows unsynced, logs once per run at info,
-  and never fails the run or the `usage_record` sync; other failures log an error and retry next run.
+  and never fails the run or the `usage_record` sync (`sync()` wraps the account push in a
+  try/catch and always returns the usage result); other failures log an error and retry next run.
+  A row whose conversion throws (e.g. an out-of-range epoch) is quarantined: `synced=-1`, row id
+  logged at warn, never re-selected.
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
   `billing` and `cost_usd` centrally.
 - The upsert is idempotent on `(source, source_id)`, and its UPDATE only fires
