@@ -61,39 +61,52 @@ function migrate(db: Database): void {
       "ALTER TABLE usage_record ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0",
     );
   }
-  // Column + one-off backfill in one transaction (SQLite DDL rolls back), so an
-  // interrupted first run cannot leave the column without its backfill. The
-  // UPDATEs also run when the columns already exist: a Max row with a NULL
-  // account is only ever a half-migrated state (ingest always stamps it), and
-  // legacy ids 'a'/'b' are renamed to 'iu'/'me' in usage_record and
-  // session_env. Every pre-account Max row is the IU account. synced_at is
-  // left alone on purpose — re-pushing every Max row while Argo still drops
-  // `account` would be wasted; `resync-account` does it once Argo stores it.
-  // The read-only probes keep every normal open (stats, health, …) off the
-  // write lock.
-  const envCols = db
-    .query<{ name: string }, []>("PRAGMA table_info(session_env)")
-    .all()
-    .map((r) => r.name);
+  // Column + one-off backfill in one BEGIN IMMEDIATE transaction (SQLite DDL
+  // rolls back), so an interrupted first run cannot leave a column without its
+  // backfill and two concurrent opens cannot both migrate: the columns are
+  // re-read inside the write lock. Probes outside it keep every normal open
+  // (stats, health, …) off the write lock. A Max row with a NULL account is only
+  // ever a half-migrated state (ingest always stamps it) and is repaired as
+  // 'iu' — every pre-account Max row is the IU account. The legacy-id rename
+  // ('a'/'b' -> 'iu'/'me') is gated on PRAGMA user_version so steady-state
+  // opens skip the scan; later writers only emit iu/me (parseAccount).
+  // synced_at is left alone on purpose — re-pushing every Max row while Argo
+  // still drops `account` would be wasted; `resync-account` does it once Argo
+  // stores it.
+  const needsRename = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version < ACCOUNT_IDS_VERSION;
+  const envHasAccount = tableColumns(db, "session_env").has("account");
   const needsAccount =
+    needsRename ||
     !cols.has("account") ||
+    !envHasAccount ||
+    db.query("SELECT 1 FROM usage_record WHERE billing = 'max' AND account IS NULL LIMIT 1").get() !== null;
+  if (!needsAccount) return;
+  db.transaction(() => {
+    if (!tableColumns(db, "usage_record").has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
+    if (!tableColumns(db, "session_env").has("account")) db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
+    db.exec("UPDATE usage_record SET account = 'iu' WHERE billing = 'max' AND account IS NULL");
+    renameLegacyAccounts(db, "usage_record");
+    renameLegacyAccounts(db, "session_env");
+    db.exec(`PRAGMA user_version = ${ACCOUNT_IDS_VERSION}`);
+  }).immediate();
+}
+
+/** user_version once legacy account ids a/b have been renamed to iu/me. */
+const ACCOUNT_IDS_VERSION = 1;
+
+function tableColumns(db: Database, table: string): Set<string> {
+  return new Set(
     db
-      .query(
-        "SELECT 1 FROM usage_record WHERE (billing = 'max' AND account IS NULL) OR account IN ('a', 'b') LIMIT 1",
-      )
-      .get() !== null;
-  const needsEnvAccount =
-    !envCols.includes("account") ||
-    db.query("SELECT 1 FROM session_env WHERE account IN ('a', 'b') LIMIT 1").get() !== null;
-  if (needsAccount || needsEnvAccount) {
-    db.transaction(() => {
-      if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
-      if (!envCols.includes("account")) db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
-      db.exec("UPDATE usage_record SET account = 'iu' WHERE billing = 'max' AND account IS NULL");
-      db.exec("UPDATE usage_record SET account = CASE account WHEN 'a' THEN 'iu' ELSE 'me' END WHERE account IN ('a', 'b')");
-      db.exec("UPDATE session_env SET account = CASE account WHEN 'a' THEN 'iu' ELSE 'me' END WHERE account IN ('a', 'b')");
-    })();
-  }
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((r) => r.name),
+  );
+}
+
+function renameLegacyAccounts(db: Database, table: "usage_record" | "session_env"): void {
+  db.exec(
+    `UPDATE ${table} SET account = CASE account WHEN 'a' THEN 'iu' WHEN 'b' THEN 'me' END WHERE account IN ('a', 'b')`,
+  );
 }
 
 export interface UpsertSummary {

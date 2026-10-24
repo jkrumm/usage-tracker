@@ -297,6 +297,7 @@ describe("usage_record.account", () => {
       expect(
         migrated.query<{ account: string }, []>("SELECT account FROM session_env ORDER BY session").all(),
       ).toEqual([{ account: "iu" }, { account: "me" }]);
+      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(1);
       migrated.close();
     }
   });
