@@ -16,10 +16,17 @@ import type { Billing } from "./types.ts";
 // panes run for longer — so when ingest registers the DB as a store
 // (useSessionEnvStore), every line seen is persisted in `session_env` and the
 // cache is built from the table merged with the live logs.
-export type Account = "a" | "b";
+export type Account = "iu" | "me";
 
-export function isAccount(value: unknown): value is Account {
-  return value === "a" || value === "b";
+/**
+ * The one account mapping: `iu`/`me` pass through, the legacy ids `a`/`b`
+ * (log lines and session_env rows written before the rename) map to `iu`/`me`,
+ * anything else is null.
+ */
+export function parseAccount(value: unknown): Account | null {
+  if (value === "iu" || value === "a") return "iu";
+  if (value === "me" || value === "b") return "me";
+  return null;
 }
 
 interface SessionEnv {
@@ -92,7 +99,7 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
       map.set(row.session, {
         base_url: row.base_url,
         lane: row.lane,
-        account: isAccount(row.account) ? row.account : null,
+        account: parseAccount(row.account),
       });
     }
     // A log entry wins over the stored row for the same session: the latest
@@ -156,9 +163,7 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
                 base_url: entry.data.base_url ?? null,
                 lane: entry.data.lane ?? null,
                 // A later line that omits the account keeps the one already seen.
-                account: isAccount(entry.data.account)
-                  ? entry.data.account
-                  : (map.get(entry.data.session)?.account ?? null),
+                account: parseAccount(entry.data.account) ?? map.get(entry.data.session)?.account ?? null,
               });
             }
           } catch {
@@ -195,7 +200,7 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
 /**
  * The Claude Max account a session ran under, from its session_env line's
  * `account` field. `undefined`/`null` = no line, or a line older than the
- * field; classifyAccount treats both as account "a".
+ * field; classifyAccount treats both as account "iu".
  */
 export function getSessionAccount(sessionId: string | null | undefined): Account | null | undefined {
   if (!sessionId) return undefined;
@@ -207,8 +212,8 @@ export function getSessionAccount(sessionId: string | null | undefined): Account
  * The account dimension, separate from billing: only Max rows have one (IU and
  * every other non-Max row is NULL). A Max row takes its session's logged
  * account, then an `account` the source itself carried (agent-gateway session
- * lines may), else "a" — account A is the only one that existed before the
- * field, so every historical line means "a".
+ * lines may), else "iu" — the IU account is the only one that existed before
+ * the field, so every historical line means "iu".
  */
 export function classifyAccount(
   billing: Billing,
@@ -216,7 +221,7 @@ export function classifyAccount(
   sourceAccount?: unknown,
 ): Account | null {
   if (billing !== "max") return null;
-  return getSessionAccount(sessionId) || (isAccount(sourceAccount) ? sourceAccount : null) || "a";
+  return getSessionAccount(sessionId) || parseAccount(sourceAccount) || "iu";
 }
 
 /**

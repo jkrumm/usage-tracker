@@ -72,11 +72,13 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so
   the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
 
-- **`account` is a dimension, not a billing class.** `usage_record.account` (`a`|`b`)
-  is set only for `billing='max'` rows — session_env's `account`, else `a` (all
-  historical lines predate it); `iu`/other rows are NULL. Derived in
+- **`account` is a dimension, not a billing class.** `usage_record.account` (`iu`|`me`)
+  is set only for `billing='max'` rows — session_env's `account`, else `iu` (all
+  historical lines predate it; legacy `a`/`b` map to `iu`/`me` via `parseAccount`);
+  `billing='iu'`/other rows are NULL. Derived in
   `db.upsertRecords` via `classifyAccount`, never in a collector; the migration
-  backfills old `max` rows to `a` (without touching `synced_at`). After Argo
+  backfills old `max` rows to `iu` and renames stored `a`/`b` to `iu`/`me` in
+  `usage_record` and `session_env` (without touching `synced_at`). After Argo
   stores `account` (W2 of dotfiles `docs/claude-accounts.md`), run
   `bun run src/cli.ts resync-account` once to push it for all `max` rows.
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,

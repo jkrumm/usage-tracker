@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   workspace          TEXT,                        -- 'work' | 'private' | NULL (collector-declared or null when Argo classifies)
   sub_tool           TEXT,                        -- e.g. 'check' | 'review' | 'implement' for agent-gateway-attributed rows
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
-  account            TEXT,                        -- Claude Max account 'a' | 'b' for billing='max' rows, NULL otherwise
+  account            TEXT,                        -- Claude Max account 'iu' | 'me' for billing='max' rows, NULL otherwise
   machine            TEXT,                        -- host that produced the record (derived at ingest)
   outcome            TEXT    NOT NULL DEFAULT 'ok', -- 'ok' | 'error' (bridge request outcome)
 

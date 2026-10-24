@@ -63,28 +63,36 @@ function migrate(db: Database): void {
   }
   // Column + one-off backfill in one transaction (SQLite DDL rolls back), so an
   // interrupted first run cannot leave the column without its backfill. The
-  // UPDATE also runs when the column already exists: a Max row with a NULL
-  // account is only ever a half-migrated state (ingest always stamps it), so
-  // this repairs it. Every Max row predates account B, hence 'a'. synced_at is
+  // UPDATEs also run when the columns already exist: a Max row with a NULL
+  // account is only ever a half-migrated state (ingest always stamps it), and
+  // legacy ids 'a'/'b' are renamed to 'iu'/'me' in usage_record and
+  // session_env. Every pre-account Max row is the IU account. synced_at is
   // left alone on purpose — re-pushing every Max row while Argo still drops
   // `account` would be wasted; `resync-account` does it once Argo stores it.
-  // The read-only probe keeps every normal open (stats, health, …) off the
+  // The read-only probes keep every normal open (stats, health, …) off the
   // write lock.
-  const needsAccount =
-    !cols.has("account") ||
-    db.query("SELECT 1 FROM usage_record WHERE billing = 'max' AND account IS NULL LIMIT 1").get() !== null;
-  if (needsAccount) {
-    db.transaction(() => {
-      if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
-      db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
-    })();
-  }
   const envCols = db
     .query<{ name: string }, []>("PRAGMA table_info(session_env)")
     .all()
     .map((r) => r.name);
-  if (!envCols.includes("account")) {
-    db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
+  const needsAccount =
+    !cols.has("account") ||
+    db
+      .query(
+        "SELECT 1 FROM usage_record WHERE (billing = 'max' AND account IS NULL) OR account IN ('a', 'b') LIMIT 1",
+      )
+      .get() !== null;
+  const needsEnvAccount =
+    !envCols.includes("account") ||
+    db.query("SELECT 1 FROM session_env WHERE account IN ('a', 'b') LIMIT 1").get() !== null;
+  if (needsAccount || needsEnvAccount) {
+    db.transaction(() => {
+      if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
+      if (!envCols.includes("account")) db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
+      db.exec("UPDATE usage_record SET account = 'iu' WHERE billing = 'max' AND account IS NULL");
+      db.exec("UPDATE usage_record SET account = CASE account WHEN 'a' THEN 'iu' ELSE 'me' END WHERE account IN ('a', 'b')");
+      db.exec("UPDATE session_env SET account = CASE account WHEN 'a' THEN 'iu' ELSE 'me' END WHERE account IN ('a', 'b')");
+    })();
   }
 }
 
