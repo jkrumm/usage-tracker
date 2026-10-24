@@ -39,14 +39,16 @@ pruned before this table existed) the id decides the only way it can: Max serves
 nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `iu` and a
 bare Claude id defaults to `max`.
 
-**Account (Max A/B).** The same line carries `account` (`a` | `b`, the registry
-id resolved from `CLAUDE_CONFIG_DIR`; absent on every historical line).
+**Account (Max iu/me).** The same line carries `account` (`iu` | `me`, the registry
+id resolved from `CLAUDE_CONFIG_DIR`; absent on the oldest lines, `a`/`b` before
+the rename — `parseAccount()` maps those to `iu`/`me` everywhere an id is read).
 `usage_record.account` is derived centrally by `classifyAccount()` next to
 `classifyBilling`: a `max` row takes its session's logged account, then an
 `account` the source carried in `raw` (agent-gateway session lines may), else
-`a`; `iu` and every other non-Max row is NULL. `billing` is unchanged — account
+`iu`; `billing='iu'` and every other non-Max row is NULL. `billing` is unchanged — account
 is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
-no collector root changed. The migration backfills existing `max` rows to `a`
+no collector root changed. The migration backfills existing `max` rows to `iu`
+and renames stored `a`/`b` to `iu`/`me` (`usage_record` and `session_env`)
 in the same transaction as the column (a half-migrated DB with NULL-account `max`
 rows is repaired on the next open), and leaves `synced_at` alone (re-pushing ~600k rows
 while Argo drops the field would be wasted). Once Argo stores `account`, run
