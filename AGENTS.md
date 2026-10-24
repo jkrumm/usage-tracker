@@ -72,6 +72,11 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so
   the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
 
+- **`account` is a dimension, not a billing class.** `usage_record.account` (`a`|`b`)
+  is set only for `billing='max'` rows — session_env's `account`, else `a` (all
+  historical lines predate it); `iu`/other rows are NULL. Derived in
+  `db.upsertRecords` via `classifyAccount`, never in a collector; the migration
+  backfills old `max` rows to `a`.
 - Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
   `billing` and `cost_usd` centrally.
 - The upsert is idempotent on `(source, source_id)`, and its UPDATE only fires

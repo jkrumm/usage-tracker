@@ -30,7 +30,7 @@ days), and `getSessionBaseUrl()` joins a record's `sessionId` against that log â
 a non-empty `base_url` means `iu`, empty means `max`. herdr panes outlive the
 3-day retention, so `runIngest` registers the DB as a store
 (`useSessionEnvStore`): the first lookup upserts every log line into the
-`session_env` table (`session`, `base_url`, `lane`, `seen_at`) and builds the
+`session_env` table (`session`, `base_url`, `lane`, `account`, `seen_at`) and builds the
 cache from table rows merged with the log entries, a log entry winning for the
 same session (a resume's latest SessionStart is the truth). The load stays lazy
 so it lands after the iumac log mirror is synced. A stored row with a NULL lane
@@ -38,6 +38,18 @@ still counts as "line exists". When there is no line anywhere (never logged, or
 pruned before this table existed) the id decides the only way it can: Max serves
 nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `iu` and a
 bare Claude id defaults to `max`.
+
+**Account (Max A/B).** The same line carries `account` (`a` | `b`, the registry
+id resolved from `CLAUDE_CONFIG_DIR`; absent on every historical line).
+`usage_record.account` is derived centrally by `classifyAccount()` next to
+`classifyBilling`: a `max` row takes its session's logged account, then an
+`account` the source carried in `raw` (agent-gateway session lines may), else
+`a`; `iu` and every other non-Max row is NULL. `billing` is unchanged â€” account
+is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
+no collector root changed. The migration backfills existing `max` rows to `a`
+(idempotent; leaves `synced_at` alone). `stats --by account` and `billing-audit`
+show the split. Argo's ingest schema ignores unknown fields, so `account` is
+already in the sync payload; Argo has to store it (follow-up in the Argo repo).
 
 `<synthetic>`, the zero-token model id of an API-error row, is the exception to
 the id rule: it is not a served id, so it follows the session `base_url` and
