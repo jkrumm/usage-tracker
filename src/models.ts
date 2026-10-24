@@ -135,7 +135,8 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
   for (const dir of sessionLogDirs()) {
     if (!existsSync(dir)) continue;
     try {
-      for (const file of readdirSync(dir)) {
+      // Sorted (daily files are date-named) so "later line" means later in time.
+      for (const file of readdirSync(dir).sort()) {
         if (!file.endsWith(".jsonl")) continue;
         let text: string;
         try {
@@ -154,7 +155,10 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
               map.set(entry.data.session, {
                 base_url: entry.data.base_url ?? null,
                 lane: entry.data.lane ?? null,
-                account: isAccount(entry.data.account) ? entry.data.account : null,
+                // A later line that omits the account keeps the one already seen.
+                account: isAccount(entry.data.account)
+                  ? entry.data.account
+                  : (map.get(entry.data.session)?.account ?? null),
               });
             }
           } catch {

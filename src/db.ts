@@ -68,10 +68,17 @@ function migrate(db: Database): void {
   // this repairs it. Every Max row predates account B, hence 'a'. synced_at is
   // left alone on purpose — re-pushing every Max row while Argo still drops
   // `account` would be wasted; `resync-account` does it once Argo stores it.
-  db.transaction(() => {
-    if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
-    db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
-  })();
+  // The read-only probe keeps every normal open (stats, health, …) off the
+  // write lock.
+  const needsAccount =
+    !cols.has("account") ||
+    db.query("SELECT 1 FROM usage_record WHERE billing = 'max' AND account IS NULL LIMIT 1").get() !== null;
+  if (needsAccount) {
+    db.transaction(() => {
+      if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
+      db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
+    })();
+  }
   const envCols = db
     .query<{ name: string }, []>("PRAGMA table_info(session_env)")
     .all()

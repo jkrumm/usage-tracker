@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, upsertRecords } from "./db.ts";
-import { resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
+import { getSessionAccount, resetSessionBaseUrlsCacheForTest, useSessionEnvStore } from "./models.ts";
 import { relane } from "./relane.ts";
 import { resyncAccount } from "./sync.ts";
 import { formatBillingAudit, sessionBillingAudit, stats } from "./report.ts";
@@ -200,6 +200,15 @@ describe("usage_record.account", () => {
     expect(result.transitions.length).toBeGreaterThan(0);
     expect(db.query<{ c: number }, []>("SELECT count(*) c FROM session_env").get()?.c).toBe(0);
     expect(db.query<{ sub_tool: string | null }, []>("SELECT sub_tool FROM usage_record").get()?.sub_tool).toBeNull();
+  });
+
+  test("within the logs, a later line omitting account keeps the earlier one", () => {
+    writeEnv([
+      { session: "s-b", base_url: "", lane: null, account: "b" },
+      { session: "s-b", base_url: "", lane: "wave" },
+    ]);
+    resetSessionBaseUrlsCacheForTest(); // logs only, no store
+    expect(getSessionAccount("s-b")).toBe("b");
   });
 
   test("a later line without account keeps the stored account", () => {
