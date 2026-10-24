@@ -149,7 +149,12 @@ async function main(): Promise<number> {
 
     if (cmd === "quota") {
       const daysRaw = flag(rest, "--days");
-      process.stdout.write(`${formatQuotaReport(db, daysRaw ? Number(daysRaw) : 7)}\n`);
+      const days = daysRaw === undefined ? 7 : Number(daysRaw);
+      if (!Number.isFinite(days) || days <= 0) {
+        process.stderr.write(`--days must be a positive number, got "${daysRaw}"\n`);
+        return 2;
+      }
+      process.stdout.write(`${formatQuotaReport(db, days)}\n`);
       return 0;
     }
 

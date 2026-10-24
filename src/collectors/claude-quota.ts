@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { homedir } from "node:os";
 import { currentMachine } from "../machine.ts";
 import { log } from "../log.ts";
 
@@ -13,7 +14,7 @@ const SCRUBBED_ENV = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHRO
 
 interface AccountUsage {
   id: string;
-  enabled?: boolean;
+  enabled: boolean;
   five_hour: number | null;
   seven_day: number | null;
   five_hour_resets_at: number | null;
@@ -26,10 +27,42 @@ interface AccountUsage {
 }
 
 function binary(): string {
-  return process.env.USAGE_CLAUDE_ACCOUNT_BIN ?? `${process.env.HOME}/.local/bin/claude-account`;
+  return process.env.USAGE_CLAUDE_ACCOUNT_BIN ?? `${homedir()}/.local/bin/claude-account`;
 }
 
-/** `claude-account usage --json` accounts, or null when the CLI is absent/failing. */
+const numOrNull = (v: unknown): number | null | undefined =>
+  v == null ? null : typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+/** Validate one CLI account entry; null when malformed (the caller skips it). */
+export function parseAccountUsage(raw: unknown): AccountUsage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || r.id === "") return null;
+  const nums = [r.five_hour, r.seven_day, r.five_hour_resets_at, r.seven_day_resets_at, r.five_hour_age_s, r.seven_day_age_s, r.exhausted_until].map(numOrNull);
+  if (nums.some((n) => n === undefined)) return null;
+  const [five, seven, fiveReset, sevenReset, fiveAge, sevenAge, exhausted] = nums as Array<number | null>;
+  if ((fiveAge ?? 0) < 0 || (sevenAge ?? 0) < 0) return null;
+  if (r.auth_ok != null && typeof r.auth_ok !== "boolean") return null;
+  if (r.source != null && typeof r.source !== "string") return null;
+  return {
+    id: r.id,
+    enabled: r.enabled !== false,
+    five_hour: five!,
+    seven_day: seven!,
+    five_hour_resets_at: fiveReset!,
+    seven_day_resets_at: sevenReset!,
+    five_hour_age_s: fiveAge!,
+    seven_day_age_s: sevenAge!,
+    auth_ok: (r.auth_ok as boolean | null | undefined) ?? null,
+    exhausted_until: exhausted!,
+    source: (r.source as string | null | undefined) ?? null,
+  };
+}
+
+/**
+ * `claude-account usage --json` accounts, or null when the CLI is absent
+ * (silent) or fails (warned). Bad individual entries are skipped, the rest kept.
+ */
 async function readUsage(): Promise<AccountUsage[] | null> {
   const bin = binary();
   if (!(await Bun.file(bin).exists())) return null;
@@ -43,9 +76,27 @@ async function readUsage(): Promise<AccountUsage[] | null> {
       timeout: TIMEOUT_MS,
     });
     const out = await new Response(proc.stdout).text();
-    if ((await proc.exited) !== 0) return null;
-    const parsed = JSON.parse(out) as { accounts?: AccountUsage[] };
-    return Array.isArray(parsed.accounts) ? parsed.accounts : null;
+    const code = await proc.exited;
+    if (proc.signalCode) {
+      log.warn(`claude-quota: claude-account killed by ${proc.signalCode} (timeout ${TIMEOUT_MS} ms?)`);
+      return null;
+    }
+    if (code !== 0) {
+      log.warn(`claude-quota: claude-account exited ${code}`);
+      return null;
+    }
+    const parsed = JSON.parse(out) as { accounts?: unknown };
+    if (!Array.isArray(parsed.accounts)) {
+      log.warn("claude-quota: claude-account output has no accounts array");
+      return null;
+    }
+    const accounts: AccountUsage[] = [];
+    for (const raw of parsed.accounts) {
+      const a = parseAccountUsage(raw);
+      if (a) accounts.push(a);
+      else log.warn(`claude-quota: skipping malformed account entry ${JSON.stringify(raw)?.slice(0, 120)}`);
+    }
+    return accounts;
   } catch (err) {
     log.warn(`claude-quota: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -71,7 +122,7 @@ export async function collectQuota(db: Database, now = Date.now()): Promise<numb
   let added = 0;
   db.transaction(() => {
     for (const a of accounts) {
-      if (a.enabled === false) continue;
+      if (!a.enabled) continue;
       if (a.five_hour == null && a.seven_day == null) continue;
       const ages = [a.five_hour_age_s, a.seven_day_age_s].filter((x): x is number => typeof x === "number");
       const age = ages.length > 0 ? Math.min(...ages) : 0;
@@ -79,13 +130,13 @@ export async function collectQuota(db: Database, now = Date.now()): Promise<numb
         $account: a.id,
         $sampled_at: now - Math.round(age * 1000),
         $machine: machine,
-        $five: a.five_hour ?? null,
-        $seven: a.seven_day ?? null,
-        $five_reset: a.five_hour_resets_at ?? null,
-        $seven_reset: a.seven_day_resets_at ?? null,
+        $five: a.five_hour,
+        $seven: a.seven_day,
+        $five_reset: a.five_hour_resets_at,
+        $seven_reset: a.seven_day_resets_at,
         $auth_ok: a.auth_ok == null ? null : a.auth_ok ? 1 : 0,
-        $exhausted: a.exhausted_until ?? null,
-        $source: a.source ?? null,
+        $exhausted: a.exhausted_until,
+        $source: a.source,
       }).changes;
     }
   })();
