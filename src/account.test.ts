@@ -171,7 +171,7 @@ describe("usage_record.account", () => {
     expect(formatBillingAudit(audit)).toContain("acct");
   });
 
-  test("partial schema (column exists, max rows NULL) is repaired without touching synced_at", () => {
+  test("a NULL Max row written after the migration stays NULL on reopen (collector bugs stay visible)", () => {
     const r = rec("s-old");
     upsertRecords(db, "claude-code", [r]);
     db.exec("UPDATE usage_record SET account = NULL, synced_at = '2026-01-02'");
@@ -184,7 +184,7 @@ describe("usage_record.account", () => {
         "SELECT account, synced_at FROM usage_record",
       )
       .get();
-    expect(row).toEqual({ account: "iu", synced_at: "2026-01-02" });
+    expect(row).toEqual({ account: null, synced_at: "2026-01-02" });
   });
 
   test("relane --dry-run writes nothing, session_env included", () => {
@@ -297,7 +297,7 @@ describe("usage_record.account", () => {
       expect(
         migrated.query<{ account: string }, []>("SELECT account FROM session_env ORDER BY session").all(),
       ).toEqual([{ account: "iu" }, { account: "me" }]);
-      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(1);
+      expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
       migrated.close();
     }
   });

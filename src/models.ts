@@ -211,9 +211,9 @@ export function getSessionAccount(sessionId: string | null | undefined): Account
 
 /**
  * The account dimension, separate from billing: only Max rows have one (IU and
- * every other non-Max row is NULL). A Max row takes its session's logged
- * account, then an `account` the source itself carried (agent-gateway session
- * lines may), else "iu" — the IU account is the only one that existed before
+ * every other non-Max row is NULL). A Max row takes an `account` the source
+ * itself carried (agent-gateway session lines may), then its session's logged
+ * account, else "iu" — the IU account is the only one that existed before
  * the field, so every historical line means "iu".
  */
 export function classifyAccount(
@@ -222,7 +222,7 @@ export function classifyAccount(
   sourceAccount?: unknown,
 ): Account | null {
   if (billing !== "max") return null;
-  return getSessionAccount(sessionId) || parseAccount(sourceAccount) || "iu";
+  return parseAccount(sourceAccount) || getSessionAccount(sessionId) || "iu";
 }
 
 /**

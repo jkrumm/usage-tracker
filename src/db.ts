@@ -61,38 +61,45 @@ function migrate(db: Database): void {
       "ALTER TABLE usage_record ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0",
     );
   }
-  // Column + one-off backfill in one BEGIN IMMEDIATE transaction (SQLite DDL
+  // Columns + one-off repairs in one BEGIN IMMEDIATE transaction (SQLite DDL
   // rolls back), so an interrupted first run cannot leave a column without its
   // backfill and two concurrent opens cannot both migrate: the columns are
   // re-read inside the write lock. Probes outside it keep every normal open
-  // (stats, health, …) off the write lock. A Max row with a NULL account is only
-  // ever a half-migrated state (ingest always stamps it) and is repaired as
-  // 'iu' — every pre-account Max row is the IU account. The legacy-id rename
-  // ('a'/'b' -> 'iu'/'me') is gated on PRAGMA user_version so steady-state
-  // opens skip the scan; later writers only emit iu/me (parseAccount).
-  // synced_at is left alone on purpose — re-pushing every Max row while Argo
-  // still drops `account` would be wasted; `resync-account` does it once Argo
-  // stores it.
-  const needsRename = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version < ACCOUNT_IDS_VERSION;
-  const envHasAccount = tableColumns(db, "session_env").has("account");
+  // (stats, health, …) off the write lock. Everything is gated on PRAGMA
+  // user_version, never on the data: a Max row with a NULL account written after
+  // the migration is a collector bug and must stay NULL (visible to
+  // `claude-accounts-verify`), not be rewritten on the next open. The migration
+  // (a) repairs pre-account Max rows with a NULL account as 'iu', (b) renames
+  // legacy ids 'a'/'b' to 'iu'/'me', (c) re-attributes agent-gateway-sessions Max
+  // rows whose session_env account differs from the stored one (the collector
+  // used to never resolve it) and re-queues exactly those for sync. Other
+  // rows keep synced_at — re-pushing every Max row while Argo still drops
+  // `account` would be wasted; `resync-account` does it once Argo stores it.
+  const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const needsAccount =
-    needsRename ||
-    !cols.has("account") ||
-    !envHasAccount ||
-    db.query("SELECT 1 FROM usage_record WHERE billing = 'max' AND account IS NULL LIMIT 1").get() !== null;
+    version < ACCOUNT_MIGRATION_VERSION || !cols.has("account") || !tableColumns(db, "session_env").has("account");
   if (!needsAccount) return;
   db.transaction(() => {
     if (!tableColumns(db, "usage_record").has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
     if (!tableColumns(db, "session_env").has("account")) db.exec("ALTER TABLE session_env ADD COLUMN account TEXT");
+    if (db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version >= ACCOUNT_MIGRATION_VERSION) return;
     db.exec("UPDATE usage_record SET account = 'iu' WHERE billing = 'max' AND account IS NULL");
     renameLegacyAccounts(db, "usage_record");
     renameLegacyAccounts(db, "session_env");
-    db.exec(`PRAGMA user_version = ${ACCOUNT_IDS_VERSION}`);
+    db.exec(`
+      UPDATE usage_record
+         SET account = (SELECT e.account FROM session_env e WHERE e.session = usage_record.source_id),
+             synced_at = NULL
+       WHERE source = 'agent-gateway-sessions' AND billing = 'max'
+         AND EXISTS (SELECT 1 FROM session_env e
+                      WHERE e.session = usage_record.source_id AND e.account IS NOT NULL
+                        AND e.account IS NOT usage_record.account)`);
+    db.exec(`PRAGMA user_version = ${ACCOUNT_MIGRATION_VERSION}`);
   }).immediate();
 }
 
-/** user_version once legacy account ids a/b have been renamed to iu/me. */
-const ACCOUNT_IDS_VERSION = 1;
+/** user_version once account ids are iu/me and agent-gateway-sessions rows carry their session's account. */
+const ACCOUNT_MIGRATION_VERSION = 2;
 
 function tableColumns(db: Database, table: string): Set<string> {
   return new Set(

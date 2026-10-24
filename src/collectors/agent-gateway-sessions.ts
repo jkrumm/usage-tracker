@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseAccount } from "../models.ts";
 import type { Collector, CollectContext, CollectResult, Outcome, UsageRecord } from "../types.ts";
 
 // Reads offset-incrementally from the NDJSON log agent-gateway appends one line to
@@ -34,6 +35,7 @@ interface AgentGatewaySessionLine {
   project?: string | null;
   model?: string | null;
   backend?: string | null;
+  account?: string | null;
   tsStart?: string | null;
   tsEnd?: string | null;
   outcome?: string | null;
@@ -102,7 +104,11 @@ function parseLine(line: string): UsageRecord | null {
   // safely — drop it silently, same as a garbled line.
   if (!obj.sessionId) return null;
 
-  const raw: Record<string, unknown> = {};
+  // sessionId in raw is how db.upsertRecords resolves the session_env account
+  // (classifyAccount); a line-level `account` (agent-gateway may add it) wins.
+  const raw: Record<string, unknown> = { sessionId: obj.sessionId };
+  const account = parseAccount(obj.account);
+  if (account) raw.account = account;
   if (typeof obj.backend === "string") raw.backend = obj.backend;
   if (typeof obj.reason === "string") raw.reason = obj.reason;
   if (typeof obj.exitCode === "number") raw.exitCode = obj.exitCode;
@@ -126,7 +132,7 @@ function parseLine(line: string): UsageRecord | null {
     reasoningTokens: 0,
     durationMs: typeof obj.durationMs === "number" ? obj.durationMs : null,
     outcome: toOutcome(obj.outcome),
-    raw: Object.keys(raw).length > 0 ? raw : undefined,
+    raw,
   };
 }
 
