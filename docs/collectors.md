@@ -47,7 +47,8 @@ id resolved from `CLAUDE_CONFIG_DIR`; absent on every historical line).
 `a`; `iu` and every other non-Max row is NULL. `billing` is unchanged — account
 is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
 no collector root changed. The migration backfills existing `max` rows to `a`
-once, when the column is added, and leaves `synced_at` alone (re-pushing ~600k rows
+in the same transaction as the column (a half-migrated DB with NULL-account `max`
+rows is repaired on the next open), and leaves `synced_at` alone (re-pushing ~600k rows
 while Argo drops the field would be wasted). Once Argo stores `account`, run
 `bun run src/cli.ts resync-account` once: it clears `synced_at` on every
 `billing='max'` row so the next sync delivers the value.

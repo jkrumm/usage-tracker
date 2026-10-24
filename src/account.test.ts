@@ -171,6 +171,37 @@ describe("usage_record.account", () => {
     expect(formatBillingAudit(audit)).toContain("acct");
   });
 
+  test("partial schema (column exists, max rows NULL) is repaired without touching synced_at", () => {
+    const r = rec("s-old");
+    upsertRecords(db, "claude-code", [r]);
+    db.exec("UPDATE usage_record SET account = NULL, synced_at = '2026-01-02'");
+    const path = join(dir, "usage.db");
+    db.close();
+
+    db = openDb(path);
+    const row = db
+      .query<{ account: string | null; synced_at: string | null }, []>(
+        "SELECT account, synced_at FROM usage_record",
+      )
+      .get();
+    expect(row).toEqual({ account: "a", synced_at: "2026-01-02" });
+  });
+
+  test("relane --dry-run writes nothing, session_env included", () => {
+    writeEnv([{ session: "s-b", base_url: "", lane: "wave", account: "b" }]);
+    const real = rec("s-b");
+    upsertRecords(db, "claude-code", [real]);
+    db.exec("DELETE FROM session_env");
+    db.exec("UPDATE usage_record SET sub_tool = NULL");
+    resetSessionBaseUrlsCacheForTest();
+    useSessionEnvStore(db);
+
+    const result = relane(db, new Map([["s-b", "cli"]]), { dryRun: true });
+    expect(result.transitions.length).toBeGreaterThan(0);
+    expect(db.query<{ c: number }, []>("SELECT count(*) c FROM session_env").get()?.c).toBe(0);
+    expect(db.query<{ sub_tool: string | null }, []>("SELECT sub_tool FROM usage_record").get()?.sub_tool).toBeNull();
+  });
+
   test("a later line without account keeps the stored account", () => {
     writeEnv([{ session: "s-b", base_url: "", lane: null, account: "b" }]);
     upsertRecords(db, "claude-code", [rec("s-b")]);

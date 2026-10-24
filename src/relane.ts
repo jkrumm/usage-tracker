@@ -136,7 +136,9 @@ export function relane(
   const dryRun = opts.dryRun ?? false;
   // Session accounts come from the log merged with the persisted session_env
   // table, so a session whose log line was pruned still resolves its account.
-  useSessionEnvStore(db);
+  // Skipped on a dry run: registering the store persists session_env rows, and
+  // a dry run writes nothing (the account isn't needed either).
+  if (!dryRun) useSessionEnvStore(db);
   const rows = db
     .query<RelaneRow, []>(
       `SELECT id, json_extract(raw, '$.sessionId') AS session, sub_tool, model, billing, cost_usd
@@ -178,7 +180,7 @@ export function relane(
       if (subTool === row.sub_tool && !fixBilling) return;
 
       const billing = fixBilling ? "max" : row.billing;
-      updates.push({ id: row.id, subTool, billing, account: classifyAccount(billing, session), entrypoint });
+      updates.push({ id: row.id, subTool, billing, account: dryRun ? null : classifyAccount(billing, session), entrypoint });
       if (fixBilling) billingFixed++;
       if (subTool === row.sub_tool) return;
       const key = `${row.sub_tool}\u0000${subTool}`;

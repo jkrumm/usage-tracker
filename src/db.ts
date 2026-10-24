@@ -61,14 +61,17 @@ function migrate(db: Database): void {
       "ALTER TABLE usage_record ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0",
     );
   }
-  if (!cols.has("account")) {
-    db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
-    // One-off backfill: every Max row predates account B, so it is account A.
-    // synced_at is left alone on purpose — re-pushing every Max row while Argo
-    // still drops `account` would be wasted; `resync-account` does it once Argo
-    // stores the field.
-    db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max'");
-  }
+  // Column + one-off backfill in one transaction (SQLite DDL rolls back), so an
+  // interrupted first run cannot leave the column without its backfill. The
+  // UPDATE also runs when the column already exists: a Max row with a NULL
+  // account is only ever a half-migrated state (ingest always stamps it), so
+  // this repairs it. Every Max row predates account B, hence 'a'. synced_at is
+  // left alone on purpose — re-pushing every Max row while Argo still drops
+  // `account` would be wasted; `resync-account` does it once Argo stores it.
+  db.transaction(() => {
+    if (!cols.has("account")) db.exec("ALTER TABLE usage_record ADD COLUMN account TEXT");
+    db.exec("UPDATE usage_record SET account = 'a' WHERE billing = 'max' AND account IS NULL");
+  })();
   const envCols = db
     .query<{ name: string }, []>("PRAGMA table_info(session_env)")
     .all()
