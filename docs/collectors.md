@@ -372,10 +372,12 @@ non-`ok`/`error` original kept as `raw.rawOutcome`) and `raw` pass through.
 Cost is the one thing split by row. A row with a `model` (the `lead`/`worker`
 LLM calls, e.g. `deepseek-v4.1-flash`) is priced from its tokens by the central
 table — the line's own `cost_usd` is never trusted. A `cost_source:"reported"`
-row (`sonar`, the vendor's own per-call bill, which has no table rate) keeps
-the line's `cost_usd` by carrying it on `UsageRecord.authoritativeCostUsd`,
+row keeps the line's `cost_usd` by carrying it on `UsageRecord.authoritativeCostUsd`,
 which `upsertRecords` stores with `cost_source = "reported"` and `reprice`
-leaves untouched. A row with no model and `cost_source:"none"` stays null.
+leaves untouched. Exception: `sonar` (`IGNORE_REPORTED_COST` in `pricing.ts`) —
+Perplexity's reported cost is its list price with per-request fees, which IU does
+not bill (portal $0.18 vs $30.66 reported), so sonar is priced from tokens at
+$1/M. A row with no model and `cost_source:"none"` stays null.
 
 The collector also recovers from a truncated or rotated file: when the file is
 shorter than the persisted offset it resumes from the top instead of stalling

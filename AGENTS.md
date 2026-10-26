@@ -79,7 +79,12 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   measured by IU's self-service portal. `make budget` reports rolling30, headroom, "can spend
   today", the next-7-day drop-off, the 7-day burn, and portal vs `billing='iu'` tracked cost per day
   and model (flag: |tracked − portal| > max($1, 20% of portal)). It compares, never replaces: a
-  flagged row means our rate card, a missing collector or IU is wrong. Portal days are the
+  flagged row means our rate card, a missing collector or IU is wrong. `make budget MODEL=<norm>`
+  (`budget --explain`) prints one model per day: calls, tokens, portal vs tracked USD per million
+  tokens and tracked cost by source — quiet days where our rate equals the portal's prove the rate
+  card, so a large gap on a busy day is calls no collector sees. Reconciled so far: `sonar` (vendor
+  cost ignored, token-priced), `gpt-5.6-terra` (IU billed no reasoning tokens before 2026-10-16
+  08:55Z, `reasoningFreeBefore`). Portal days are the
   portal's calendar (UTC assumed); tracked days are `substr(ts, 1, 10)`, so day-edge noise is
   expected. **Depends on iumac:** the scrape runs on the MacBook (`ssh iumac`, IU-managed
   Chrome, profile `~/.local/share/iu-portal/profile`, tooling in `~/.local/share/iu-portal/tool`,
