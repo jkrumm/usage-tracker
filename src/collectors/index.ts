@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
+import { audioGatewayCollector, audioGatewayVpsCollector } from "./audio-gateway.ts";
 import { astraCollector } from "./astra.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
 import { codexCollector } from "./codex.ts";
@@ -45,6 +46,8 @@ export const collectors: Collector[] = [
   agentGatewaySessionsCollector,
   agentGatewayOpencodeCollector,
   researchGatewayCollector,
+  audioGatewayCollector,
+  audioGatewayVpsCollector,
   modelpickCollector,
   astraCollector,
 ];
