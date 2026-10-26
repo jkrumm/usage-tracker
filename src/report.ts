@@ -318,16 +318,24 @@ export interface StaleSource {
  */
 export function staleSources(
   db: Database,
-  collectors: ReadonlyArray<{ source: string; staleAfterHours?: number | null; available(): boolean }>,
+  collectors: ReadonlyArray<{
+    source: string;
+    staleAfterHours?: number | null;
+    available(): boolean;
+    /** Freshness for sources that keep no usage_record rows (default: newest usage_record.ts). */
+    newest?(db: Database): string | null;
+  }>,
   now = new Date(),
 ): StaleSource[] {
   const stale: StaleSource[] = [];
   for (const c of collectors) {
     if (c.staleAfterHours == null) continue;
-    const row = db
-      .query<{ ts: string | null }, [string]>("SELECT max(ts) AS ts FROM usage_record WHERE source = ?")
-      .get(c.source);
-    const newestTs = row?.ts ?? null;
+    const newestTs =
+      c.newest?.(db) ??
+      db
+        .query<{ ts: string | null }, [string]>("SELECT max(ts) AS ts FROM usage_record WHERE source = ?")
+        .get(c.source)?.ts ??
+      null;
     // A source that has produced rows but whose store vanished is the moved-store
     // failure itself; only a source never seen on this machine is exempt.
     if (!c.available() && newestTs === null) continue;

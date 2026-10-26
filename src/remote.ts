@@ -21,7 +21,7 @@ import type { Logger } from "./types.ts";
 // change needed. Rows are told apart by the `machine` column instead (see
 // types.ts UsageRecord.machine and db.ts upsertRecords).
 
-function iumacHost(): string {
+export function iumacHost(): string {
   return process.env.USAGE_IUMAC_HOST?.trim() || "iumac";
 }
 
@@ -147,7 +147,7 @@ interface LegResult {
 // ConnectTimeout bounds only the TCP handshake; --timeout on rsync itself
 // bounds the transfer, and Bun's spawn `timeout` is the last-resort kill
 // switch if both of those somehow don't fire.
-const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"];
+export const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"];
 const RSYNC_TIMEOUT_S = 60;
 const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`;
 

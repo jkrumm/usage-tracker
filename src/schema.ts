@@ -94,4 +94,25 @@ CREATE TABLE IF NOT EXISTS account_pick (
   synced   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (ts, lane, machine)
 );
+
+-- IU's own cost report (the self-service portal), scraped from the MacBook. The
+-- portal is the truth for the rolling 30-day cap; usage_record.cost_usd is our
+-- estimate. One row per non-zero (day, label, row) cell, latest fetch wins
+-- (today's value grows). model = our model_norm when the label matches one.
+CREATE TABLE IF NOT EXISTS iu_portal_cost (
+  day        TEXT    NOT NULL,                      -- YYYY-MM-DD
+  label      TEXT    NOT NULL,                      -- the portal's prettified model id
+  row        INTEGER NOT NULL,                      -- heatmap row; two ids can share a label
+  model      TEXT,
+  cost_usd   REAL    NOT NULL,
+  fetched_at INTEGER NOT NULL,                      -- epoch ms
+  PRIMARY KEY (day, label, row)
+);
+
+-- Monthly run of the same report: reconciliation anchor, not the cap.
+CREATE TABLE IF NOT EXISTS iu_portal_total (
+  month      TEXT    PRIMARY KEY,                   -- YYYY-MM
+  total_usd  REAL    NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
 `;

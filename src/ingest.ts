@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { collectPicks } from "./collectors/account-picks.ts";
 import { collectQuota } from "./collectors/claude-quota.ts";
+import { collectPortal, type PortalFetcher } from "./collectors/iu-portal.ts";
 import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
@@ -29,6 +30,8 @@ export interface IngestSummary {
   /** New quota_sample / account_pick rows this run. */
   quota: number;
   picks: number;
+  /** IU portal cost cells written this run (0 when throttled, unreachable or failed). */
+  portal: number;
 }
 
 export interface IngestOptions {
@@ -41,6 +44,10 @@ export interface IngestOptions {
   syncIumac?: () => Promise<SyncResult>;
   /** Collect quota samples + picker decisions (default: on unless `only` or `collectors` narrows the run). */
   accounts?: boolean;
+  /** Fetch the IU portal cost report (default: same condition as `accounts`). */
+  portal?: boolean;
+  /** Replace the ssh scrape (tests). */
+  portalFetch?: PortalFetcher;
 }
 
 /**
@@ -94,8 +101,14 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     log.error(`sync: ${msg}`);
   }
 
+  // After the Argo push: a slow or hung portal scrape must never starve the usage sync.
+  let portal = 0;
+  if (opts.portal ?? (!opts.only && !opts.collectors)) {
+    portal = await collectPortal(db, { fetch: opts.portalFetch });
+  }
+
   const unpriced = unpricedByModel(db);
-  return { results, synced, unpriced, quota, picks };
+  return { results, synced, unpriced, quota, picks, portal };
 }
 
 /**
@@ -103,7 +116,7 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
  * summary, not the liveness signal: the heartbeat reads the log's mtime, which
  * the per-source lines above already move. Fixed shape, one token per source:
  *
- *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … quota=+1 picks=+3 sync=12 unpriced=0
+ *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … quota=+1 picks=+3 portal=+0 sync=12 unpriced=0
  *
  * `+new/seen` mirrors the per-source lines above it; a skipped or errored
  * source shows its status instead of counts. `unpriced` is the total row count
@@ -117,7 +130,7 @@ export function formatRunSummary(summary: IngestSummary, now = new Date()): stri
     r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
   );
   const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0);
-  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} sync=${summary.synced} unpriced=${unpricedTotal}`;
+  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} portal=+${summary.portal} sync=${summary.synced} unpriced=${unpricedTotal}`;
 }
 
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
