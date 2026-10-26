@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
+import { buildBudget, formatBudget } from "./budget.ts";
 import { formatQuotaReport } from "./collectors/claude-quota.ts";
 import { collectors } from "./collectors/index.ts";
+import { collectPortal, iuPortalFreshness } from "./collectors/iu-portal.ts";
 import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
   formatBillingAudit,
@@ -38,6 +40,8 @@ COMMANDS
     --dry-run            Report per old -> new lane counts and cost without writing
   quota                  Claude account 5h/7d quota series + picker decisions
     --days <N>           Window in days (default 7)
+  budget                 IU cap, rolling 30 days: portal cost vs the limit, drop-off, and portal vs tracked per day/model
+  iu-portal              Fetch the IU portal cost report now (ignores the 4 h throttle)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account
     --since <N>          Only the last N days
@@ -101,7 +105,10 @@ async function main(): Promise<number> {
       // Silent sources fail the run too, so jobrun/jobs-grade (and through it
       // the dev-host heartbeat) sees a moved or dead store.
       const only = flag(rest, "--source");
-      const stale = staleSources(db, only ? collectors.filter((c) => c.source === only) : collectors);
+      const stale = staleSources(
+        db,
+        only ? collectors.filter((c) => c.source === only) : [...collectors, iuPortalFreshness],
+      );
       if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`);
       process.stdout.write(`\ndb: ${dbPath()}\n${formatRunSummary(summary)}\n`);
       if (summary.unpriced.length > 0) {
@@ -112,7 +119,7 @@ async function main(): Promise<number> {
     }
 
     if (cmd === "health") {
-      const stale = staleSources(db, collectors);
+      const stale = staleSources(db, [...collectors, iuPortalFreshness]);
       if (stale.length === 0) {
         process.stdout.write("health: every source within its expected cadence\n");
         return 0;
@@ -156,6 +163,17 @@ async function main(): Promise<number> {
       }
       process.stdout.write(`${formatQuotaReport(db, days)}\n`);
       return 0;
+    }
+
+    if (cmd === "budget") {
+      process.stdout.write(`${formatBudget(buildBudget(db))}\n`);
+      return 0;
+    }
+
+    if (cmd === "iu-portal") {
+      const cells = await collectPortal(db, { force: true });
+      process.stdout.write(`iu-portal: ${cells} daily cells stored\n`);
+      return cells > 0 ? 0 : 1;
     }
 
     if (cmd === "stats") {

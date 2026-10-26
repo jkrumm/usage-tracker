@@ -1,4 +1,4 @@
-.PHONY: help install ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 
@@ -28,6 +28,22 @@ reprice: ## Re-cost stored rows against the current pricing table (DRYRUN=1, MOD
 
 relane: ## Backfill claude-code sub_tool from transcript entrypoints (DRYRUN=1)
 	bun run src/cli.ts relane $(if $(DRYRUN),--dry-run)
+
+IU_PORTAL_DIR := .local/share/iu-portal/tool
+
+budget: ## IU cap (rolling 30 days): portal cost vs limit, drop-off, portal vs tracked
+	bun run src/cli.ts budget
+
+iu-portal: ## Fetch the IU portal cost report now (via iumac, ignores the 4 h throttle)
+	bun run src/cli.ts iu-portal
+
+iu-portal-setup: ## Sync tools/iu-portal to iumac and install its dependencies
+	ssh iumac 'mkdir -p ~/$(IU_PORTAL_DIR)'
+	rsync -a --delete --exclude node_modules --exclude '*.test.ts' --exclude fixture.ts tools/iu-portal/ iumac:$(IU_PORTAL_DIR)/
+	ssh iumac 'cd ~/$(IU_PORTAL_DIR) && bun install'
+
+iu-portal-login: ## Re-run the IU portal sign-in headed on the MacBook (approve the dialog there)
+	~/SourceRoot/dotfiles/scripts/ask-human.sh ask 'Sign in to the IU cost portal (Chrome opens on this Mac; finish Entra/Okta within 5 minutes)' --wait 330 --cmd 'cd ~/$(IU_PORTAL_DIR) && /opt/homebrew/bin/bun scrape.ts --login'
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources
