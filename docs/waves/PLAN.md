@@ -94,3 +94,24 @@ Wave 1 done; `make check` green (255+ tests), live run verified 2026-10-26. No f
   an expired session backs off 4 h; `health` stale after 48 h. `make iu-portal-login` was not exercised
   (needs a human at the MacBook); the headless path was.
 (Argo dashboard series for the portal numbers is a follow-up in the argo repo, not this wave.)
+
+## Wave 2 — Reconcile: make tracked cost agree with the portal            <!-- status: active -->
+The portal is the truth; `make budget` now shows where we diverge. Find the cause of each large divergence
+and fix it on our side, or document it as IU's side. **No LLM spend.** Read logs, rates and the DB. Never
+re-call models to test.
+- [ ] `sonar` tracked $30.66 vs portal $0.17 (180x): wrong rate, wrong billing class (Perplexity
+      `sonar` billed elsewhere?), or per-request fees counted as tokens? Fix `src/pricing.ts` or the
+      classification, then `make reprice` (DRYRUN=1 first).
+- [ ] `claude-opus-5-5` tracked $6.29 vs portal $49.27, `claude-opus-4-6` $0.01 vs $13.74, and
+      `claude-sonnet-5*` low: Anthropic-leg IU traffic that no collector sees, or that is classified
+      `max` instead of `iu`. Check claude-code `session_env` base_url/lane attribution (`billing-audit`)
+      for IU-key sessions, and the iumac mirror. Name the missing source; add it or fix the attribution.
+- [ ] `gpt-5.6-terra` +43% and `deepseek-v4.1-flash` +17% over: compare our per-token rates and cache
+      pricing against IU's effective rate (portal USD / tracked tokens per model per day). Where the
+      gateway returns `usage.cost`, prefer it over computed cost. Adjust rates; reprice.
+- [ ] 2026-10-22 portal $71.44 vs tracked $32.34: which models carry the gap that day, and which tool made those calls?
+- [ ] Add a `budget --explain <model>` (or similar) that prints portal vs tracked per day for one model
+      with tokens and implied rate, so the next divergence takes minutes to diagnose. Tests.
+- [ ] Left behind: before/after per-model ratio table for the top 15, and for each remaining gap
+      whether it is ours (fixed / not fixable) or IU's.
+**Left behind:**
