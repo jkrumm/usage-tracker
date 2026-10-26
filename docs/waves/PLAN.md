@@ -147,3 +147,29 @@ Before -> after, top of the window (portal / tracked / ratio):
 - **Portal-only models** (GLM 5.3, Kimi K3, Gemini, ElevenLabs, Fable 5.1, ...): ~$10 total, no tracked
   counterpart; IU-side or tools outside our collectors.
 - New: `make budget MODEL=<norm>` (`budget --explain`) for the next divergence.
+
+## Wave 3 — The unseen Claude spend is audio-gateway            <!-- status: active -->
+Orchestrator finding (2026-10-26), after Wave 2 concluded "caller not identifiable": audio-gateway logs its own LLM
+calls to its own SQLite and **no collector reads it**. `~/SourceRoot/audio-gateway/data/usage.db` (the mini
+instance, `com.jkrumm.audio-gateway`, :7719, which runs the podcast pipeline), table `usage_record` (id, ts,
+endpoint, model, status, input_tokens, output_tokens, audio_tokens, audio_seconds, input_chars, usage_json, caller,
+request_id, …, **no cost column**). It has `claude-opus-5-5` / `claude-opus-4-6` `podcast-segment` rows on 10-19,
+10-24 and 10-25 (e.g. 10-24: 507k in / 111k out). The VPS instance (STT/TTS: Gemini TTS, Voxtral) is a second
+instance with its own DB. The writer bake-off scripts (`audio-gateway/scripts/writer-bakeoff.ts`,
+`writer-lab.ts`) probably do not log at all; the 10-22 spike ($32.59 Opus, $11 Sonnet 5/5.5) fits the writer
+bake-off. No LLM spend in this wave.
+- [ ] Collector `audio-gateway` (mini instance): incremental read of `audio-gateway/data/usage.db`
+      `usage_record` (watermark on id or ts, read-only open). Price LLM rows with the central rate card (use
+      `usage_json`'s reported cost where present, as the other IU collectors do), billing `iu`. Price TTS/STT
+      rows by audio seconds/chars where the rate card has them, else unpriced and flagged. `sub_tool` =
+      endpoint. Tests with a fixture DB.
+- [ ] VPS instance: find where its usage DB lives (audio-gateway repo docs / compose file, `ssh vps`;
+      read-only). If it is reachable cheaply (an `ssh vps sqlite3 … -json` pull of new rows, the same
+      pattern as the iumac mirror), add it as a second source id. If not, record why in Left behind.
+- [ ] Bake-off/lab scripts: confirm from the audio-gateway source whether `scripts/writer-*.ts` call
+      `recordUsage`. If they bypass it, do not edit audio-gateway (another agent owns it right now). Write
+      the finding into Left behind as a follow-up for that repo.
+- [ ] Backfill the window (`make backfill` scoped to the new source), then `make budget`: record the per-model
+      before/after table for the Claude rows, and what portal spend is still unexplained.
+- [ ] AGENTS.md + docs/collectors.md entry; `make check`; commit; push.
+**Left behind:**
