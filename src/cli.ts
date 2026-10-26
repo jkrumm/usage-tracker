@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { dbPath, openDb } from "./db.ts";
-import { buildBudget, formatBudget } from "./budget.ts";
+import { buildBudget, buildExplain, formatBudget, formatExplain } from "./budget.ts";
 import { formatQuotaReport } from "./collectors/claude-quota.ts";
 import { collectors } from "./collectors/index.ts";
 import { collectPortal, iuPortalFreshness } from "./collectors/iu-portal.ts";
@@ -41,6 +41,7 @@ COMMANDS
   quota                  Claude account 5h/7d quota series + picker decisions
     --days <N>           Window in days (default 7)
   budget                 IU cap, rolling 30 days: portal cost vs the limit, drop-off, and portal vs tracked per day/model
+    --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
   iu-portal              Fetch the IU portal cost report now (ignores the 4 h throttle)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account
@@ -166,6 +167,11 @@ async function main(): Promise<number> {
     }
 
     if (cmd === "budget") {
+      const explain = flag(rest, "--explain");
+      if (explain) {
+        process.stdout.write(`${formatExplain(buildExplain(db, explain), explain)}\n`);
+        return 0;
+      }
       process.stdout.write(`${formatBudget(buildBudget(db))}\n`);
       return 0;
     }

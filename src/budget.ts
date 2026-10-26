@@ -169,3 +169,95 @@ export function formatBudget(b: BudgetReport | null, now = Date.now()): string {
   }
   return lines.join("\n");
 }
+
+export interface ExplainDay {
+  day: string;
+  portal: number;
+  tracked: number;
+  calls: number;
+  /** Tokens we saw: input + output + reasoning + cache read + cache write. */
+  tokens: number;
+  /** Portal USD per million tracked tokens, the rate IU effectively charged. */
+  portalPerM: number | null;
+  /** Our USD per million tracked tokens. */
+  trackedPerM: number | null;
+  /** Tracked USD by source, so a missing or double-counting collector shows up. */
+  bySource: Array<{ source: string; usd: number }>;
+}
+
+export interface Explain {
+  model: string;
+  days: ExplainDay[];
+}
+
+const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** Day-by-day portal vs tracked for one model (a model_norm or a portal label), newest first. */
+export function buildExplain(db: Database, query: string, now = Date.now()): Explain | null {
+  const state = readPortalState(db);
+  const today = state.lastDay ?? localDay(now);
+  const from = addDays(today, -(WINDOW_DAYS - 1));
+  const want = alnum(query);
+
+  const portal = db
+    .query<{ day: string; key: string; usd: number }, [string, string]>(
+      `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost WHERE day BETWEEN ? AND ? GROUP BY day, key`,
+    )
+    .all(from, today)
+    .filter((r) => alnum(r.key) === want);
+  const tracked = db
+    .query<
+      { day: string; source: string; n: number; tok: number; usd: number },
+      [string, string, string]
+    >(
+      `SELECT substr(ts, 1, 10) day, source, count(*) n,
+              sum(input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens) tok,
+              sum(COALESCE(cost_usd, 0)) usd
+       FROM usage_record
+       WHERE billing = 'iu' AND substr(ts, 1, 10) BETWEEN ? AND ?
+         AND replace(replace(replace(lower(COALESCE(model_norm, model, '')), '-', ''), '.', ''), '_', '') = ?
+       GROUP BY day, source`,
+    )
+    .all(from, today, want);
+  if (portal.length === 0 && tracked.length === 0) return null;
+
+  const days = new Map<string, ExplainDay>();
+  const at = (day: string) => {
+    let d = days.get(day);
+    if (!d) days.set(day, (d = { day, portal: 0, tracked: 0, calls: 0, tokens: 0, portalPerM: null, trackedPerM: null, bySource: [] }));
+    return d;
+  };
+  for (const p of portal) at(p.day).portal += p.usd;
+  for (const t of tracked) {
+    const d = at(t.day);
+    d.tracked += t.usd;
+    d.calls += t.n;
+    d.tokens += t.tok;
+    d.bySource.push({ source: t.source, usd: t.usd });
+  }
+  for (const d of days.values()) {
+    d.portalPerM = d.tokens > 0 ? (d.portal / d.tokens) * 1e6 : null;
+    d.trackedPerM = d.tokens > 0 ? (d.tracked / d.tokens) * 1e6 : null;
+  }
+  return { model: query, days: [...days.values()].sort((a, b) => b.day.localeCompare(a.day)) };
+}
+
+export function formatExplain(e: Explain | null, query: string): string {
+  if (!e) return `budget --explain: no portal or tracked rows for "${query}" in the window`;
+  const lines = [
+    `${e.model} — portal vs tracked per day (rate = USD per million tracked tokens)`,
+    `${pad("day", 11)} ${r("portal", 9)} ${r("tracked", 9)} ${r("delta", 9)} ${r("calls", 6)} ${r("tokens", 11)} ${r("portal/M", 9)} ${r("ours/M", 9)}  tracked by source`,
+  ];
+  let portal = 0;
+  let tracked = 0;
+  for (const d of e.days) {
+    portal += d.portal;
+    tracked += d.tracked;
+    const rate = (n: number | null) => (n === null ? "-" : usdFmt(n));
+    lines.push(
+      `${pad(d.day, 11)} ${r(usdFmt(d.portal), 9)} ${r(usdFmt(d.tracked), 9)} ${r(usdFmt(d.tracked - d.portal), 9)} ${r(String(d.calls), 6)} ${r(String(d.tokens), 11)} ${r(rate(d.portalPerM), 9)} ${r(rate(d.trackedPerM), 9)}${isOff(d) ? "  <-- off" : ""}  ${d.bySource.map((s) => `${s.source} ${usdFmt(s.usd)}`).join(", ")}`,
+    );
+  }
+  lines.push(`${pad("total", 11)} ${r(usdFmt(portal), 9)} ${r(usdFmt(tracked), 9)} ${r(usdFmt(tracked - portal), 9)}`);
+  return lines.join("\n");
+}

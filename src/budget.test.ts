@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBudget, formatBudget, isOff } from "./budget.ts";
+import { buildBudget, buildExplain, formatBudget, formatExplain, isOff } from "./budget.ts";
 import { collectPortal } from "./collectors/iu-portal.ts";
 import { openDb } from "./db.ts";
 
@@ -87,5 +87,25 @@ describe("buildBudget", () => {
     await seed(db);
     db.run("UPDATE iu_portal_cost SET cost_usd = 500 WHERE day = '2026-10-26' AND row = 2");
     expect(formatBudget(buildBudget(db, NOW), NOW)).toContain("OVER by");
+  });
+});
+
+describe("buildExplain", () => {
+  test("matches a model by normalized id or portal label and shows rates per day", async () => {
+    await seed(db);
+    db.run("UPDATE usage_record SET input_tokens = 1000000 WHERE source_id = 'a29'"); // 2026-10-25
+    const e = buildExplain(db, "Claude-Haiku-5.5", NOW)!;
+    expect(e.days[0]!.day).toBe("2026-10-26");
+    const d = e.days.find((x) => x.day === "2026-10-25")!;
+    expect(d).toMatchObject({ portal: 2, tracked: 2, calls: 1, tokens: 1_000_000 });
+    expect(d.portalPerM).toBeCloseTo(2, 5);
+    expect(d.bySource).toEqual([{ source: "s", usd: 2 }]);
+    expect(formatExplain(e, "x")).toContain("total");
+  });
+
+  test("portal-only labels work and an unknown model is a message", async () => {
+    await seed(db);
+    expect(buildExplain(db, "untracked thing", NOW)!.days).toMatchObject([{ day: "2026-10-26", portal: 20, tracked: 0 }]);
+    expect(formatExplain(buildExplain(db, "nope", NOW), "nope")).toContain("no portal or tracked rows");
   });
 });

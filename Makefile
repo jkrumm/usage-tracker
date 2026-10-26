@@ -31,8 +31,8 @@ relane: ## Backfill claude-code sub_tool from transcript entrypoints (DRYRUN=1)
 
 IU_PORTAL_DIR := .local/share/iu-portal/tool
 
-budget: ## IU cap (rolling 30 days): portal cost vs limit, drop-off, portal vs tracked
-	bun run src/cli.ts budget
+budget: ## IU cap (rolling 30 days): portal cost vs limit, drop-off, portal vs tracked (MODEL=<norm> explains one model per day)
+	bun run src/cli.ts budget $(if $(MODEL),--explain $(MODEL))
 
 iu-portal: ## Fetch the IU portal cost report now (via iumac, ignores the 4 h throttle)
 	bun run src/cli.ts iu-portal
