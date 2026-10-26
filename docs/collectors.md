@@ -317,6 +317,42 @@ the last four added 2026-09-25, older rows lack them and are treated as
 cost and is stored verbatim as the row's cost (`cost_source = "reported"`),
 taking precedence over this table's pricing.
 
+### IU portal cost (`iu-portal`, not a `usage_record` source)
+
+IU's own cost report is the only number that counts against the employee cap,
+and no API carries it (the gateway answers 501 on every usage/spend path). It is
+a Blazor Server page behind Entra/Okta SSO, so the MacBook scrapes it:
+`tools/iu-portal/scrape.ts` runs on iumac in headless Chrome (`playwright-core`,
+`channel: "chrome"`) against a dedicated persistent profile
+(`~/.local/share/iu-portal/profile`). The mini's `collectPortal`
+(`src/collectors/iu-portal.ts`) pipes the API key from `secrets-run` into
+`ssh iumac 'cd ~/.local/share/iu-portal/tool && bun scrape.ts daily monthly'`;
+the key is read from stdin and never touches disk.
+
+- **Heatmap, not bar chart.** `svg.mud-chart-heat` holds one cell per model x
+  period (`<title>` = exact USD); row labels sit at cell `y + 4`; columns map in
+  x order onto the period labels of the bar chart. `parse.ts` rejects a capture
+  whose cell sum is off the "Total Cost" card by more than a cent, which is how
+  a half-rendered or stale chart is told from a current one. Never wait for
+  `networkidle` (Blazor long-polls).
+- **Storage.** `iu_portal_cost(day, label, row)`: non-zero cells only, the daily
+  report replaces its whole window (a vanished cell is deleted, today's value
+  grows). Two ids can share a label, hence `row`. `model` is our `model_norm`
+  when the label's alphanumerics match an IU-billed model id; NULL = spend we do
+  not track. `iu_portal_total(month)` is the monthly run, reconciliation only
+  (its first period is a partial window and is dropped).
+- **Cadence.** One fetch per 4 h inside `ingest` (state JSON in `collector_state`
+  under `iu-portal`). Unreachable MacBook (ssh 255): skipped quietly, retried
+  next run. Expired session (exit 3): logged, backed off 4 h. Neither fails the
+  other collectors. `health` goes stale after 48 h without a successful fetch.
+- **Session expiry** is the one human step: `make iu-portal-login` pushes a
+  dialog to the MacBook and runs the headed sign-in (waits up to 5 min).
+- **`latest.json`.** Every successful daily scrape also writes
+  `~/.local/share/iu-portal/latest.json` on iumac (schema 1: rolling30,
+  can-spend-today, 31 daily values, top 10 models, next-7 drop-off), atomically,
+  computed on the MacBook so Tinycast keeps working when the mini side is down.
+  A failed or expired run leaves the previous file untouched.
+
 ### research-gateway (`research-gateway`)
 
 research-gateway appends one line per usage record to

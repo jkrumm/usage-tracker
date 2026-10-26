@@ -1,7 +1,8 @@
 # IU portal cost — the real number against the $500/month cap
 **Goal:** usage-tracker pulls IU's own cost report (the self-service portal, the number that counts against
-the $500/month employee cap) every few hours. `bun run src/cli.ts budget` (`make budget`) then shows
-month-to-date, a month-end projection and the delta against our own IU-billed estimate, per model.
+the $500 employee cap, a **rolling 30-day window**, not a calendar month) every few hours. `make budget`
+then shows rolling30, headroom, can-spend-today, the next-7-day drop-off, the 7-day burn, and portal vs our
+own IU-billed estimate per day and model. We keep our own tracking: the point is comparison, never replacement.
 **Gate:** `make check` green, plus one **live** `make iu-portal` run whose row count and October total are
 recorded in Left behind. Zero LLM spend: this is scraping, not calling models.
 
@@ -18,7 +19,7 @@ recorded in Left behind. Zero LLM spend: this is scraping, not calling models.
   installed at `~/.local/share/iu-portal/tool` on iumac (package.json + playwright-core).
 - **The key never touches disk:** `secrets-run read op://common/anthropic/API_KEY | ssh iumac 'cd
   ~/.local/share/iu-portal/tool && bun scrape.ts'`. The script reads the key from stdin.
-- **Page flow** (prototype: `docs/waves/iu-portal-prototype.ts`, worked end to end): goto `/cost-overview`
+- **Page flow** (prototype, since replaced by `tools/iu-portal/scrape.ts`): goto `/cost-overview`
   (`waitUntil: "domcontentloaded"`; **never** `networkidle`, because Blazor's long-polling never idles) →
   if `page.url()` is not on the portal host, the session expired (exit with a distinct code and the message
   "run make iu-portal-login") → fill the first `input` with the key → click button `/load cost data/i` →
@@ -39,31 +40,57 @@ recorded in Left behind. Zero LLM spend: this is scraping, not calling models.
 - Interactions: usage-tracker's LaunchAgent runs on the **mini** every 900 s. The MacBook may be asleep or
   away: then `ssh iumac` fails, and the run must skip quietly and leave freshness to `health`.
 
-## Wave 1 — Portal cost collector + budget report            <!-- status: active -->
-- [ ] `tools/iu-portal/scrape.ts`: the prototype as a real script. Key from stdin, prints one JSON
+## Owner correction (2026-10-26, folded into Wave 1)
+- The cap is a ROLLING 30-day window. `budget`: rolling30 (last 30 daily values, today included) vs 500,
+  headroom, can-spend-today (500 − the 29 days before today), next-7-day drop-off, 7-day burn and the
+  projected rolling30 in 7 days. Calendar-month totals are reconciliation data only.
+- Per model and per day: portal vs tracked, delta, ratio; flag |delta| > max($1, 20%); list portal models
+  with zero tracked cost and tracked models absent from the portal.
+- Tinycast contract: every successful scrape writes `~/.local/share/iu-portal/latest.json` on iumac
+  (atomic; schema 1: fetched_at, limit_usd, window_days, rolling30_usd, can_spend_today_usd, daily[31],
+  top_models[10], dropoff_next7[7]), computed in `tools/iu-portal/latest.ts`. An expired session leaves
+  the previous file untouched.
+
+## Wave 1 — Portal cost collector + budget report            <!-- status: done -->
+- [x] `tools/iu-portal/scrape.ts`: the prototype as a real script. Key from stdin, prints one JSON
       document to stdout: `{ fetched_at, cost_center, total_usd, granularity, periods[], rows: [{label,
       row, cells: {period: usd}}] }`. Exit codes: 0 ok, 3 session expired, 1 other. `make
       iu-portal-setup` syncs `tools/iu-portal/` to iumac `~/.local/share/iu-portal/tool` and runs `bun
       install` there. `make iu-portal-login` runs it headed through
       `~/SourceRoot/dotfiles/scripts/ask-human.sh ask '…' --cmd '…'` (pushes a dialog to the MacBook). A
       headed run waits up to 5 min for sign-in.
-- [ ] Table `iu_portal_cost(day TEXT, label TEXT, row INTEGER, model TEXT NULL, cost_usd REAL,
+- [x] Table `iu_portal_cost(day TEXT, label TEXT, row INTEGER, model TEXT NULL, cost_usd REAL,
       fetched_at INTEGER, PRIMARY KEY(day,label,row))`, the same pattern as `quota_sample` in
       `src/schema.ts`. Upsert, latest fetch wins (today's value grows). Plus `iu_portal_total(month,
       total_usd, fetched_at)` from a monthly run, which serves as the reconciliation anchor.
-- [ ] A collector hook in `ingest`, throttled to one portal fetch per 4 h (track the last fetch time),
+- [x] A collector hook in `ingest`, throttled to one portal fetch per 4 h (track the last fetch time),
       daily granularity over 1 month plus a monthly run. Register a `staleAfterHours: 48` freshness
       entry, so `health` flags an expired session or a MacBook that has been away a long time. A failed
       ssh or an expired session must **not** fail the other collectors. It logs a one-line reason.
-- [ ] `budget` CLI command + `make budget`: month-to-date portal total vs `$500`, linear month-end
+- [x] `budget` CLI command + `make budget`: month-to-date portal total vs `$500`, linear month-end
       projection, days left, daily burn of the last 7 days. Below that, a per-model table for the month:
       portal USD vs usage-tracker's own `billing = iu` USD (`usage_record`), with delta and ratio, top 15
       by portal cost. Plus a line for portal spend that has no tracked counterpart (calls we do not see:
       other tools, the portal's own tests).
-- [ ] Tests (scratch DB, fixture DOM JSON, no network). AGENTS.md: the new source, the iumac
+- [x] Tests (scratch DB, fixture DOM JSON, no network). AGENTS.md: the new source, the iumac
       dependency, the login runbook, and the gotcha that the portal is the truth while
       `usage_record.cost_usd` is an estimate. `docs/collectors.md` entry.
-- [ ] Live: `make iu-portal-setup && make iu-portal`, then `make budget`. Paste the output head into
+- [x] Live: `make iu-portal-setup && make iu-portal`, then `make budget`. Paste the output head into
       Left behind.
 **Left behind:**
+Wave 1 done; `make check` green (255+ tests), live run verified 2026-10-26. No further wave is planned.
+- Live: `make iu-portal-setup && make iu-portal` stored **235 daily cells** (2026-09-26..2026-10-26,
+  cell sum $578.25 = Total Cost at scrape time; 49 cells unmatched to a tracked model). October
+  calendar total **$530.25** from daily cells (monthly run: $531.39). `latest.json` written on iumac.
+- `make budget` head: `rolling30 $572.82 of $500.00 OVER by $72.82`, `can spend today -$65.59`,
+  `burn 7d $22.55/day`, rolling30 in 7 days at that burn $666.81; next 7 drop-off days free only
+  $63.87 in total, so the headroom stays negative through 2026-10-03's drop.
+- **Where we are wrong (first read, for a follow-up):** `sonar` tracked $30.60 vs portal $0.17
+  (rate or billing class), `claude-opus-5-5` tracked $6.29 vs portal $49.27, `claude-opus-4-6` $0.01 vs
+  $13.74, `claude-sonnet-5*` and `gpt-5.6-terra` (+43%) also off; 2026-10-22 portal $71.44 vs tracked
+  $32.34. Portal-only spend: GLM 5.3, Kimi K3, Gemini, ElevenLabs, Fable 5.1 (~$9.7 total).
+- Mechanics worth knowing: `make iu-portal-setup` rsyncs with `--delete` (the prototype's
+  `capture*.ts` on iumac are gone); the daily report replaces its whole window in `iu_portal_cost`;
+  an expired session backs off 4 h; `health` stale after 48 h. `make iu-portal-login` was not exercised
+  (needs a human at the MacBook); the headless path was.
 (Argo dashboard series for the portal numbers is a follow-up in the argo repo, not this wave.)

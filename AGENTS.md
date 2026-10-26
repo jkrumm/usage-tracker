@@ -10,12 +10,15 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
-  `stats`, `quota`, `sources`, `health`, `billing-audit`.
+  `stats`, `quota`, `budget`, `iu-portal`, `sources`, `health`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
   on `(source, source_id)`; `session_env` table persists the hook's per-session
   `base_url`/`lane` lines past log pruning.
+- `src/collectors/iu-portal.ts`, `src/budget.ts`, `tools/iu-portal/` — IU's own cost report (the
+  cap) scraped from the MacBook, and `budget`, which compares it with our estimate. See the
+  "IU portal cost" gotcha.
 - `src/collectors/claude-quota.ts`, `src/collectors/account-picks.ts` — not `usage_record`
   sources: the Claude Max account quota series and the dotfiles picker's decisions
   (see the `quota_sample` / `account_pick` gotcha).
@@ -71,6 +74,21 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`
   — no `sub_tool` should carry cost under `-sessions`, and `source_id`s never collide
   across sources. The legacy `opencode` collector reads only the interactive `oc` store.
+- **IU portal cost is the truth; `usage_record.cost_usd` is an estimate.** The employee cap is a
+  ROLLING 30-day window (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`),
+  measured by IU's self-service portal. `make budget` reports rolling30, headroom, "can spend
+  today", the next-7-day drop-off, the 7-day burn, and portal vs `billing='iu'` tracked cost per day
+  and model (flag: |tracked − portal| > max($1, 20% of portal)). It compares, never replaces: a
+  flagged row means our rate card, a missing collector or IU is wrong. Portal days are the
+  portal's calendar (UTC assumed); tracked days are `substr(ts, 1, 10)`, so day-edge noise is
+  expected. **Depends on iumac:** the scrape runs on the MacBook (`ssh iumac`, IU-managed
+  Chrome, profile `~/.local/share/iu-portal/profile`, tooling in `~/.local/share/iu-portal/tool`,
+  installed by `make iu-portal-setup`). `ingest` fetches at most every 4 h; a sleeping MacBook
+  skips quietly, and `health` goes stale after 48 h. **Login runbook:** when the log says
+  `session expired`, run `make iu-portal-login` (a dialog appears on the MacBook, sign in via
+  Entra/Okta within 5 min), then `make iu-portal`. The API key is piped through stdin from
+  `secrets-run`, never written. Each successful scrape also writes `latest.json` on iumac (the
+  Tinycast contract, schema 1; `tools/iu-portal/latest.ts`). Mechanics: `docs/collectors.md`.
 - **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or
   `null` for legacy/dormant — enforced by `health.test.ts`). `bun run src/cli.ts health`
   (`make health`) and `ingest` exit 1 when an available source's newest row is older
