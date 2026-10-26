@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { argoConfig, postJson } from "./argo.ts";
 import { log } from "./log.ts";
 import { syncAccountTables } from "./sync-account.ts";
+import { syncPortal } from "./sync-portal.ts";
 
 export interface SyncOptions {
   /** Max records per request (default 500). */
@@ -63,7 +64,7 @@ export function resyncAccount(db: Database): number {
 }
 
 /**
- * Usage rows first, then the account tables. The account push is best-effort:
+ * Usage rows first, then the account tables and the IU portal report. Both pushes are best-effort:
  * whatever it does (404, 500, network failure, a throw) is logged and never
  * changes the usage SyncResult.
  */
@@ -73,6 +74,11 @@ export async function sync(db: Database, opts: SyncOptions = {}): Promise<SyncRe
     await syncAccountTables(db);
   } catch (err) {
     log.error(`sync: account tables: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await syncPortal(db);
+  } catch (err) {
+    log.error(`sync: IU portal: ${err instanceof Error ? err.message : String(err)}`);
   }
   return result;
 }

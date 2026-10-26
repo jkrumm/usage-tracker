@@ -23,7 +23,7 @@ unsynced rows to the Argo API, which is where the dashboard lives.
   sources: the Claude Max account quota series and the dotfiles picker's decisions
   (see the `quota_sample` / `account_pick` gotcha).
 - `src/argo.ts` (`argoConfig`, `postJson`) is the one HTTP path to Argo; `src/sync.ts` pushes
-  `usage_record`, `src/sync-account.ts` the two account tables.
+  `usage_record`, `src/sync-account.ts` the two account tables, `src/sync-portal.ts` the IU portal report (`POST /usage/iu-portal`).
 - `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
   classification, session_env lookup and the transcript-entrypoint lane map.
 - `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
@@ -106,6 +106,11 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   (`rolling30_usd` ≥ $400 means no OCR reviews). Same contract, two machines: an expired
   session or failed scrape leaves the file untouched, so a consumer judges freshness by
   `fetched_at`. Mechanics: `docs/collectors.md`.
+  **Argo sync:** `syncPortal` (inside `sync`, every 15 min) pushes `iu_portal_cost` / `iu_portal_total` to Argo's
+  `POST /usage/iu-portal` when a fetch landed since the watermark (`collector_state` key `argo_portal_fetched_at`,
+  advanced only after every batch returned ok). Each push resends the last 35 days (the window shifts and the
+  portal settles days), first run sends everything; Argo upserts, so a replay is a no-op. A 404/405 (Argo not
+  deployed yet) leaves the watermark alone. Argo computes the cap from this, not from `usage_record`.
 - **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or
   `null` for legacy/dormant — enforced by `health.test.ts`). `bun run src/cli.ts health`
   (`make health`) and `ingest` exit 1 when an available source's newest row is older
