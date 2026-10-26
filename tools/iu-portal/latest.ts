@@ -1,8 +1,9 @@
 import type { PortalDocument } from "./parse.ts";
 
-// The Tinycast contract: ~/.local/share/iu-portal/latest.json on iumac, schema 1.
-// Computed from the daily scrape on the MacBook so the file exists even when the
-// mini side is down. The cap is a rolling 30-day window, not a calendar month.
+// The latest.json contract, schema 1, written on both machines from the same daily
+// scrape: on iumac by the scrape itself (Tinycast, works with the mini down) and on
+// the mini by the collector (agent-gateway's OCR gate). The cap is a rolling 30-day
+// window, not a calendar month.
 
 export const LIMIT_USD = 500;
 export const WINDOW_DAYS = 30;

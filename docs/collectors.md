@@ -351,7 +351,11 @@ the key is read from stdin and never touches disk.
   `~/.local/share/iu-portal/latest.json` on iumac (schema 1: rolling30,
   can-spend-today, 31 daily values, top 10 models, next-7 drop-off), atomically,
   computed on the MacBook so Tinycast keeps working when the mini side is down.
-  A failed or expired run leaves the previous file untouched.
+  A failed or expired run leaves the previous file untouched. The mini's
+  `collectPortal` writes the same document (same `buildLatest`, `fetched_at` from
+  the scrape) to its own `~/.local/share/iu-portal/latest.json` after each
+  successful ingest, atomically, dir created; agent-gateway's OCR gate reads it.
+  `IU_PORTAL_ROOT` overrides the directory (tests).
 
 ### research-gateway (`research-gateway`)
 

@@ -26,8 +26,11 @@ function seed(db: Database): Promise<number> {
 
 let dir: string;
 let db: Database;
+let prevRoot: string | undefined;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-budget-"));
+  prevRoot = process.env.IU_PORTAL_ROOT;
+  process.env.IU_PORTAL_ROOT = join(dir, "iu-portal");
   db = openDb(join(dir, "usage.db"));
   const ins = db.prepare(
     `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, cost_usd, ingested_at)
@@ -41,6 +44,8 @@ beforeEach(() => {
   ins.run("g", "2026-10-10T10:00:00Z", "ghost-1", "ghost-1", 3);
 });
 afterEach(() => {
+  if (prevRoot === undefined) delete process.env.IU_PORTAL_ROOT;
+  else process.env.IU_PORTAL_ROOT = prevRoot;
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });

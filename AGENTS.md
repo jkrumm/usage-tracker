@@ -100,7 +100,12 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `session expired`, run `make iu-portal-login` (a dialog appears on the MacBook, sign in via
   Entra/Okta within 5 min), then `make iu-portal`. The API key is piped through stdin from
   `secrets-run`, never written. Each successful scrape also writes `latest.json` on iumac (the
-  Tinycast contract, schema 1; `tools/iu-portal/latest.ts`). Mechanics: `docs/collectors.md`.
+  Tinycast contract, schema 1; `tools/iu-portal/latest.ts`), and each successful ingest
+  writes the same document (same `buildLatest`) to the mini's
+  `~/.local/share/iu-portal/latest.json` for agent-gateway's OCR budget gate
+  (`rolling30_usd` ≥ $400 means no OCR reviews). Same contract, two machines: an expired
+  session or failed scrape leaves the file untouched, so a consumer judges freshness by
+  `fetched_at`. Mechanics: `docs/collectors.md`.
 - **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or
   `null` for legacy/dormant — enforced by `health.test.ts`). `bun run src/cli.ts health`
   (`make health`) and `ingest` exit 1 when an available source's newest row is older

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db.ts";
@@ -32,9 +32,13 @@ const ok = (...docs: object[]): PortalFetch => ({ code: 0, stdout: docs.map((d) 
 
 let dir: string;
 let db: Database;
+let prevRoot: string | undefined;
+const latestFile = () => join(dir, "iu-portal", "latest.json");
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-portal-"));
+  prevRoot = process.env.IU_PORTAL_ROOT;
+  process.env.IU_PORTAL_ROOT = join(dir, "iu-portal");
   db = openDb(join(dir, "usage.db"));
   db.run(
     `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, cost_usd, ingested_at)
@@ -42,6 +46,8 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  if (prevRoot === undefined) delete process.env.IU_PORTAL_ROOT;
+  else process.env.IU_PORTAL_ROOT = prevRoot;
   db.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -63,6 +69,32 @@ describe("collectPortal", () => {
       { month: "2026-10", total_usd: 5 },
     ]);
     expect(readPortalState(db)).toMatchObject({ lastOk: NOW, lastCode: 0, lastDay: "2026-10-26" });
+  });
+
+  test("writes the schema-1 latest.json on success (dir created) and leaves it on failure", async () => {
+    expect(existsSync(latestFile())).toBe(false);
+    await collectPortal(db, { now: NOW, fetch: async () => ok(daily, monthly) });
+    const written = readFileSync(latestFile(), "utf8");
+    expect(JSON.parse(written)).toMatchObject({
+      schema: 1,
+      fetched_at: "2026-10-26T08:00:00Z",
+      limit_usd: 500,
+      window_days: 30,
+      rolling30_usd: 7,
+      can_spend_today_usd: 497,
+    });
+    expect(existsSync(`${latestFile()}.tmp`)).toBe(false);
+
+    const failures: PortalFetch[] = [
+      { code: 3, stdout: "", stderr: "session expired" },
+      { code: 255, stdout: "", stderr: "" },
+      { code: 1, stdout: "", stderr: "boom" },
+      ok({ granularity: "daily" }),
+    ];
+    for (const [i, f] of failures.entries()) {
+      await collectPortal(db, { now: NOW + (5 + i * 5) * H, force: true, fetch: async () => f });
+      expect(readFileSync(latestFile(), "utf8")).toBe(written);
+    }
   });
 
   test("latest fetch wins: a grown value is updated and a vanished cell removed", async () => {

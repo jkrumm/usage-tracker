@@ -1,4 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { buildLatest } from "../../tools/iu-portal/latest.ts";
+import type { PortalDocument } from "../../tools/iu-portal/parse.ts";
 import { loadCursor, saveState } from "../db.ts";
 import { log } from "../log.ts";
 import { normalizeModel } from "../models.ts";
@@ -11,7 +16,8 @@ import { iumacDisabled, iumacHost, SSH_OPTS } from "../remote.ts";
 // rows go to iu_portal_cost / iu_portal_total. A MacBook that is asleep, a
 // logged-out session or a broken scrape are all "skip and say why" — never a
 // reason to fail the other collectors; `health` flags a stale source via
-// `iuPortalFreshness`.
+// `iuPortalFreshness`. Every successful ingest also writes latest.json here on the
+// mini (the scrape wrote its twin on the MacBook): agent-gateway's OCR gate reads it.
 
 export const PORTAL_SOURCE = "iu-portal";
 const REFRESH_MS = 4 * 3_600_000;
@@ -31,6 +37,7 @@ export interface PortalFetch {
 export type PortalFetcher = () => Promise<PortalFetch>;
 
 interface PortalDoc {
+  fetched_at?: string;
   granularity: "daily" | "monthly";
   periods: string[];
   rows: Array<{ label: string; row: number; cells: Record<string, number> }>;
@@ -95,6 +102,21 @@ export const sshFetcher: PortalFetcher = async () => {
   ]);
   return { code, stdout, stderr };
 };
+
+/** `IU_PORTAL_ROOT` mirrors scrape.ts, so tests and the MacBook share one override. */
+function latestPath(): string {
+  return join(process.env.IU_PORTAL_ROOT ?? join(homedir(), ".local/share/iu-portal"), "latest.json");
+}
+
+/** Same schema-1 document the scrape writes on iumac; atomic so a reader never sees half of it. */
+function writeLatest(doc: PortalDoc, now: number): void {
+  const path = latestPath();
+  const full: PortalDocument = { fetched_at: new Date(now).toISOString(), cost_center: null, total_usd: 0, ...doc };
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(buildLatest(full), null, 2)}\n`);
+  renameSync(tmp, path);
+}
 
 function parseDocs(stdout: string): PortalDoc[] {
   const docs: PortalDoc[] = [];
@@ -223,6 +245,11 @@ export async function collectPortal(db: Database, opts: CollectPortalOptions = {
       "ok",
       `${written} cells`,
     );
+    try {
+      writeLatest(daily, now);
+    } catch (err) {
+      log.warn(`iu-portal: latest.json not written: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return written;
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err), 1);
