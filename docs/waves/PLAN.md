@@ -95,23 +95,55 @@ Wave 1 done; `make check` green (255+ tests), live run verified 2026-10-26. No f
   (needs a human at the MacBook); the headless path was.
 (Argo dashboard series for the portal numbers is a follow-up in the argo repo, not this wave.)
 
-## Wave 2 — Reconcile: make tracked cost agree with the portal            <!-- status: active -->
+## Wave 2 — Reconcile: make tracked cost agree with the portal            <!-- status: done -->
 The portal is the truth; `make budget` now shows where we diverge. Find the cause of each large divergence
 and fix it on our side, or document it as IU's side. **No LLM spend.** Read logs, rates and the DB. Never
 re-call models to test.
-- [ ] `sonar` tracked $30.66 vs portal $0.17 (180x): wrong rate, wrong billing class (Perplexity
+- [x] `sonar` tracked $30.66 vs portal $0.17 (180x): wrong rate, wrong billing class (Perplexity
       `sonar` billed elsewhere?), or per-request fees counted as tokens? Fix `src/pricing.ts` or the
       classification, then `make reprice` (DRYRUN=1 first).
-- [ ] `claude-opus-5-5` tracked $6.29 vs portal $49.27, `claude-opus-4-6` $0.01 vs $13.74, and
+- [x] `claude-opus-5-5` tracked $6.29 vs portal $49.27, `claude-opus-4-6` $0.01 vs $13.74, and
       `claude-sonnet-5*` low: Anthropic-leg IU traffic that no collector sees, or that is classified
       `max` instead of `iu`. Check claude-code `session_env` base_url/lane attribution (`billing-audit`)
       for IU-key sessions, and the iumac mirror. Name the missing source; add it or fix the attribution.
-- [ ] `gpt-5.6-terra` +43% and `deepseek-v4.1-flash` +17% over: compare our per-token rates and cache
+- [x] `gpt-5.6-terra` +43% and `deepseek-v4.1-flash` +17% over: compare our per-token rates and cache
       pricing against IU's effective rate (portal USD / tracked tokens per model per day). Where the
       gateway returns `usage.cost`, prefer it over computed cost. Adjust rates; reprice.
-- [ ] 2026-10-22 portal $71.44 vs tracked $32.34: which models carry the gap that day, and which tool made those calls?
-- [ ] Add a `budget --explain <model>` (or similar) that prints portal vs tracked per day for one model
+- [x] 2026-10-22 portal $71.44 vs tracked $32.34: which models carry the gap that day, and which tool made those calls?
+- [x] Add a `budget --explain <model>` (or similar) that prints portal vs tracked per day for one model
       with tokens and implied rate, so the next divergence takes minutes to diagnose. Tests.
-- [ ] Left behind: before/after per-model ratio table for the top 15, and for each remaining gap
+- [x] Left behind: before/after per-model ratio table for the top 15, and for each remaining gap
       whether it is ours (fixed / not fixable) or IU's.
 **Left behind:**
+Wave 2 done; `make check` green (262 tests). Zero LLM spend. No further wave is planned.
+Before -> after, top of the window (portal / tracked / ratio):
+
+| model | before | after | verdict |
+|-|-|-|-|
+| sonar | $0.17 / $30.66 / 180x | $0.17 / $0.22 / 1.2x | ours, fixed |
+| gpt-5.6-terra | $82.77 / $118.54 / 1.43x | $82.77 / $85.50 / 1.03x | ours, fixed |
+| deepseek-v4.1-flash | $270.56 / $317.39 / 1.17x | unchanged | ours, not fixable (below) |
+| claude-opus-5-5 | $49.27 / $6.29 / 0.13x | unchanged | calls no collector sees |
+| claude-opus-4-6, claude-sonnet-5, claude-sonnet-5-5 | 0.00x / 0.18x / 0.10x | unchanged | same unseen calls |
+| claude-haiku-5-5 | 0.86x | unchanged | within noise; opencode/IU mix |
+
+- **sonar:** Perplexity's `usage.cost` is list price plus per-request search fees; IU bills tokens only
+  (~$1/M). `IGNORE_REPORTED_COST` in `pricing.ts`: `upsertRecords` and `reprice` now price it from tokens.
+- **gpt-5.6-terra:** IU did not bill reasoning tokens until 2026-10-16 ~08:55Z (portal = input+output+cache
+  before, the full formula to the cent from 10-17). `Rate.reasoningFreeBefore` encodes the cutoff.
+  Both repriced in the live DB (`cleared synced_at`, so `sync` re-pushes them).
+- **Anthropic-leg gap (opus 5.5/4.6, sonnet 5/5.5, 10-22 $71 vs $32): not an attribution bug.** Checked:
+  no `billing=max` claude-code row has a session with an IU `base_url`; claude-code IU rows exist for every
+  IU session; the gateway jsonl logs match the DB row-for-row; bench/review lanes are opencode haiku-eu and
+  tracked. `make budget MODEL=claude-opus-5-5` shows quiet days (10-20/21/23) match the portal to the cent
+  at ~$8/M, so the rate card is right; the missing spend is calls made with the IU key that touch none of
+  our collectors (10-22: opus $32.59 portal vs $0.89 tracked, sonnet-5/5.5 $11 vs $1.2). The caller is not
+  identifiable from local data: the portal is daily and has no caller field. Next step is IU-side or a
+  per-key log, not this repo.
+- **deepseek-v4.1-flash +17% and deepseek-v4-flash 2.6x:** days swing 0.72x..1.73x, so it is not a rate.
+  Mixed `reported` (gateway cost) and `computed` rows, plus an assumed off-peak window, and the portal's
+  daily buckets are not reproducible from per-call timestamps. Over-estimating is the safe direction;
+  the cap number comes from the portal.
+- **Portal-only models** (GLM 5.3, Kimi K3, Gemini, ElevenLabs, Fable 5.1, ...): ~$10 total, no tracked
+  counterpart; IU-side or tools outside our collectors.
+- New: `make budget MODEL=<norm>` (`budget --explain`) for the next divergence.
