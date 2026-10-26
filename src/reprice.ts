@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { computeCost } from "./pricing.ts";
+import { computeCost, IGNORE_REPORTED_COST } from "./pricing.ts";
 import type { Grain } from "./types.ts";
 
 /**
@@ -95,7 +95,7 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
     // sonar rows or agent-gateway-iu's gateway `usage.cost`) is not ours to
     // recompute: the table has no rate for a per-call vendor bill, so leave
     // the row exactly as it landed.
-    if (row.cost_source === "reported") {
+    if (row.cost_source === "reported" && !IGNORE_REPORTED_COST.has(row.model_norm ?? "")) {
       reportedSkipped++;
       continue;
     }

@@ -61,7 +61,22 @@ export interface Rate {
    * applied when the row carries a timestamp.
    */
   offPeak?: { from: string; to: string; rate: Rate };
+  /**
+   * ISO instant before which IU's invoice did not bill reasoning tokens for this
+   * model (the portal matched input + output + cache only). Rows older than it
+   * are priced without the reasoning share; later rows bill it at `output`.
+   */
+  reasoningFreeBefore?: string;
 }
+
+/**
+ * Models whose vendor-reported per-call cost is NOT what IU charges. Perplexity's
+ * `usage.cost` for `sonar` is its list price including per-request search fees;
+ * the IU portal bills the tokens alone (2026-09-26..10-26: portal $0.18 vs
+ * $30.66 reported). Their rows are priced from tokens through PRICING instead,
+ * and reprice rewrites the historical `reported` ones.
+ */
+export const IGNORE_REPORTED_COST = new Set(["sonar"]);
 
 function minutesUtc(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number);
@@ -82,6 +97,9 @@ export function inUtcWindow(ts: string, from: string, to: string): boolean {
 const LONG_CONTEXT = 272_000;
 
 export const PRICING: Record<string, Rate> = {
+  // Perplexity Sonar through the IU gateway: token-billed only ($1/M in and out,
+  // Perplexity's published token rate; IU does not pass the request fee on).
+  sonar: { input: 1.0, output: 1.0, cacheRead: 1.0, cacheWrite: 1.0 },
   // Anthropic list prices, verified May 2026 (platform.claude.com pricing).
   // cacheWrite = 1.25x input (standard 5-minute cache-creation multiplier);
   // cacheWrite1h = 2x input (1-hour cache-creation multiplier).
@@ -238,11 +256,15 @@ export const PRICING: Record<string, Rate> = {
   // openrouter.ai/api/v1/models. $2.50/$15.00 was gpt-5.6-sol's launch rate,
   // which is how the stale figure kept looking plausible; Sol is $4.00/$20.00
   // now and has its own row below.
+  // IU did not bill reasoning tokens for Terra until 2026-10-16 (~08:55Z, fitted:
+  // the portal matches input+output+cache exactly before, and the full formula to
+  // the cent from 10-17), hence reasoningFreeBefore.
   "gpt-5.6-terra": {
     input: 2.0,
     output: 12.0,
     cacheRead: 0.2,
     cacheWrite: 2.5,
+    reasoningFreeBefore: "2026-10-16T08:55:00Z",
     long: { threshold: LONG_CONTEXT, rate: { input: 4.0, output: 18.0, cacheRead: 0.4, cacheWrite: 5.0 } },
   },
   // GPT-5.6 Luna (OpenAI list prices; Azure OpenAI matches exactly, effective
@@ -420,7 +442,7 @@ export function computeCost(modelNorm: string | null, t: TokenCounts): CostResul
       t.cacheRead * rate.cacheRead +
       cw5m * rate.cacheWrite +
       cw1h * (rate.cacheWrite1h ?? rate.cacheWrite) +
-      t.reasoning * rate.output) /
+      (base.reasoningFreeBefore && t.ts && t.ts < base.reasoningFreeBefore ? 0 : t.reasoning * rate.output)) /
     1_000_000;
 
   return { usd, source: resolved.source };

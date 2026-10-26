@@ -110,3 +110,14 @@ describe("reprice — rates removed from the table", () => {
     db.close();
   });
 });
+
+describe("reprice — sonar", () => {
+  test("rewrites a reported sonar row: Perplexity's list price is not what IU bills", () => {
+    const db = seed(0.06, "reported", "sonar"); // 100k in + 100k out
+    expect(reprice(db).changed).toBe(1);
+    const row = db.query<{ cost_usd: number; cost_source: string }, []>("SELECT cost_usd, cost_source FROM usage_record").get();
+    expect(row?.cost_usd).toBeCloseTo(0.2, 10); // $1/M in and out
+    expect(row?.cost_source).not.toBe("reported");
+    db.close();
+  });
+});

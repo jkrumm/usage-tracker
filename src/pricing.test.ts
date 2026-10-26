@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeModel } from "./models.ts";
-import { computeCost, inUtcWindow } from "./pricing.ts";
+import { computeCost, IGNORE_REPORTED_COST, inUtcWindow } from "./pricing.ts";
 import type { TokenCounts } from "./pricing.ts";
 
 // computeCost is where the 5m/1h cache-write split actually lands: miss the
@@ -394,5 +394,17 @@ describe("claude-haiku-5-5 exact rate", () => {
       grain: "session",
     });
     expect(result.usd).toBeCloseTo((10_000 * 0.1 + 95_000 * 0.125) / 1e6, 10);
+  });
+});
+
+describe("reconciled against the IU portal", () => {
+  const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 1_000_000, grain: "message" as const };
+  test("gpt-5.6-terra reasoning was unbilled before 2026-10-16T08:55Z", () => {
+    expect(computeCost("gpt-5.6-terra", { ...t, ts: "2026-10-15T12:00:00Z" }).usd).toBe(0);
+    expect(computeCost("gpt-5.6-terra", { ...t, ts: "2026-10-17T12:00:00Z" }).usd).toBeCloseTo(12, 6);
+  });
+  test("sonar is token-priced; the vendor-reported cost is ignored", () => {
+    expect(computeCost("sonar", { ...t, input: 1_000_000, reasoning: 0, ts: "2026-10-20T00:00:00Z" }).usd).toBeCloseTo(1, 6);
+    expect(IGNORE_REPORTED_COST.has("sonar")).toBe(true);
   });
 });

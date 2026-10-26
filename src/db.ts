@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { SCHEMA } from "./schema.ts";
 import { currentMachine } from "./machine.ts";
 import { classifyBilling, normalizeModel, resolveAccount } from "./models.ts";
-import { computeCost } from "./pricing.ts";
+import { computeCost, IGNORE_REPORTED_COST } from "./pricing.ts";
 import type { CollectResult, UsageRecord, Workspace } from "./types.ts";
 
 /** Resolve the SQLite path: $USAGE_DB or ~/.local/share/usage-tracker/usage.db. */
@@ -185,7 +185,7 @@ export function upsertRecords(
       // model with no real cost field — and stored verbatim; everything else
       // is priced from tokens centrally.
       const cost =
-        r.authoritativeCostUsd != null
+        r.authoritativeCostUsd != null && !IGNORE_REPORTED_COST.has(modelNorm ?? "")
           ? { usd: r.authoritativeCostUsd, source: "reported" as const }
           : computeCost(modelNorm, {
               input: r.inputTokens,
