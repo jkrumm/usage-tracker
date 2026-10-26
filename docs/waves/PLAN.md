@@ -148,7 +148,7 @@ Before -> after, top of the window (portal / tracked / ratio):
   counterpart; IU-side or tools outside our collectors.
 - New: `make budget MODEL=<norm>` (`budget --explain`) for the next divergence.
 
-## Wave 3 — The unseen Claude spend is audio-gateway            <!-- status: active -->
+## Wave 3 — The unseen Claude spend is audio-gateway            <!-- status: done -->
 Orchestrator finding (2026-10-26), after Wave 2 concluded "caller not identifiable": audio-gateway logs its own LLM
 calls to its own SQLite and **no collector reads it**. `~/SourceRoot/audio-gateway/data/usage.db` (the mini
 instance, `com.jkrumm.audio-gateway`, :7719, which runs the podcast pipeline), table `usage_record` (id, ts,
@@ -158,18 +158,38 @@ request_id, …, **no cost column**). It has `claude-opus-5-5` / `claude-opus-4-
 instance with its own DB. The writer bake-off scripts (`audio-gateway/scripts/writer-bakeoff.ts`,
 `writer-lab.ts`) probably do not log at all; the 10-22 spike ($32.59 Opus, $11 Sonnet 5/5.5) fits the writer
 bake-off. No LLM spend in this wave.
-- [ ] Collector `audio-gateway` (mini instance): incremental read of `audio-gateway/data/usage.db`
+- [x] Collector `audio-gateway` (mini instance): incremental read of `audio-gateway/data/usage.db`
       `usage_record` (watermark on id or ts, read-only open). Price LLM rows with the central rate card (use
       `usage_json`'s reported cost where present, as the other IU collectors do), billing `iu`. Price TTS/STT
       rows by audio seconds/chars where the rate card has them, else unpriced and flagged. `sub_tool` =
       endpoint. Tests with a fixture DB.
-- [ ] VPS instance: find where its usage DB lives (audio-gateway repo docs / compose file, `ssh vps`;
+- [x] VPS instance: find where its usage DB lives (audio-gateway repo docs / compose file, `ssh vps`;
       read-only). If it is reachable cheaply (an `ssh vps sqlite3 … -json` pull of new rows, the same
       pattern as the iumac mirror), add it as a second source id. If not, record why in Left behind.
-- [ ] Bake-off/lab scripts: confirm from the audio-gateway source whether `scripts/writer-*.ts` call
+- [x] Bake-off/lab scripts: confirm from the audio-gateway source whether `scripts/writer-*.ts` call
       `recordUsage`. If they bypass it, do not edit audio-gateway (another agent owns it right now). Write
       the finding into Left behind as a follow-up for that repo.
-- [ ] Backfill the window (`make backfill` scoped to the new source), then `make budget`: record the per-model
+- [x] Backfill the window (`make backfill` scoped to the new source), then `make budget`: record the per-model
       before/after table for the Claude rows, and what portal spend is still unexplained.
-- [ ] AGENTS.md + docs/collectors.md entry; `make check`; commit; push.
+- [x] AGENTS.md + docs/collectors.md entry; `make check`; commit; push.
 **Left behind:**
+Wave 3 done; `make check` green (265 tests). Zero LLM spend. No further wave is planned.
+- **Collectors:** `audio-gateway` (mini: `data/usage.db` + `data/*/usage.db` lab ledgers, read-only, id
+  watermark) and `audio-gateway-vps` (`ssh vps python3`; the host has no sqlite3, the DB is the container
+  bind mount `/var/lib/audio-gateway/usage.db`). Backfill: +1538 mini rows, +3393 VPS rows.
+- **Bake-off/lab scripts DO log**, just not into the production sink: `writer-bakeoff.ts` and `writer-lab.ts`
+  set `USAGE_DB` to private ledgers (`data/writer-bakeoff/`, `data/writer-lab/`; `data/wave3/` too), by design
+  ("never the production sink"). The collector reads those ledgers; no follow-up needed in audio-gateway.
+  They only start on 2026-10-25, so they cannot explain 10-22.
+- **Before -> after (window, portal / tracked):** `claude-opus-4-6` $13.74 / $0.01 -> $13.49 (0.98x, closed);
+  `claude-opus-5-5` $49.27 / $6.29 -> $18.93 (0.13x -> 0.38x; 10-19, 10-24, 10-25 match to the cent);
+  `claude-sonnet-5-5` $4.70 / $0.58 (sonnet-5 $6.95 / $1.28) barely moved. Also newly tracked: kimi-k3 $1.85,
+  glm-5.3, grok-4.7, gemini-3.8-flash $1.70 (the portal bills `gemini-3.8-flash` under a label that does not
+  match, flagged "tracked the portal does not bill").
+- **Still unexplained:** 2026-10-22 alone: portal Opus 5.5 $32.59 vs tracked $0.89 (+ sonnet-5/5.5 ~$11 vs
+  $1.2). No ledger (mini, labs, VPS, `data.bak-local`) has a row for that day, so the caller is outside every
+  collector; next step is IU-side or a per-key gateway log. ~$7 of other portal-only spend remains
+  (ElevenLabs ~$1.5, GLM/Kimi/Gemini labels, Fable 5.1 $0.78).
+- **TTS/STT unpriced** (ElevenLabs v3/flash, Gemini TTS, transcribe): no rate card entries; rows carry
+  `raw.unpriced`, seconds and chars. Portal shows ElevenLabs at ~$1.5 total, small enough to leave.
+

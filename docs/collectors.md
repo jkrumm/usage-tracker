@@ -384,6 +384,33 @@ shorter than the persisted offset it resumes from the top instead of stalling
 past EOF (safe because the upsert is idempotent). The other offset collectors
 still simply hold their offset in that case.
 
+### audio-gateway (`audio-gateway`, `audio-gateway-vps`)
+
+audio-gateway records every upstream call (podcast outline/segment/review LLM steps,
+cover images, TTS, STT) in its own SQLite `usage_record` and pushes it nowhere. Before
+this collector that spend was only visible as unexplained IU portal cost (Wave 2's
+`claude-opus-5-5` / `-4-6` gap). There is no cost column.
+
+- **`audio-gateway`** (mini): `$AUDIO_GATEWAY_DATA_DIR` (default
+  `~/SourceRoot/audio-gateway/data`) `usage.db` plus every `<dir>/*/usage.db`
+  (`writer-bakeoff`, `writer-lab`, `wave3`: the lab scripts keep private ledgers by design
+  but spend through the same IU key). Opened read-only with bun:sqlite. Cursor: per-ledger max
+  `id` plus the first row's ts; a ledger whose max id drops below it, or whose first row changed, was recreated and is rescanned.
+- **`audio-gateway-vps`**: the DB lives in the container bind mount
+  `/var/lib/audio-gateway/usage.db`; the host has no sqlite3, so new rows come back as JSON from
+  `ssh vps python3 -` (script on stdin, `AUDIO_GATEWAY_VPS_HOST` overrides the alias). A failed ssh
+  skips the leg with a note and leaves the cursor, never failing other collectors.
+- **Mapping:** `source_id` = `<ledger>:<id>@<row ts>` (`mini`, `mini/<lab>`, `vps`; the ts keeps a recreated ledger's reused ids from overwriting the old generation), `machine` `vps` for the VPS leg, `sub_tool` = endpoint,
+  `project` `audio-gateway`, billing `iu` (central). Token shape comes from `usage_json`: OpenAI
+  (`prompt_tokens` incl. cached, reasoning split out of completion) or Anthropic (`input_tokens`
+  with separate cache fields), else the table columns.
+- **Cost:** `usage_json.cost` (the gateway's own number) is authoritative; token rows of a model
+  in the rate card are priced centrally; TTS/STT rows (seconds/chars only, no rate card entry) stay
+  unpriced with `raw.unpriced = true`. `*-request` endpoints repeat the inner call and are skipped.
+- **Result (2026-10-26 backfill):** `claude-opus-4-6` tracked $0.01 -> $13.49 vs portal $13.74;
+  `claude-opus-5-5` days 10-19/24/25 now match the portal to the cent. 10-22 ($32.59 Opus) has no
+  audio-gateway rows in any ledger, so that spike comes from a caller outside every collector.
+
 ### LiteLLM bridge (retired)
 
 The local LiteLLM proxy and its logger were removed on 2026-09-04; the collector

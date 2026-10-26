@@ -64,6 +64,13 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
 
 ## Gotchas
 
+- **audio-gateway spend (`audio-gateway`, `audio-gateway-vps`).** audio-gateway logs its own LLM/TTS/STT
+  calls to its own SQLite (`~/SourceRoot/audio-gateway/data/usage.db`, no cost column) and the writer
+  bake-off/lab scripts keep private ledgers in `data/<lab>/usage.db`; the `audio-gateway` collector reads
+  all of them read-only (`source_id` = `mini:<id>@<ts>` / `mini/<lab>:<id>@<ts>`), the VPS instance via
+  `ssh vps python3` (`vps:<id>@<ts>`). It explained the whole `claude-opus-4-6` gap and most of
+  `claude-opus-5-5`. TTS/STT rows are unpriced (`raw.unpriced`; no rate card entry); `*-request`
+  endpoints are skipped as duplicates of the inner call. Disable the VPS leg with `AUDIO_GATEWAY_VPS_DISABLE=1`.
 - **agent-gateway spend is three disjoint sources — never fold them.**
   `agent-gateway-opencode` = every OpenCode worker session (review angles/synthesis,
   dispatch, check, bench, overview…) read from agw's own OpenCode store: tokens and exact
