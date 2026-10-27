@@ -225,8 +225,8 @@ describe("usage_record.account", () => {
     expect(stored?.account).toBe("me");
   });
 
-  test("an unknown account value falls back to iu", () => {
-    writeEnv([{ session: "s-x", base_url: "", lane: null, account: "c" }]);
+  test("an invalid account value falls back to iu", () => {
+    writeEnv([{ session: "s-x", base_url: "", lane: null, account: "ME2!" }]);
     const r = rec("s-x");
     upsertRecords(db, "claude-code", [r]);
     expect(accountOf(r.sourceId)?.account).toBe("iu");
@@ -262,7 +262,27 @@ describe("usage_record.account", () => {
     expect(accountOf(carried.sourceId)?.account).toBe("me");
     expect(parseAccount("iu")).toBe("iu");
     expect(parseAccount("me")).toBe("me");
-    expect(parseAccount("x")).toBeNull();
+    expect(parseAccount("ME2!")).toBeNull();
+  });
+
+  test("parseAccount: new registry ids pass through, legacy a/b map, invalid values are null", () => {
+    expect(parseAccount("iu")).toBe("iu");
+    expect(parseAccount("me")).toBe("me");
+    expect(parseAccount("me2")).toBe("me2");
+    expect(parseAccount("a")).toBe("iu");
+    expect(parseAccount("b")).toBe("me");
+    expect(parseAccount("ME2!")).toBeNull();
+    expect(parseAccount("")).toBeNull();
+    expect(parseAccount(42)).toBeNull();
+    expect(parseAccount(null)).toBeNull();
+    expect(parseAccount(undefined)).toBeNull();
+  });
+
+  test("a new registry account (me2) survives session_env ingest as its own id, not iu", () => {
+    writeEnv([{ session: "s-me2", base_url: "", lane: null, account: "me2" }]);
+    const r = rec("s-me2");
+    upsertRecords(db, "claude-code", [r]);
+    expect(accountOf(r.sourceId)).toEqual({ account: "me2", billing: "max" });
   });
 
   test("migration renames legacy a/b in usage_record and session_env, idempotently, synced_at untouched", () => {
@@ -302,7 +322,7 @@ describe("usage_record.account", () => {
     }
   });
 
-  test("resolveAccount: line account wins (legacy ids mapped); unknown/empty/non-string falls through", () => {
+  test("resolveAccount: line account wins (legacy ids mapped, new ids pass through); invalid/empty/non-string falls through", () => {
     const lookup = (id: string) => (id === "s" ? "me" : undefined);
     const resolve = (account: unknown) =>
       resolveAccount({ billing: "max", raw: { sessionId: "s", account } }, lookup);
@@ -310,8 +330,9 @@ describe("usage_record.account", () => {
     expect(resolve("iu")).toBe("iu");
     expect(resolve("a")).toBe("iu");
     expect(resolve("b")).toBe("me");
-    for (const bad of ["x", "", 5, null, {}]) expect(resolve(bad)).toBe("me");
-    expect(resolveAccount({ billing: "max", raw: { sessionId: "other", account: "x" } }, lookup)).toBe("iu");
+    expect(resolve("me2")).toBe("me2");
+    for (const bad of ["ME2!", "", 5, null, {}]) expect(resolve(bad)).toBe("me");
+    expect(resolveAccount({ billing: "max", raw: { sessionId: "other", account: "ME2!" } }, lookup)).toBe("iu");
     expect(resolveAccount({ billing: "iu", raw: { account: "me" } }, lookup)).toBeNull();
   });
 });

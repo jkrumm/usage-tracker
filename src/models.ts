@@ -17,16 +17,22 @@ import type { Billing } from "./types.ts";
 // (useSessionEnvStore), every line seen is persisted in `session_env` and the
 // cache is built from the table merged with the live logs.
 /** Claude Max account id. Unrelated to `billing`: account "iu" is a Max account, billing "iu" is IU-paid API spend. */
-export type Account = "iu" | "me";
+export type Account = string;
+
+// The same shape the registry (dotfiles claude-accounts.json) and argo's own
+// ACCOUNT_PATTERN enforce for an account id.
+const ACCOUNT_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
 
 /**
- * The one account mapping: `iu`/`me` pass through, the legacy ids `a`/`b`
- * (log lines and session_env rows written before the rename) map to `iu`/`me`,
- * anything else is null.
+ * The one account mapping: the legacy ids `a`/`b` (log lines and session_env
+ * rows written before the rename) map to `iu`/`me`; any other id matching the
+ * registry's pattern (including `iu`/`me` themselves) passes through as
+ * itself; anything else (non-string, empty, bad charset) is null.
  */
 export function parseAccount(value: unknown): Account | null {
-  if (value === "iu" || value === "a") return "iu";
-  if (value === "me" || value === "b") return "me";
+  if (value === "a") return "iu";
+  if (value === "b") return "me";
+  if (typeof value === "string" && ACCOUNT_PATTERN.test(value)) return value;
   return null;
 }
 
