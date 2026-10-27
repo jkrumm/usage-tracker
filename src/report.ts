@@ -262,7 +262,7 @@ export function formatBillingAudit(rows: BillingAuditRow[]): string {
     pad("billing", 14),
     pad("live", 15),
     pad("last (UTC)", 20),
-    pad("acct", 5),
+    pad("acct", 8),
     "flags",
   ];
   const lines = [header.join("  ")];
@@ -280,7 +280,7 @@ export function formatBillingAudit(rows: BillingAuditRow[]): string {
         pad(row.billings, 14),
         pad(row.liveLabel, 15),
         pad(row.lastTs, 20),
-        pad(row.accounts || "-", 5),
+        pad(row.accounts || "-", 8),
         flags,
       ].join("  "),
     );
