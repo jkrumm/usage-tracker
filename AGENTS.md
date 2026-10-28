@@ -114,6 +114,14 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   authoritative. Re-reads three days behind the newest row because turns mutate until ended. No text is
   read, only counts. `block_results`/`quality_reports`/`artifact_audits` cost columns are cents and
   ignored. The relay is the only holder of the team key, so the whole source is the team key's.
+  The build phase (2026-10-22..25, ~15.6 USD, evals through chat-api included) lives in the archived SQLite
+  (`~/.local/share/teamchat/archive/chat.db.pre-athena-20261026.sqlite`, `ATHENA_ARCHIVE_DB`), read once as
+  `sqlite-turn:`/`sqlite-title:` ids (cursor flag `archived`, `--full` re-reads). **Team-key spend still not
+  tracked** (Athena orchestrator, 2026-10-28): the evals' direct extractor/judge calls (`chat/evals/run.py`,
+  `golden_run.py`, same `LLM_RELAY_KEY`; cost only in `chat/evals/reports/<date>-*.json`), `epx web ask`
+  (`WEB_ASK_API_KEY`; call log without cost in the broker audit `external=1`), the relay's docker logs (no
+  tokens), and whatever agent-workflows' `w4-iu-key` run sends. `make budget KEY=athena-team` shows that
+  remainder as the portal-vs-tracked gap.
 - **IU portal cost is the truth; `usage_record.cost_usd` is an estimate.** The employee cap is a
   ROLLING 30-day window (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`),
   measured by IU's self-service portal. `make budget` reports rolling30, headroom, "can spend
