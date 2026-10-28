@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { buildLatest } from "../../tools/iu-portal/latest.ts";
 import type { PortalDocument } from "../../tools/iu-portal/parse.ts";
 import { loadCursor, saveState } from "../db.ts";
+import { DEFAULT_IU_KEY, IU_KEYS, type IuKey, type IuKeyDef } from "../iu-keys.ts";
 import { log } from "../log.ts";
 import { normalizeModel } from "../models.ts";
 import { iumacDisabled, iumacHost, SSH_OPTS } from "../remote.ts";
@@ -18,10 +19,14 @@ import { iumacDisabled, iumacHost, SSH_OPTS } from "../remote.ts";
 // reason to fail the other collectors; `health` flags a stale source via
 // `iuPortalFreshness`. Every successful ingest also writes latest.json here on the
 // mini (the scrape wrote its twin on the MacBook): agent-gateway's OCR gate reads it.
+//
+// Every registered IU key (iu-keys.ts) has its own cap and its own report: the portal is
+// asked once per key with that key typed into the form. Only the personal key's report
+// feeds latest.json (OCR gate, Tinycast); the others pass `--no-latest` to the scrape.
+// State is kept per key (`iu-portal` for the personal key, `iu-portal:<id>` otherwise).
 
 export const PORTAL_SOURCE = "iu-portal";
 const REFRESH_MS = 4 * 3_600_000;
-const KEY_REF = "op://common/anthropic/API_KEY";
 const REMOTE_CMD = "cd ~/.local/share/iu-portal/tool && bun scrape.ts daily monthly";
 const HANG_GUARD_MS = 5 * 60_000;
 const KEY_TIMEOUT_MS = 30_000;
@@ -34,7 +39,7 @@ export interface PortalFetch {
   stdout: string;
   stderr: string;
 }
-export type PortalFetcher = () => Promise<PortalFetch>;
+export type PortalFetcher = (key: IuKeyDef) => Promise<PortalFetch>;
 
 interface PortalDoc {
   fetched_at?: string;
@@ -53,8 +58,10 @@ interface PortalState {
 
 const EMPTY_STATE: PortalState = { lastOk: null, lastAttempt: null, lastCode: null, lastDay: null };
 
-export function readPortalState(db: Database): PortalState {
-  const raw = loadCursor(db, PORTAL_SOURCE);
+const stateSource = (iuKey: IuKey) => (iuKey === DEFAULT_IU_KEY ? PORTAL_SOURCE : `${PORTAL_SOURCE}:${iuKey}`);
+
+export function readPortalState(db: Database, iuKey: IuKey = DEFAULT_IU_KEY): PortalState {
+  const raw = loadCursor(db, stateSource(iuKey));
   if (!raw) return EMPTY_STATE;
   try {
     return { ...EMPTY_STATE, ...(JSON.parse(raw) as Partial<PortalState>) };
@@ -63,33 +70,42 @@ export function readPortalState(db: Database): PortalState {
   }
 }
 
-function writePortalState(db: Database, state: PortalState, status: "ok" | "error", note: string): void {
-  saveState(db, PORTAL_SOURCE, { result: { records: [], cursor: JSON.stringify(state), note }, status, processed: 0 });
+function writePortalState(db: Database, iuKey: IuKey, state: PortalState, status: "ok" | "error", note: string): void {
+  saveState(db, stateSource(iuKey), { result: { records: [], cursor: JSON.stringify(state), note }, status, processed: 0 });
 }
 
-/** Freshness entry for `health`: the portal has kept no usage_record rows. */
-export const iuPortalFreshness = {
-  source: PORTAL_SOURCE,
+/** Freshness entries for `health` (one per IU key): the portal has kept no usage_record rows. */
+export const iuPortalFreshnessAll = IU_KEYS.map((def) => ({
+  source: stateSource(def.id),
   staleAfterHours: 48,
-  available: () => !iumacDisabled(),
+  // A secondary key counts once it has been tried: a key never attempted (not deployed yet) is not
+  // stale, but one that keeps failing (secret missing, rejected) goes red like the personal one.
+  available: (db?: Database) =>
+    !iumacDisabled() && (def.id === DEFAULT_IU_KEY || !db || readPortalState(db, def.id).lastAttempt !== null),
   newest: (db: Database): string | null => {
-    const ok = readPortalState(db).lastOk;
+    const ok = readPortalState(db, def.id).lastOk;
     return ok === null ? null : new Date(ok).toISOString();
   },
-};
+}));
 
-/** Key from the secrets cache, piped into the scrape on iumac. */
-export const sshFetcher: PortalFetcher = async () => {
-  const keyProc = Bun.spawn(["secrets-run", "read", KEY_REF], {
+/** The personal key's entry: the one every IU consumer depends on. */
+export const iuPortalFreshness = iuPortalFreshnessAll[0]!;
+
+/** The key's secret from the cache (the 1Password account is only a cache namespace), piped into the scrape on iumac. */
+export const sshFetcher: PortalFetcher = async (def) => {
+  const keyProc = Bun.spawn(["secrets-run", "read", def.secretRef], {
     stdout: "pipe",
     stderr: "ignore",
+    env: { ...process.env, OP_ACCOUNT: def.account },
     timeout: KEY_TIMEOUT_MS,
     killSignal: "SIGKILL",
   });
   const key = (await new Response(keyProc.stdout).text()).trim();
-  if (((await keyProc.exited) !== 0) || !key) return { code: 1, stdout: "", stderr: "API key unresolvable via secrets-run" };
+  if (((await keyProc.exited) !== 0) || !key) return { code: 1, stdout: "", stderr: `API key ${def.id} unresolvable via secrets-run` };
 
-  const proc = Bun.spawn(["ssh", ...SSH_OPTS, iumacHost(), REMOTE_CMD], {
+  // Only the personal report may become latest.json (Tinycast, the OCR gate).
+  const remote = def.id === DEFAULT_IU_KEY ? REMOTE_CMD : `${REMOTE_CMD} --no-latest`;
+  const proc = Bun.spawn(["ssh", ...SSH_OPTS, iumacHost(), remote], {
     stdin: Buffer.from(key),
     stdout: "pipe",
     stderr: "pipe",
@@ -161,21 +177,21 @@ export function resolvePortalModels(db: Database): void {
   }
 }
 
-function storeDaily(db: Database, doc: PortalDoc, fetchedAt: number): number {
+function storeDaily(db: Database, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): number {
   const first = doc.periods[0];
   const last = doc.periods.at(-1);
   if (!first || !last) return 0;
   const insert = db.prepare(
-    `INSERT INTO iu_portal_cost (day, label, row, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (day, label, row) DO UPDATE SET cost_usd = excluded.cost_usd, fetched_at = excluded.fetched_at`,
+    `INSERT INTO iu_portal_cost (iu_key, day, label, row, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (iu_key, day, label, row) DO UPDATE SET cost_usd = excluded.cost_usd, fetched_at = excluded.fetched_at`,
   );
   let written = 0;
   db.transaction(() => {
     // The report is the whole truth for its window: a cell that went away is gone.
-    db.run("DELETE FROM iu_portal_cost WHERE day >= ? AND day <= ?", [first, last]);
+    db.run("DELETE FROM iu_portal_cost WHERE iu_key = ? AND day >= ? AND day <= ?", [iuKey, first, last]);
     for (const row of doc.rows) {
       for (const [day, usd] of Object.entries(row.cells)) {
-        insert.run(day, row.label, row.row, usd, fetchedAt);
+        insert.run(iuKey, day, row.label, row.row, usd, fetchedAt);
         written++;
       }
     }
@@ -184,15 +200,15 @@ function storeDaily(db: Database, doc: PortalDoc, fetchedAt: number): number {
 }
 
 /** Monthly totals, minus the first period: a "3 Months" window starts mid-month. */
-function storeMonthly(db: Database, doc: PortalDoc, fetchedAt: number): void {
+function storeMonthly(db: Database, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): void {
   const upsert = db.prepare(
-    `INSERT INTO iu_portal_total (month, total_usd, fetched_at) VALUES (?, ?, ?)
-     ON CONFLICT (month) DO UPDATE SET total_usd = excluded.total_usd, fetched_at = excluded.fetched_at`,
+    `INSERT INTO iu_portal_total (iu_key, month, total_usd, fetched_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (iu_key, month) DO UPDATE SET total_usd = excluded.total_usd, fetched_at = excluded.fetched_at`,
   );
   db.transaction(() => {
     for (const month of doc.periods.slice(1)) {
       const total = doc.rows.reduce((sum, r) => sum + (r.cells[month] ?? 0), 0);
-      upsert.run(month, Math.round(total * 100) / 100, fetchedAt);
+      upsert.run(iuKey, month, Math.round(total * 100) / 100, fetchedAt);
     }
   })();
 }
@@ -202,15 +218,34 @@ export interface CollectPortalOptions {
   now?: number;
   /** Ignore the 4 h throttle. */
   force?: boolean;
+  /** Keys to fetch; every registered key by default. */
+  keys?: readonly IuKeyDef[];
+}
+
+interface KeyOutcome {
+  cells: number;
+  /** The scrape's exit code, null when the key was throttled or the host is disabled. */
+  code: number | null;
 }
 
 /**
- * Fetch and store the portal report, at most once per 4 h. Returns the number
- * of daily cells written (0 when throttled, unreachable or failed). Never throws.
+ * Fetch and store each key's portal report, at most once per 4 h per key. Returns the
+ * number of daily cells written (0 when throttled, unreachable or failed). Never throws.
+ * A signed-out session or an unreachable MacBook is the same for every key, so it ends the pass.
  */
 export async function collectPortal(db: Database, opts: CollectPortalOptions = {}): Promise<number> {
+  let cells = 0;
+  for (const def of opts.keys ?? IU_KEYS) {
+    const out = await collectPortalKey(db, def, opts);
+    cells += out.cells;
+    if (out.code === SESSION_EXPIRED || out.code === UNREACHABLE) break;
+  }
+  return cells;
+}
+
+async function collectPortalKey(db: Database, def: IuKeyDef, opts: CollectPortalOptions): Promise<KeyOutcome> {
   const now = opts.now ?? Date.now();
-  const state = readPortalState(db);
+  const state = readPortalState(db, def.id);
   const sinceOk = state.lastOk === null ? Infinity : now - state.lastOk;
   const sinceAttempt = state.lastAttempt === null ? Infinity : now - state.lastAttempt;
   // An expired session needs a human, and a scrape that keeps failing launches a browser each
@@ -218,17 +253,17 @@ export async function collectPortal(db: Database, opts: CollectPortalOptions = {
   const failBackoff =
     state.lastCode === SESSION_EXPIRED ? REFRESH_MS : state.lastCode === UNREACHABLE || !state.lastCode ? 0 : OTHER_FAILURE_BACKOFF_MS;
   const backoff = sinceAttempt < failBackoff;
-  if (!opts.force && (sinceOk < REFRESH_MS || backoff)) return 0;
-  if (iumacDisabled()) return 0;
+  if (!opts.force && (sinceOk < REFRESH_MS || backoff)) return { cells: 0, code: null };
+  if (iumacDisabled()) return { cells: 0, code: null };
 
-  const fail = (reason: string, code: number): 0 => {
-    log.warn(`iu-portal: ${reason}`);
-    writePortalState(db, { ...state, lastAttempt: now, lastCode: code }, "error", reason);
-    return 0;
+  const fail = (reason: string, code: number): KeyOutcome => {
+    log.warn(`iu-portal[${def.id}]: ${reason}`);
+    writePortalState(db, def.id, { ...state, lastAttempt: now, lastCode: code }, "error", reason);
+    return { cells: 0, code };
   };
 
   try {
-    const res = await (opts.fetch ?? sshFetcher)();
+    const res = await (opts.fetch ?? sshFetcher)(def);
     if (res.code === SESSION_EXPIRED) return fail("session expired — run make iu-portal-login", res.code);
     if (res.code === UNREACHABLE) return fail("iumac unreachable (MacBook asleep or offline)", res.code);
     if (res.code !== 0) return fail(`scrape exited ${res.code}: ${res.stderr.trim().split("\n").at(-1) ?? ""}`, res.code);
@@ -236,21 +271,24 @@ export async function collectPortal(db: Database, opts: CollectPortalOptions = {
     const docs = parseDocs(res.stdout);
     const daily = docs.find((d) => d.granularity === "daily");
     if (!daily) return fail("scrape returned no daily report", res.code);
-    const written = storeDaily(db, daily, now);
-    for (const d of docs) if (d.granularity === "monthly") storeMonthly(db, d, now);
+    const written = storeDaily(db, def.id, daily, now);
+    for (const d of docs) if (d.granularity === "monthly") storeMonthly(db, def.id, d, now);
     resolvePortalModels(db);
     writePortalState(
       db,
+      def.id,
       { lastOk: now, lastAttempt: now, lastCode: 0, lastDay: daily.periods.at(-1) ?? null },
       "ok",
       `${written} cells`,
     );
-    try {
-      writeLatest(daily, now);
-    } catch (err) {
-      log.warn(`iu-portal: latest.json not written: ${err instanceof Error ? err.message : String(err)}`);
+    if (def.id === DEFAULT_IU_KEY) {
+      try {
+        writeLatest(daily, now);
+      } catch (err) {
+        log.warn(`iu-portal: latest.json not written: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
-    return written;
+    return { cells: written, code: 0 };
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err), 1);
   }

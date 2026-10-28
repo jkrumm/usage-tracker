@@ -23,6 +23,33 @@ describe("assemble", () => {
     expect(doc.rows.map((r) => [r.label, r.row])).toEqual([["Claude Haiku 5 5 Eu", 1], ["Claude Haiku 5 5 Eu", 2]]);
   });
 
+  test("a report with few, tall rows (label at the middle of the cell band) maps cells to the right label", () => {
+    const xs = [363.7, 403.2, 442.7];
+    const raw = {
+      totalText: "$10.06",
+      costCenter: null,
+      periodLabels: ["2026-10-26", "2026-10-27", "2026-10-28"],
+      cells: [15, 114, 213].flatMap((y, r) => xs.map((x, c) => ({ x, y, value: String([[4, 3, 2], [0, 0.05, 0], [0.01, 0, 1]][r]![c]) }))),
+      rowLabels: [{ y: 62, text: "Deepseek V4.1 Flash" }, { y: 161, text: "Gemini 3.5 Flash" }, { y: 260, text: "Sonar" }],
+    };
+    expect(assemble(raw, "daily").rows).toEqual([
+      { label: "Deepseek V4.1 Flash", row: 0, cells: { "2026-10-26": 4, "2026-10-27": 3, "2026-10-28": 2 } },
+      { label: "Gemini 3.5 Flash", row: 1, cells: { "2026-10-27": 0.05 } },
+      { label: "Sonar", row: 2, cells: { "2026-10-26": 0.01, "2026-10-28": 1 } },
+    ]);
+  });
+
+  test("a labelless row is an error, never the neighbour's label", () => {
+    const raw = {
+      totalText: "$4.00",
+      costCenter: null,
+      periodLabels: ["2026-10-27"],
+      cells: [{ x: 10, y: 15, value: "1" }, { x: 10, y: 114, value: "3" }],
+      rowLabels: [{ y: 62, text: "Only First" }],
+    };
+    expect(() => assemble(raw, "daily")).toThrow(/no row label for cell at y=114/);
+  });
+
   test("rejects a cell sum that is off the Total Cost card (stale or half-rendered chart)", () => {
     expect(() => assemble({ ...rawDaily, totalText: "$99.00" }, "daily")).toThrow(/does not match Total Cost/);
   });

@@ -21,15 +21,17 @@ const post = async (_cfg: unknown, path: string, body: unknown, opts: unknown = 
   return result;
 };
 
-function seedCost(day: string, label: string, usd: number, fetchedAt: number, row = 0): void {
+function seedCost(day: string, label: string, usd: number, fetchedAt: number, row = 0, iuKey = "personal"): void {
   db.prepare(
-    `INSERT INTO iu_portal_cost (day, label, row, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (day, label, row) DO UPDATE SET cost_usd = excluded.cost_usd, fetched_at = excluded.fetched_at`,
-  ).run(day, label, row, usd, fetchedAt);
+    `INSERT INTO iu_portal_cost (iu_key, day, label, row, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (iu_key, day, label, row) DO UPDATE SET cost_usd = excluded.cost_usd, fetched_at = excluded.fetched_at`,
+  ).run(iuKey, day, label, row, usd, fetchedAt);
 }
 
-const seedTotal = (month: string, usd: number, fetchedAt: number) =>
-  db.prepare("INSERT OR REPLACE INTO iu_portal_total (month, total_usd, fetched_at) VALUES (?, ?, ?)").run(month, usd, fetchedAt);
+const seedTotal = (month: string, usd: number, fetchedAt: number, iuKey = "personal") =>
+  db
+    .prepare("INSERT OR REPLACE INTO iu_portal_total (iu_key, month, total_usd, fetched_at) VALUES (?, ?, ?, ?)")
+    .run(iuKey, month, usd, fetchedAt);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-syncportal-"));
@@ -59,10 +61,35 @@ describe("syncPortal", () => {
     expect(calls[0]!.path).toBe("/usage/iu-portal");
     expect(calls[0]!.opts).toEqual({ tolerateMissing: true });
     expect(calls[0]!.body.costs[1]).toEqual({
-      day: "2026-10-26", label: "Haiku", row: 3, model: null, costUsd: 2, fetchedAt: new Date(F1).toISOString(),
+      iuKey: "personal", day: "2026-10-26", label: "Haiku", row: 3, model: null, costUsd: 2, fetchedAt: new Date(F1).toISOString(),
     });
-    expect(calls[0]!.body.totals).toEqual([{ month: "2026-10", totalUsd: 3.5, fetchedAt: new Date(F1).toISOString() }]);
+    expect(calls[0]!.body.totals).toEqual([{ iuKey: "personal", month: "2026-10", totalUsd: 3.5, fetchedAt: new Date(F1).toISOString() }]);
     expect(loadCursor(db, "argo_portal_fetched_at")).toBe(String(F1));
+  });
+
+  describe("per IU key", () => {
+    const seedBoth = () => {
+      seedCost("2026-10-26", "Haiku", 2, F1, 1, "personal");
+      seedCost("2026-10-26", "Haiku", 5, F1, 1, "athena-team");
+      seedTotal("2026-10", 3, F1, "personal");
+      seedTotal("2026-10", 7, F1, "athena-team");
+    };
+    afterEach(() => delete process.env.USAGE_SYNC_IU_KEYS);
+
+    test("until Argo stores per-key data only the personal key is pushed (a team row would overwrite its cells)", async () => {
+      seedBoth();
+      expect(await syncPortal(db, CFG, post)).toMatchObject({ costs: 1, totals: 1, status: "ok" });
+      expect(calls[0]!.body.costs.map((c: any) => [c.iuKey, c.costUsd])).toEqual([["personal", 2]]);
+      expect(calls[0]!.body.totals.map((t: any) => t.iuKey)).toEqual(["personal"]);
+    });
+
+    test("with USAGE_SYNC_IU_KEYS=1 every key travels with its iuKey", async () => {
+      process.env.USAGE_SYNC_IU_KEYS = "1";
+      seedBoth();
+      expect(await syncPortal(db, CFG, post)).toMatchObject({ costs: 2, totals: 2, status: "ok" });
+      expect(calls[0]!.body.costs.map((c: any) => [c.iuKey, c.costUsd])).toEqual([["athena-team", 5], ["personal", 2]]);
+      expect(calls[0]!.body.totals.map((t: any) => t.iuKey).sort()).toEqual(["athena-team", "personal"]);
+    });
   });
 
   test("does nothing when no fetch landed since the watermark", async () => {

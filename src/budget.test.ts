@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { buildBudget, buildExplain, formatBudget, formatExplain, isOff } from "./budget.ts";
 import { collectPortal } from "./collectors/iu-portal.ts";
 import { openDb } from "./db.ts";
+import { iuKeyDef } from "./iu-keys.ts";
+
+const PERSONAL = [iuKeyDef("personal")!];
 
 const NOW = Date.parse("2026-10-26T08:00:00Z");
 
@@ -21,7 +24,7 @@ function seed(db: Database): Promise<number> {
       { label: "Untracked Thing", row: 2, cells: { "2026-10-26": 20 } },
     ],
   };
-  return collectPortal(db, { now: NOW, fetch: async () => ({ code: 0, stdout: JSON.stringify(doc), stderr: "" }) });
+  return collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ({ code: 0, stdout: JSON.stringify(doc), stderr: "" }) });
 }
 
 let dir: string;
@@ -33,8 +36,8 @@ beforeEach(() => {
   process.env.IU_PORTAL_ROOT = join(dir, "iu-portal");
   db = openDb(join(dir, "usage.db"));
   const ins = db.prepare(
-    `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, cost_usd, ingested_at)
-     VALUES ('s', ?, 'message', ?, ?, ?, 'iu', ?, 'x')`,
+    `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, iu_key, cost_usd, ingested_at)
+     VALUES ('s', ?, 'message', ?, ?, ?, 'iu', 'personal', ?, 'x')`,
   );
   // tracked: $2/day on A except 10-20 ($0.50), and a model the portal never bills
   for (let d = 0; d < 31; d++) {
@@ -92,6 +95,34 @@ describe("buildBudget", () => {
     await seed(db);
     db.run("UPDATE iu_portal_cost SET cost_usd = 500 WHERE day = '2026-10-26' AND row = 2");
     expect(formatBudget(buildBudget(db, NOW), NOW)).toContain("OVER by");
+  });
+});
+
+describe("buildBudget per IU key", () => {
+  test("each key has its own report, tracked spend and cap", async () => {
+    await seed(db);
+    const team = { granularity: "daily", periods: ["2026-10-25", "2026-10-26"], rows: [{ label: "Claude Haiku 5 5 Eu", row: 1, cells: { "2026-10-25": 30, "2026-10-26": 40 } }] };
+    await collectPortal(db, {
+      keys: [iuKeyDef("athena-team")!],
+      now: NOW,
+      fetch: async () => ({ code: 0, stdout: JSON.stringify(team), stderr: "" }),
+    });
+    db.run(
+      `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, iu_key, cost_usd, ingested_at)
+       VALUES ('athena-teamchat', 't1', 'message', '2026-10-26T10:00:00Z', NULL, NULL, 'iu', 'athena-team', 12, 'x')`,
+    );
+    const personal = buildBudget(db, NOW)!;
+    const teamB = buildBudget(db, NOW, "athena-team")!;
+    expect(personal.rolling30).toBe(80);
+    expect(teamB).toMatchObject({ iuKey: "athena-team", rolling30: 70, limitUsd: 500, canSpendToday: 500 - 30 });
+    expect(teamB.days.find((d) => d.key === "2026-10-26")).toMatchObject({ portal: 40, tracked: 12 });
+    expect(personal.days.find((d) => d.key === "2026-10-26")!.tracked).toBe(2);
+    expect(formatBudget(teamB, NOW)).toContain("IU cap [athena-team]");
+  });
+
+  test("an unknown key is an error, a key without data is the hint", () => {
+    expect(() => buildBudget(db, NOW, "nope")).toThrow("unknown IU key");
+    expect(buildBudget(db, NOW, "athena-team")).toBeNull();
   });
 });
 

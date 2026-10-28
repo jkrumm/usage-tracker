@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS usage_record (
   sub_tool           TEXT,                        -- e.g. 'check' | 'review' | 'implement' for agent-gateway-attributed rows
   billing            TEXT    NOT NULL,            -- 'max' (sunk) | 'iu' (per-token) | …
   account            TEXT,                        -- Claude Max account id (e.g. 'iu' | 'me' | 'me2') for billing='max' rows, NULL otherwise (account 'iu' != billing 'iu')
+  iu_key             TEXT,                        -- IU API key id ('personal' | 'athena-team') for billing='iu' rows, NULL otherwise
   machine            TEXT,                        -- host that produced the record (derived at ingest)
   outcome            TEXT    NOT NULL DEFAULT 'ok', -- 'ok' | 'error' (bridge request outcome)
 
@@ -99,20 +100,24 @@ CREATE TABLE IF NOT EXISTS account_pick (
 -- portal is the truth for the rolling 30-day cap; usage_record.cost_usd is our
 -- estimate. One row per non-zero (day, label, row) cell, latest fetch wins
 -- (today's value grows). model = our model_norm when the label matches one.
+-- One report per IU API key (each key has its own cap); iu_key is part of the PK.
 CREATE TABLE IF NOT EXISTS iu_portal_cost (
+  iu_key     TEXT    NOT NULL DEFAULT 'personal',
   day        TEXT    NOT NULL,                      -- YYYY-MM-DD
   label      TEXT    NOT NULL,                      -- the portal's prettified model id
   row        INTEGER NOT NULL,                      -- heatmap row; two ids can share a label
   model      TEXT,
   cost_usd   REAL    NOT NULL,
   fetched_at INTEGER NOT NULL,                      -- epoch ms
-  PRIMARY KEY (day, label, row)
+  PRIMARY KEY (iu_key, day, label, row)
 );
 
 -- Monthly run of the same report: reconciliation anchor, not the cap.
 CREATE TABLE IF NOT EXISTS iu_portal_total (
-  month      TEXT    PRIMARY KEY,                   -- YYYY-MM
+  iu_key     TEXT    NOT NULL DEFAULT 'personal',
+  month      TEXT    NOT NULL,                      -- YYYY-MM
   total_usd  REAL    NOT NULL,
-  fetched_at INTEGER NOT NULL
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (iu_key, month)
 );
 `;

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { syncNonDefaultKeys } from "./iu-keys.ts";
 import { argoConfig, postJson } from "./argo.ts";
 import { log } from "./log.ts";
 import { syncAccountTables } from "./sync-account.ts";
@@ -29,6 +30,7 @@ interface DbRow {
   sub_tool: string | null;
   billing: string;
   account: string | null;
+  iu_key: string | null;
   machine: string | null;
   outcome: string;
   input_tokens: number;
@@ -43,13 +45,14 @@ interface DbRow {
   ingested_at: string;
 }
 
-const ELIGIBLE_SQL = `
+const eligibleSql = (allKeys: boolean) => `
 SELECT id, source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool,
-       billing, account, machine, outcome,
+       billing, account, iu_key, machine, outcome,
        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, duration_ms,
        cost_usd, cost_source, raw, ingested_at
 FROM usage_record
-WHERE synced_at IS NULL OR ingested_at > synced_at
+WHERE (synced_at IS NULL OR ingested_at > synced_at)
+  ${allKeys ? "" : "AND (iu_key IS NULL OR iu_key = 'personal')"}
 ORDER BY id
 LIMIT ?
 `;
@@ -92,12 +95,12 @@ async function syncUsage(db: Database, opts: SyncOptions): Promise<SyncResult> {
 
   const batchSize = opts.batchSize ?? 500;
   const maxBatches = opts.maxBatches ?? 200;
-  const stmt = db.query<DbRow, [number]>(ELIGIBLE_SQL);
+  const stmt = db.query<DbRow, [number]>(eligibleSql(syncNonDefaultKeys()));
   const updateStmt = db.prepare(
-    // Conditional on the pushed snapshot: a row rewritten (account, ingested_at)
+    // Conditional on the pushed snapshot: a row rewritten (account, iu_key, ingested_at)
     // between the SELECT and this mark stays eligible for the next push.
     `UPDATE usage_record SET synced_at = datetime('now')
-     WHERE source = $source AND source_id = $source_id AND account IS $account AND ingested_at = $ingested_at`,
+     WHERE source = $source AND source_id = $source_id AND account IS $account AND iu_key IS $iu_key AND ingested_at = $ingested_at`,
   );
 
   let pushed = 0;
@@ -117,6 +120,7 @@ async function syncUsage(db: Database, opts: SyncOptions): Promise<SyncResult> {
           $source: r.source,
           $source_id: r.source_id,
           $account: r.account,
+          $iu_key: r.iu_key,
           $ingested_at: r.ingested_at,
         });
       }
@@ -142,6 +146,7 @@ function rowToPayload(r: DbRow): Record<string, unknown> {
     sub_tool: r.sub_tool,
     billing: r.billing,
     account: r.account,
+    iu_key: r.iu_key,
     machine: r.machine,
     outcome: r.outcome,
     input_tokens: r.input_tokens,

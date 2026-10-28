@@ -4,7 +4,7 @@ import { getSessionBaseUrl } from "./models.ts";
 // Read-side queries for the CLI. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool" | "account";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool" | "account" | "iu_key";
 
 interface StatRow {
   key: string;
@@ -24,6 +24,7 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   machine: "coalesce(machine, '(unknown)')",
   sub_tool: "coalesce(sub_tool, '(none)')",
   account: "coalesce(account, '(n/a)')",
+  iu_key: "coalesce(iu_key, '(n/a)')",
 };
 
 export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {
@@ -321,7 +322,7 @@ export function staleSources(
   collectors: ReadonlyArray<{
     source: string;
     staleAfterHours?: number | null;
-    available(): boolean;
+    available(db?: Database): boolean;
     /** Freshness for sources that keep no usage_record rows (default: newest usage_record.ts). */
     newest?(db: Database): string | null;
   }>,
@@ -338,7 +339,7 @@ export function staleSources(
       null;
     // A source that has produced rows but whose store vanished is the moved-store
     // failure itself; only a source never seen on this machine is exempt.
-    if (!c.available() && newestTs === null) continue;
+    if (!c.available(db) && newestTs === null) continue;
     const ageHours = newestTs ? (now.getTime() - Date.parse(newestTs)) / 3_600_000 : null;
     // A non-finite or future-dated newest row (beyond clock skew) can't prove
     // freshness, so it counts as stale rather than passing every comparison.

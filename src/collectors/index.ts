@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
+import { athenaTeamchatDefault } from "./athena-teamchat.ts";
 import { audioGatewayCollector, audioGatewayVpsCollector } from "./audio-gateway.ts";
 import { astraCollector } from "./astra.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
@@ -50,6 +51,7 @@ export const collectors: Collector[] = [
   audioGatewayVpsCollector,
   modelpickCollector,
   astraCollector,
+  athenaTeamchatDefault,
 ];
 
 export function findCollector(source: string): Collector | undefined {

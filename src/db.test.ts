@@ -191,6 +191,6 @@ describe("agent-gateway-sessions account attribution", () => {
 
     db = openDb(path);
     expect(rows()).toEqual([{ source_id: "s-wrong", account: "iu", synced_at: "2026-10-24" }]);
-    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
+    expect(db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
   });
 });

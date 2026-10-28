@@ -66,17 +66,22 @@ export function assemble(raw: RawCapture, granularity: Granularity, fetchedAt = 
   }
   const periodOf = new Map(xs.map((x, i) => [x, periods[i]!]));
 
-  // Row label Y = cell y + 4. Two rows can share a label, so rows are indexed by
+  // A row's label sits inside its cell band (cell y + 4 with many rows, cell y + ~47 when
+  // the chart has few, taller rows), so the label of a cell is the first one at or below its
+  // top edge and within one row pitch of it. Two rows can share a label, so rows are indexed by
   // Y, never merged by name.
   const ys = [...new Set(raw.cells.map((c) => c.y))].sort((a, b) => a - b);
-  const labelAt = new Map(raw.rowLabels.map((l) => [Math.round(l.y), l.text.trim()]));
+  const labels = raw.rowLabels.map((l) => ({ y: l.y, text: l.text.trim() })).sort((a, b) => a.y - b.y);
+  const pitch = ys.length > 1 ? ys[1]! - ys[0]! : Infinity;
+  const labelOf = (cellY: number): string | undefined =>
+    labels.find((l) => l.y >= cellY - 1 && l.y < cellY + pitch)?.text;
   const rows = new Map<number, { label: string; row: number; cells: Record<string, number> }>();
   let sum = 0;
   for (const c of raw.cells) {
     const value = parseUsd(c.value);
     sum += value;
     if (value === 0) continue;
-    const label = labelAt.get(Math.round(c.y + 4));
+    const label = labelOf(c.y);
     if (label === undefined) throw new Error(`no row label for cell at y=${c.y}`);
     let row = rows.get(c.y);
     if (!row) {

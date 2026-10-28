@@ -198,6 +198,7 @@ export function relane(
       `UPDATE usage_record
        SET sub_tool = $sub_tool, billing = $billing, synced_at = NULL,
            account = $account,
+           iu_key = CASE WHEN $billing = 'iu' THEN iu_key END,
            raw = CASE WHEN $entrypoint IS NOT NULL AND raw IS NOT NULL
                       THEN json_set(raw, '$.entrypoint', $entrypoint) ELSE raw END
        WHERE id = $id`,

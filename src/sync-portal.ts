@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { argoConfig, postJson, type ArgoConfig, type PostResult } from "./argo.ts";
 import { loadCursor } from "./db.ts";
+import { DEFAULT_IU_KEY, IU_KEYS, syncNonDefaultKeys } from "./iu-keys.ts";
 import { log } from "./log.ts";
 
 // Push IU's portal cost report to Argo, where the cap, can-spend-today and the
@@ -8,7 +9,8 @@ import { log } from "./log.ts";
 //
 // The portal re-posts a day as it settles and the 30-day window shifts daily, so a
 // new fetch resends the last RESEND_DAYS days, not just the rows that changed. Argo
-// upserts on (day, label, row), so a replay is a no-op. The watermark is the newest
+// upserts on (iuKey, day, label, row), so a replay is a no-op. Each IU key has its own
+// report and cap; rows carry `iuKey` (an older Argo without the field files all of it as personal). The watermark is the newest
 // `fetched_at` that reached Argo; it only advances after every batch returned "ok".
 
 const WATERMARK_KEY = "argo_portal_fetched_at";
@@ -18,6 +20,7 @@ const RESEND_DAYS = 35;
 const MAX_TOTALS = 24;
 
 interface CostRow {
+  iu_key: string;
   day: string;
   label: string;
   row: number;
@@ -27,6 +30,7 @@ interface CostRow {
 }
 
 interface TotalRow {
+  iu_key: string;
   month: string;
   total_usd: number;
   fetched_at: number;
@@ -41,6 +45,7 @@ export interface PortalSyncResult {
 const iso = (ms: number) => new Date(ms).toISOString();
 
 const costPayload = (r: CostRow) => ({
+  iuKey: r.iu_key,
   day: r.day,
   label: r.label,
   row: r.row,
@@ -49,7 +54,7 @@ const costPayload = (r: CostRow) => ({
   fetchedAt: iso(r.fetched_at),
 });
 
-const totalPayload = (r: TotalRow) => ({ month: r.month, totalUsd: r.total_usd, fetchedAt: iso(r.fetched_at) });
+const totalPayload = (r: TotalRow) => ({ iuKey: r.iu_key, month: r.month, totalUsd: r.total_usd, fetchedAt: iso(r.fetched_at) });
 
 function saveWatermark(db: Database, fetchedAt: number): void {
   db.prepare(
@@ -63,13 +68,14 @@ function saveWatermark(db: Database, fetchedAt: number): void {
 
 /** Rows to send: everything on the first run, afterwards the resend window plus anything newer than the watermark. */
 function pendingCosts(db: Database, watermark: number | null): CostRow[] {
-  const select = `SELECT day, label, row, model, cost_usd, fetched_at FROM iu_portal_cost`;
-  if (watermark === null) return db.query<CostRow, []>(`${select} ORDER BY day, label, row`).all();
+  const keys = syncNonDefaultKeys() ? "" : `AND iu_key = '${DEFAULT_IU_KEY}'`;
+  const select = `SELECT iu_key, day, label, row, model, cost_usd, fetched_at FROM iu_portal_cost WHERE 1 = 1 ${keys}`;
+  if (watermark === null) return db.query<CostRow, []>(`${select} ORDER BY iu_key, day, label, row`).all();
   return db
     .query<CostRow, [number]>(
       `${select}
-       WHERE fetched_at > ?1 OR day >= date((SELECT max(day) FROM iu_portal_cost), '-${RESEND_DAYS} days')
-       ORDER BY day, label, row`,
+       AND (fetched_at > ?1 OR day >= date((SELECT max(day) FROM iu_portal_cost), '-${RESEND_DAYS} days'))
+       ORDER BY iu_key, day, label, row`,
     )
     .all(watermark);
 }
@@ -97,8 +103,12 @@ export async function syncPortal(
 
   const costs = pendingCosts(db, Number.isFinite(watermark) ? watermark : null);
   const totals = db
-    .query<TotalRow, [number]>("SELECT month, total_usd, fetched_at FROM iu_portal_total ORDER BY month DESC LIMIT ?")
-    .all(MAX_TOTALS);
+    .query<TotalRow, [number]>(
+      `SELECT iu_key, month, total_usd, fetched_at FROM iu_portal_total
+       ${syncNonDefaultKeys() ? "" : `WHERE iu_key = '${DEFAULT_IU_KEY}'`}
+       ORDER BY month DESC, iu_key LIMIT ?`,
+    )
+    .all(MAX_TOTALS * IU_KEYS.length);
 
   let sent = 0;
   for (let i = 0; i === 0 || i < costs.length; i += BATCH) {

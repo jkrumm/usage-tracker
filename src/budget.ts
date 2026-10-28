@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { addDays, LIMIT_USD, WINDOW_DAYS } from "../tools/iu-portal/latest.ts";
+import { addDays, WINDOW_DAYS } from "../tools/iu-portal/latest.ts";
 import { readPortalState } from "./collectors/iu-portal.ts";
+import { DEFAULT_IU_KEY, iuKeyDef, type IuKey } from "./iu-keys.ts";
 
 // The IU employee cap is a ROLLING 30-day window (today plus the 29 days before),
 // measured by IU's portal. usage_record.cost_usd for billing='iu' is our own
@@ -19,6 +20,8 @@ interface Cmp {
 }
 
 export interface BudgetReport {
+  iuKey: IuKey;
+  limitUsd: number;
   today: string;
   windowStart: string;
   fetchedAt: number | null;
@@ -47,26 +50,29 @@ function localDay(ms: number): string {
 }
 
 /** Null when no portal report has been stored yet. */
-export function buildBudget(db: Database, now = Date.now()): BudgetReport | null {
-  const state = readPortalState(db);
-  const fetchedAt = db.query<{ t: number | null }, []>("SELECT max(fetched_at) t FROM iu_portal_cost").get()?.t ?? null;
+export function buildBudget(db: Database, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): BudgetReport | null {
+  const limit = iuKeyDef(iuKey)?.limitUsd;
+  if (limit === undefined) throw new Error(`unknown IU key "${iuKey}"`);
+  const state = readPortalState(db, iuKey);
+  const fetchedAt =
+    db.query<{ t: number | null }, [string]>("SELECT max(fetched_at) t FROM iu_portal_cost WHERE iu_key = ?").get(iuKey)?.t ?? null;
   if (fetchedAt === null) return null;
 
   const today = state.lastDay ?? localDay(now);
   const windowStart = addDays(today, -(WINDOW_DAYS - 1));
 
   const portalRows = db
-    .query<{ day: string; key: string; usd: number }, [string, string]>(
+    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
       `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost
-       WHERE day BETWEEN ? AND ? GROUP BY day, key`,
+       WHERE iu_key = ? AND day BETWEEN ? AND ? GROUP BY day, key`,
     )
-    .all(windowStart, today);
+    .all(iuKey, windowStart, today);
   const trackedRows = db
-    .query<{ day: string; key: string; usd: number }, [string, string]>(
+    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
       `SELECT substr(ts, 1, 10) day, COALESCE(model_norm, model, '?') key, sum(COALESCE(cost_usd, 0)) usd
-       FROM usage_record WHERE billing = 'iu' AND substr(ts, 1, 10) BETWEEN ? AND ? GROUP BY day, key`,
+       FROM usage_record WHERE billing = 'iu' AND iu_key = ? AND substr(ts, 1, 10) BETWEEN ? AND ? GROUP BY day, key`,
     )
-    .all(windowStart, today);
+    .all(iuKey, windowStart, today);
 
   const portalDay = new Map<string, number>();
   const trackedDay = new Map<string, number>();
@@ -90,7 +96,7 @@ export function buildBudget(db: Database, now = Date.now()): BudgetReport | null
   let freed = 0;
   const dropoff = span(-(WINDOW_DAYS - 1), -(WINDOW_DAYS - BURN_DAYS)).map((day) => {
     freed += usd(day);
-    return { day, frees: usd(day), headroomAfter: LIMIT_USD - (rolling30 - freed) };
+    return { day, frees: usd(day), headroomAfter: limit - (rolling30 - freed) };
   });
 
   const merge = (a: Map<string, number>, b: Map<string, number>): Cmp[] =>
@@ -98,23 +104,27 @@ export function buildBudget(db: Database, now = Date.now()): BudgetReport | null
   const models = merge(portalModel, trackedModel).sort((a, b) => Math.max(b.portal, b.tracked) - Math.max(a.portal, a.tracked));
 
   const monthly = db
-    .query<{ month: string; total_usd: number }, []>("SELECT month, total_usd FROM iu_portal_total ORDER BY month")
-    .all()
+    .query<{ month: string; total_usd: number }, [string]>("SELECT month, total_usd FROM iu_portal_total WHERE iu_key = ? ORDER BY month")
+    .all(iuKey)
     .map((m) => ({
       month: m.month,
       portal: m.total_usd,
       dailySum:
         db
-          .query<{ s: number | null }, [string]>("SELECT sum(cost_usd) s FROM iu_portal_cost WHERE substr(day, 1, 7) = ?")
-          .get(m.month)?.s ?? 0,
+          .query<{ s: number | null }, [string, string]>(
+            "SELECT sum(cost_usd) s FROM iu_portal_cost WHERE iu_key = ? AND substr(day, 1, 7) = ?",
+          )
+          .get(iuKey, m.month)?.s ?? 0,
     }));
 
   return {
+    iuKey,
+    limitUsd: limit,
     today,
     windowStart,
     fetchedAt,
     rolling30,
-    canSpendToday: LIMIT_USD - sum(span(-(WINDOW_DAYS - 1), -1).map(usd)),
+    canSpendToday: limit - sum(span(-(WINDOW_DAYS - 1), -1).map(usd)),
     burn7,
     projected7: rolling30 - sum(dropoff.map((d) => d.frees)) + BURN_DAYS * burn7,
     dropoff,
@@ -142,12 +152,12 @@ function cmpTable(title: string, rows: Cmp[], keyWidth: number): string[] {
 }
 
 export function formatBudget(b: BudgetReport | null, now = Date.now()): string {
-  if (!b) return "budget: no IU portal data yet — run `make iu-portal-setup && make iu-portal`";
+  if (!b) return "budget: no IU portal data for this key yet — run `make iu-portal-setup && make iu-portal`";
   const ageH = b.fetchedAt === null ? null : (now - b.fetchedAt) / 3_600_000;
-  const over = b.rolling30 > LIMIT_USD;
+  const over = b.rolling30 > b.limitUsd;
   const lines = [
-    `IU cap — rolling ${WINDOW_DAYS} days ${b.windowStart}..${b.today} (portal fetched ${ageH === null ? "never" : `${ageH.toFixed(1)}h ago`})`,
-    `rolling30        ${usdFmt(b.rolling30)} of ${usdFmt(LIMIT_USD)}   ${over ? `OVER by ${usdFmt(b.rolling30 - LIMIT_USD)}` : `headroom ${usdFmt(LIMIT_USD - b.rolling30)}`}`,
+    `IU cap [${b.iuKey}] — rolling ${WINDOW_DAYS} days ${b.windowStart}..${b.today} (portal fetched ${ageH === null ? "never" : `${ageH.toFixed(1)}h ago`})`,
+    `rolling30        ${usdFmt(b.rolling30)} of ${usdFmt(b.limitUsd)}   ${over ? `OVER by ${usdFmt(b.rolling30 - b.limitUsd)}` : `headroom ${usdFmt(b.limitUsd - b.rolling30)}`}`,
     `can spend today  ${usdFmt(b.canSpendToday)}   (cap − the 29 days before today)`,
     `burn ${BURN_DAYS}d          ${usdFmt(b.burn7)}/day   rolling30 in ${BURN_DAYS} days at that burn: ${usdFmt(b.projected7)}`,
     "",
@@ -193,32 +203,33 @@ export interface Explain {
 const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Day-by-day portal vs tracked for one model (a model_norm or a portal label), newest first. */
-export function buildExplain(db: Database, query: string, now = Date.now()): Explain | null {
-  const state = readPortalState(db);
+export function buildExplain(db: Database, query: string, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): Explain | null {
+  const state = readPortalState(db, iuKey);
   const today = state.lastDay ?? localDay(now);
   const from = addDays(today, -(WINDOW_DAYS - 1));
   const want = alnum(query);
 
   const portal = db
-    .query<{ day: string; key: string; usd: number }, [string, string]>(
-      `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost WHERE day BETWEEN ? AND ? GROUP BY day, key`,
+    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
+      `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost
+       WHERE iu_key = ? AND day BETWEEN ? AND ? GROUP BY day, key`,
     )
-    .all(from, today)
+    .all(iuKey, from, today)
     .filter((r) => alnum(r.key) === want);
   const tracked = db
     .query<
       { day: string; source: string; n: number; tok: number; usd: number },
-      [string, string, string]
+      [string, string, string, string]
     >(
       `SELECT substr(ts, 1, 10) day, source, count(*) n,
               sum(input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens) tok,
               sum(COALESCE(cost_usd, 0)) usd
        FROM usage_record
-       WHERE billing = 'iu' AND substr(ts, 1, 10) BETWEEN ? AND ?
+       WHERE billing = 'iu' AND iu_key = ? AND substr(ts, 1, 10) BETWEEN ? AND ?
          AND replace(replace(replace(lower(COALESCE(model_norm, model, '')), '-', ''), '.', ''), '_', '') = ?
        GROUP BY day, source`,
     )
-    .all(from, today, want);
+    .all(iuKey, from, today, want);
   if (portal.length === 0 && tracked.length === 0) return null;
 
   const days = new Map<string, ExplainDay>();

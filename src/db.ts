@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { homedir } from "node:os";
 import { SCHEMA } from "./schema.ts";
 import { currentMachine } from "./machine.ts";
+import { resolveIuKey } from "./iu-keys.ts";
 import { classifyBilling, normalizeModel, resolveAccount } from "./models.ts";
 import { computeCost, IGNORE_REPORTED_COST } from "./pricing.ts";
 import type { CollectResult, UsageRecord, Workspace } from "./types.ts";
@@ -73,6 +74,11 @@ function migrate(db: Database): void {
   // legacy ids 'a'/'b' to 'iu'/'me'. synced_at is left alone on purpose —
   // re-pushing every Max row while Argo still drops `account` would be wasted;
   // `resync-account` does it once Argo stores it.
+  migrateAccount(db, cols);
+  migrateIuKey(db);
+}
+
+function migrateAccount(db: Database, cols: Set<string>): void {
   const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
   const needsAccount =
     version < ACCOUNT_MIGRATION_VERSION || !cols.has("account") || !tableColumns(db, "session_env").has("account");
@@ -90,6 +96,56 @@ function migrate(db: Database): void {
 
 /** user_version once Max rows have an account and legacy ids a/b are renamed to iu/me. */
 const ACCOUNT_MIGRATION_VERSION = 2;
+
+/** user_version once IU rows carry the key they were billed to and the portal tables are per key. */
+const IU_KEY_MIGRATION_VERSION = 3;
+
+/**
+ * Per-key IU spend. Every `billing='iu'` row before the dimension used the personal
+ * key, so the backfill is 'personal' (never data-gated afterwards: a later NULL IU
+ * row is a bug, not something to rewrite on open). The portal tables gain `iu_key`
+ * in their primary key, which SQLite can only do by rebuilding them; the portal is
+ * refetched anyway, so the copy only keeps the history readable meanwhile. synced_at
+ * stays: Argo treats a missing key as 'personal', so nothing needs re-pushing.
+ */
+function migrateIuKey(db: Database): void {
+  const needs =
+    db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version < IU_KEY_MIGRATION_VERSION ||
+    !tableColumns(db, "usage_record").has("iu_key") ||
+    !tableColumns(db, "iu_portal_cost").has("iu_key") ||
+    !tableColumns(db, "iu_portal_total").has("iu_key");
+  if (!needs) return;
+  db.transaction(() => {
+    let added = false;
+    if (!tableColumns(db, "usage_record").has("iu_key")) {
+      db.exec("ALTER TABLE usage_record ADD COLUMN iu_key TEXT");
+      added = true;
+    }
+    if (!tableColumns(db, "iu_portal_cost").has("iu_key")) {
+      db.exec(`
+        ALTER TABLE iu_portal_cost RENAME TO iu_portal_cost_old;
+        CREATE TABLE iu_portal_cost (
+          iu_key TEXT NOT NULL DEFAULT 'personal', day TEXT NOT NULL, label TEXT NOT NULL, row INTEGER NOT NULL,
+          model TEXT, cost_usd REAL NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (iu_key, day, label, row)
+        );
+        INSERT INTO iu_portal_cost SELECT 'personal', day, label, row, model, cost_usd, fetched_at FROM iu_portal_cost_old;
+        DROP TABLE iu_portal_cost_old;`);
+    }
+    if (!tableColumns(db, "iu_portal_total").has("iu_key")) {
+      db.exec(`
+        ALTER TABLE iu_portal_total RENAME TO iu_portal_total_old;
+        CREATE TABLE iu_portal_total (
+          iu_key TEXT NOT NULL DEFAULT 'personal', month TEXT NOT NULL, total_usd REAL NOT NULL, fetched_at INTEGER NOT NULL,
+          PRIMARY KEY (iu_key, month)
+        );
+        INSERT INTO iu_portal_total SELECT 'personal', month, total_usd, fetched_at FROM iu_portal_total_old;
+        DROP TABLE iu_portal_total_old;`);
+    }
+    if (!added && db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version >= IU_KEY_MIGRATION_VERSION) return;
+    db.exec("UPDATE usage_record SET iu_key = 'personal' WHERE billing = 'iu' AND iu_key IS NULL");
+    db.exec(`PRAGMA user_version = ${IU_KEY_MIGRATION_VERSION}`);
+  }).immediate();
+}
 
 function tableColumns(db: Database, table: string): Set<string> {
   return new Set(
@@ -113,18 +169,18 @@ export interface UpsertSummary {
 
 const UPSERT_SQL = `
 INSERT INTO usage_record
-  (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, account, machine, outcome,
+  (source, source_id, grain, ts, model, model_norm, project, workspace, sub_tool, billing, account, iu_key, machine, outcome,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, reasoning_tokens, duration_ms,
    cost_usd, cost_source, raw, ingested_at)
 VALUES
-  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $account, $machine, $outcome,
+  ($source, $source_id, $grain, $ts, $model, $model_norm, $project, $workspace, $sub_tool, $billing, $account, $iu_key, $machine, $outcome,
    $input, $output, $cache_read, $cache_write, $cache_write_1h, $reasoning, $duration_ms,
    $cost_usd, $cost_source, $raw, datetime('now'))
 ON CONFLICT (source, source_id) DO UPDATE SET
   grain=excluded.grain, ts=excluded.ts, model=excluded.model,
   model_norm=excluded.model_norm, project=excluded.project, workspace=excluded.workspace,
   sub_tool=excluded.sub_tool,
-  billing=excluded.billing, account=excluded.account, machine=excluded.machine, outcome=excluded.outcome,
+  billing=excluded.billing, account=excluded.account, iu_key=excluded.iu_key, machine=excluded.machine, outcome=excluded.outcome,
   input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens,
   cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens,
   cache_write_1h_tokens=excluded.cache_write_1h_tokens,
@@ -133,7 +189,7 @@ ON CONFLICT (source, source_id) DO UPDATE SET
   ingested_at=datetime('now')
 WHERE (usage_record.grain, usage_record.ts, usage_record.model, usage_record.model_norm,
        usage_record.project, usage_record.workspace, usage_record.sub_tool, usage_record.billing,
-       usage_record.account, usage_record.machine, usage_record.outcome,
+       usage_record.account, usage_record.iu_key, usage_record.machine, usage_record.outcome,
        usage_record.input_tokens, usage_record.output_tokens, usage_record.cache_read_tokens,
        usage_record.cache_write_tokens, usage_record.cache_write_1h_tokens,
        usage_record.reasoning_tokens, usage_record.duration_ms,
@@ -141,7 +197,7 @@ WHERE (usage_record.grain, usage_record.ts, usage_record.model, usage_record.mod
   IS NOT
       (excluded.grain, excluded.ts, excluded.model, excluded.model_norm,
        excluded.project, excluded.workspace, excluded.sub_tool, excluded.billing,
-       excluded.account, excluded.machine, excluded.outcome,
+       excluded.account, excluded.iu_key, excluded.machine, excluded.outcome,
        excluded.input_tokens, excluded.output_tokens, excluded.cache_read_tokens,
        excluded.cache_write_tokens, excluded.cache_write_1h_tokens,
        excluded.reasoning_tokens, excluded.duration_ms,
@@ -216,6 +272,7 @@ export function upsertRecords(
         $sub_tool: r.subTool ?? null,
         $billing: billing,
         $account: resolveAccount({ billing, raw: r.raw }),
+        $iu_key: resolveIuKey({ source, billing, raw: r.raw }),
         $machine: r.machine ?? batchMachine,
         $outcome: r.outcome ?? "ok",
         $input: r.inputTokens,

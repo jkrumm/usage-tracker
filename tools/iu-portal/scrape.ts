@@ -3,7 +3,8 @@
 // AGENTS.md "IU portal cost". The API key is read from stdin and never touches
 // disk. One JSON document per granularity is printed to stdout (NDJSON).
 //
-//   echo "$KEY" | bun scrape.ts [daily] [monthly]   headless, default: both
+//   echo "$KEY" | bun scrape.ts [daily] [monthly] [--no-latest]   headless, default: both;
+//                                                    --no-latest: a key that is not the personal one never writes latest.json
 //   bun scrape.ts --login                            headed sign-in, waits up to 5 min
 //
 // Exit codes: 0 ok, 3 session expired, 1 anything else.
@@ -103,7 +104,7 @@ async function login(): Promise<void> {
   }
 }
 
-async function scrape(granularities: Granularity[]): Promise<void> {
+async function scrape(granularities: Granularity[], writeLatestFile: boolean): Promise<void> {
   const key = (await Bun.stdin.text()).trim();
   if (!key) throw new Error("no API key on stdin");
   const ctx = await chromium.launchPersistentContext(PROFILE, {
@@ -118,12 +119,18 @@ async function scrape(granularities: Granularity[]): Promise<void> {
     if (!onPortal(page)) throw new SessionExpired("redirected to sign-in");
     await page.locator("input").first().fill(key);
     await page.getByRole("button", { name: /load cost data/i }).click();
-    await page.waitForTimeout(6_000);
+    // Validating a key takes a variable few seconds; the report form appears when it is done.
+    await page
+      .getByText(SELECTION.daily.range, { exact: true })
+      .waitFor({ timeout: 45_000 })
+      .catch(() => {
+        throw new Error("report form did not appear after loading the key (key rejected, or the portal changed)");
+      });
     let printed = 0;
     for (const g of granularities) {
       try {
         const doc = await generate(page, g);
-        if (g === "daily") writeLatest(doc);
+        if (g === "daily" && writeLatestFile) writeLatest(doc);
         console.log(JSON.stringify(doc));
         printed++;
       } catch (err) {
@@ -142,7 +149,7 @@ try {
   if (args.includes("--login")) await login();
   else {
     const picked = args.filter((a): a is Granularity => a === "daily" || a === "monthly");
-    await scrape(picked.length > 0 ? picked : ["daily", "monthly"]);
+    await scrape(picked.length > 0 ? picked : ["daily", "monthly"], !args.includes("--no-latest"));
   }
 } catch (err) {
   if (err instanceof SessionExpired) {

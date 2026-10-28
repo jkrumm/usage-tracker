@@ -3,7 +3,8 @@ import { dbPath, openDb } from "./db.ts";
 import { buildBudget, buildExplain, formatBudget, formatExplain } from "./budget.ts";
 import { formatQuotaReport } from "./collectors/claude-quota.ts";
 import { collectors } from "./collectors/index.ts";
-import { collectPortal, iuPortalFreshness } from "./collectors/iu-portal.ts";
+import { DEFAULT_IU_KEY, IU_KEYS, iuKeyDef } from "./iu-keys.ts";
+import { collectPortal, iuPortalFreshnessAll } from "./collectors/iu-portal.ts";
 import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
   formatBillingAudit,
@@ -40,11 +41,11 @@ COMMANDS
     --dry-run            Report per old -> new lane counts and cost without writing
   quota                  Claude account 5h/7d quota series + picker decisions
     --days <N>           Window in days (default 7)
-  budget                 IU cap, rolling 30 days: portal cost vs the limit, drop-off, and portal vs tracked per day/model
+  budget [--key <id>]    IU cap per key (rolling 30 days): portal cost vs the limit, drop-off, portal vs tracked per day/model
     --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
-  iu-portal              Fetch the IU portal cost report now (ignores the 4 h throttle)
+  iu-portal [--key <id>] Fetch the IU portal cost report now, every key unless given (ignores the 4 h throttle)
   stats                  Aggregated token + cost report (successful requests only)
-    --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account
+    --by <dim>           Group by: source (default) | model | billing | day | machine | sub_tool | account | iu_key
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
@@ -108,7 +109,7 @@ async function main(): Promise<number> {
       const only = flag(rest, "--source");
       const stale = staleSources(
         db,
-        only ? collectors.filter((c) => c.source === only) : [...collectors, iuPortalFreshness],
+        only ? collectors.filter((c) => c.source === only) : [...collectors, ...iuPortalFreshnessAll],
       );
       if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`);
       process.stdout.write(`\ndb: ${dbPath()}\n${formatRunSummary(summary)}\n`);
@@ -120,7 +121,7 @@ async function main(): Promise<number> {
     }
 
     if (cmd === "health") {
-      const stale = staleSources(db, [...collectors, iuPortalFreshness]);
+      const stale = staleSources(db, [...collectors, ...iuPortalFreshnessAll]);
       if (stale.length === 0) {
         process.stdout.write("health: every source within its expected cadence\n");
         return 0;
@@ -168,16 +169,23 @@ async function main(): Promise<number> {
 
     if (cmd === "budget") {
       const explain = flag(rest, "--explain");
+      const keyFlag = flag(rest, "--key");
+      if (keyFlag !== undefined && !iuKeyDef(keyFlag)) throw new Error(`--key must be one of: ${IU_KEYS.map((k) => k.id).join(", ")}`);
       if (explain) {
-        process.stdout.write(`${formatExplain(buildExplain(db, explain), explain)}\n`);
+        process.stdout.write(`${formatExplain(buildExplain(db, explain, Date.now(), keyFlag ?? DEFAULT_IU_KEY), explain)}\n`);
         return 0;
       }
-      process.stdout.write(`${formatBudget(buildBudget(db))}\n`);
+      // No --key: every registered key, each against its own cap.
+      const keys = keyFlag ? [keyFlag] : IU_KEYS.map((k) => k.id);
+      process.stdout.write(`${keys.map((k) => formatBudget(buildBudget(db, Date.now(), k))).join("\n\n")}\n`);
       return 0;
     }
 
     if (cmd === "iu-portal") {
-      const cells = await collectPortal(db, { force: true });
+      const keyFlag = flag(rest, "--key");
+      const def = keyFlag === undefined ? undefined : iuKeyDef(keyFlag);
+      if (keyFlag !== undefined && !def) throw new Error(`--key must be one of: ${IU_KEYS.map((k) => k.id).join(", ")}`);
+      const cells = await collectPortal(db, { force: true, keys: def ? [def] : undefined });
       process.stdout.write(`iu-portal: ${cells} daily cells stored\n`);
       return cells > 0 ? 0 : 1;
     }

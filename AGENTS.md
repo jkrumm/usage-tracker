@@ -10,7 +10,7 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
-  `stats`, `quota`, `budget`, `iu-portal`, `sources`, `health`, `billing-audit`.
+  `stats`, `quota`, `budget [--key]`, `iu-portal`, `sources`, `health`, `billing-audit`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
@@ -24,6 +24,9 @@ unsynced rows to the Argo API, which is where the dashboard lives.
   (see the `quota_sample` / `account_pick` gotcha).
 - `src/argo.ts` (`argoConfig`, `postJson`) is the one HTTP path to Argo; `src/sync.ts` pushes
   `usage_record`, `src/sync-account.ts` the two account tables, `src/sync-portal.ts` the IU portal report (`POST /usage/iu-portal`).
+- `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and
+  `resolveIuKey`, the one place that decides which key an IU row was billed to. See the "IU keys" gotcha.
+- `src/collectors/athena-teamchat.ts` — Athena Teamchat's own spend from its Postgres (the team key's).
 - `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
   classification, session_env lookup and the transcript-entrypoint lane map.
 - `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
@@ -81,6 +84,36 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`
   — no `sub_tool` should carry cost under `-sessions`, and `source_id`s never collide
   across sources. The legacy `opencode` collector reads only the interactive `oc` store.
+- **IU keys: spend is split per key, each key has its own $500 rolling cap.** `usage_record.iu_key`
+  (`personal` | `athena-team`, set only for `billing='iu'` rows, NULL otherwise) is derived in
+  `db.upsertRecords` via `resolveIuKey` (`src/iu-keys.ts`): the row's own `raw.iuKey` label (validated
+  against the registry, an unknown id never becomes a key) → the source's fixed key (`athena-teamchat` →
+  `athena-team`) → `personal` (every historical row). Never in a collector except by `raw.iuKey`. A key's
+  identity is a *label*: nothing in a model call says which key paid, so a producer that can use either key
+  (agent-workflows host, OpenCode) must stamp `iuKey`/`iu_key` from non-secret host config; never log, hash or
+  send key material. `stats --by iu_key`. The portal is asked once per registered key with that key typed into
+  the form (`collectPortal` loops `IU_KEYS`; state `iu-portal` for personal, `iu-portal:<id>` otherwise; a
+  signed-out session or unreachable MacBook ends the pass); only the personal report writes `latest.json`
+  (non-personal scrapes pass `--no-latest`, so redeploy the iumac tool with `make iu-portal-setup` before
+  a new key's first scrape). `iu_portal_cost` / `iu_portal_total` carry `iu_key` in the PK (migration
+  `user_version` 3 rebuilds them and backfills `personal`). `make budget [KEY=<id>] [MODEL=<norm>]` reports
+  each key against its own cap; a key whose portal figure exceeds what its collectors track is spend by a
+  producer we do not see (the team key's 2026-10-22..25 build-phase use predates the Athena Postgres rows).
+  `make health` goes stale per key (`iu-portal:athena-team`, once tried). Argo gets `iu_key` on `/usage/records`
+  rows and `iuKey` on `/usage/iu-portal` rows; a missing field means `personal` on its side. **Non-personal rows
+  are held back (stay queued) until `USAGE_SYNC_IU_KEYS=1`** — an Argo without per-key storage would file them
+  as personal and its portal upsert would overwrite the personal cells; set the flag in the LaunchAgent env
+  only after Argo deploys the per-key schema. Adding a key = one entry in
+  `IU_KEYS` (the secret ref must be in the mini's secrets cache, `dotfiles-private/headless.iu.refs` for
+  careerpartner refs).
+- **`athena-teamchat` reads the Athena Teamchat Postgres** (`athena` schema, Unix socket
+  `~/.local/state/athena/pgsock`, role `athena_app` via the owner's ident map; override `ATHENA_PG_SOCKET_DIR`,
+  `ATHENA_PSQL`). `turns` (chat/analysis turns incl. the OpenCode sandbox: tokens + OpenCode's own cost),
+  `llm_calls` (host-side calls, cost = tokens × configured prices), `title_calls`; source ids `turn:`/`llm:`/
+  `title:<id>`, `sub_tool` `chat-turn:<kind>`/`llm:<caller>`/`title`, model NULL (not stored per call), cost
+  authoritative. Re-reads three days behind the newest row because turns mutate until ended. No text is
+  read, only counts. `block_results`/`quality_reports`/`artifact_audits` cost columns are cents and
+  ignored. The relay is the only holder of the team key, so the whole source is the team key's.
 - **IU portal cost is the truth; `usage_record.cost_usd` is an estimate.** The employee cap is a
   ROLLING 30-day window (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`),
   measured by IU's self-service portal. `make budget` reports rolling30, headroom, "can spend
