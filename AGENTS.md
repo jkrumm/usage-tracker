@@ -102,8 +102,8 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `make health` goes stale per key (`iu-portal:athena-team`, once tried). Argo gets `iu_key` on `/usage/records`
   rows and `iuKey` on `/usage/iu-portal` rows; a missing field means `personal` on its side. **Non-personal rows
   are held back (stay queued) until `USAGE_SYNC_IU_KEYS=1`** — an Argo without per-key storage would file them
-  as personal and its portal upsert would overwrite the personal cells; set the flag in the LaunchAgent env
-  only after Argo deploys the per-key schema. Adding a key = one entry in
+  as personal and its portal upsert would overwrite the personal cells; the installer sets the flag in the LaunchAgent env
+  (Argo has stored per-key since 2026-10-28). Adding a key = one entry in
   `IU_KEYS` (the secret ref must be in the mini's secrets cache, `dotfiles-private/headless.iu.refs` for
   careerpartner refs).
 - **`athena-teamchat` reads the Athena Teamchat Postgres** (`athena` schema, Unix socket

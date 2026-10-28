@@ -138,6 +138,10 @@ cat > "$TMP" <<EOF
         <string>${HOME}</string>
         <key>ARGO_URL</key>
         <string>${ARGO_URL}</string>
+        <!-- Argo stores spend per IU key since 988940f3; without this the
+             non-personal rows stay queued (src/iu-keys.ts). -->
+        <key>USAGE_SYNC_IU_KEYS</key>
+        <string>1</string>
     </dict>
 
     <key>ProcessType</key>
