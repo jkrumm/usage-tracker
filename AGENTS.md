@@ -84,6 +84,11 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
   `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`
   — no `sub_tool` should carry cost under `-sessions`, and `source_id`s never collide
   across sources. The legacy `opencode` collector reads only the interactive `oc` store.
+  **Platform split (2026-10-29):** agent-workflows posts its own rows to Argo (`source='agent-workflows'`),
+  so no collector reads them. review/check/research/otel/prose/diagram moved there; the `research-gateway`
+  collector was removed (silent, every row already in Argo). `agent-gateway-opencode` and `agent-gateway-iu`
+  **stay**: `narrative`, `triage` and `dispatch` still write through agent-gateway until P6 — drop them then.
+  Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
 - **IU keys: spend is split per key, each key has its own $500 rolling cap.** `usage_record.iu_key`
   (`personal` | `athena-team`, set only for `billing='iu'` rows, NULL otherwise) is derived in
   `db.upsertRecords` via `resolveIuKey` (`src/iu-keys.ts`): the row's own `raw.iuKey` label (validated
