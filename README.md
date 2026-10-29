@@ -8,6 +8,8 @@ the end of `ingest`), which is where the dashboard lives.
 
 ## What it ingests
 
+> **Retired 2026-10-29.** The `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway` and `audio-gateway-vps` collectors were removed with the gateways (agent-workflows posts its own usage to Argo). Their historical rows stay queryable.
+>
 > **Renamed 2026-10-13.** The `agent-gateway-iu` / `agent-gateway-sessions` sources, the `agent-gateway:<tool>` lanes and the `AGENT_GATEWAY_SESSIONS_USAGE_LOG` override carry the service's name on both sides. Stored rows and jsonl sinks were migrated in place — see `docs/history/agent-gateway-rename-migration.md`.
 
 | Source | Storage read | Grain | Dedup key | Status |
@@ -15,9 +17,6 @@ the end of `ingest`), which is where the dashboard lives.
 | `claude-code` | `~/.claude/projects/**/*.jsonl` + `**/<sessionId>/subagents/*.jsonl` (offset-incremental) — plus the same tree mirrored from the MacBook (`iumac`), see below | message | `requestId` | working (Max and IU-direct, every model id, billed by the session's base URL — see below) |
 | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` (offset-incremental) — the OpenAI Codex CLI (`cx`/`cxa`) against the IU endpoint | message | `response_id` | working (local only — no MacBook mirror yet) |
 | `hermes` | `~/.hermes/state.db` → `sessions` | session | `id` | working |
-| `agent-gateway-iu` | `~/.local/share/usage-tracker/agent-gateway-iu.jsonl` (offset-incremental) — agent-gateway's direct IU calls (`read_image`, `read_drawing`, the `review` critic; `generate_image` retired 2026-07, historical rows stay queryable) | message | `request_id` | working |
-| `audio-gateway` | audio-gateway's own `usage_record` SQLite on the mini (`data/usage.db` plus the `data/<lab>/usage.db` bake-off ledgers), id-incremental, read-only — podcast LLM steps, cover images; TTS/STT rows unpriced | message | `<ledger>:<id>@<ts>` | working |
-| `audio-gateway-vps` | the VPS instance's `/var/lib/audio-gateway/usage.db`, pulled as JSON over `ssh vps python3` | message | `vps:<id>@<ts>` | working |
 | `opencode` | `~/.local/share/opencode/opencode.db` → `message` (per assistant turn), session-grain fallback if that table is absent | message | message `id` (session `id` on the fallback) | working — OpenCode was re-added 2026-09-23; removed 2026-09-04 → 2026-09-23, historical rows from before the removal stay queryable |
 | `feuer` | `~/IuRoot/prometheus-feuer-agent/state/hermes/state.db` → `sessions` (full re-read via `sqlite3`) | session | `id` | working |
 | `litellm` | `~/.local/share/usage-tracker/litellm.jsonl` (offset-incremental) | message | `request_id` | historical rows only — the local LiteLLM proxy was removed 2026-09-04; the collector reports not-present |
@@ -29,8 +28,8 @@ computes one comparable cost for every row from its own pricing table
 - `max` — Claude Code orchestrator on the Max subscription. Cost is the
   list-price *value* consumed, not a real bill.
 - `iu` — real per-token IU spend against the IU unified endpoint: Claude Code
-  on the `ca` launcher or agent-gateway's `iu` lane (any served id, Claude or not),
-  agent-gateway's direct calls, and the agent daemons.
+  on the `ca` launcher (any served id, Claude or not),
+  and the agent daemons.
 
 So `stats --by billing` answers "how much Max value am I burning" vs "what am
 I actually paying IU" in one view.
@@ -135,7 +134,7 @@ collectors/*  →  normalized UsageRecord  →  db.upsertRecords()  →  usage_r
 ## Source-specific notes
 
 Per-collector mechanics (Claude Code billing classification, the iumac
-MacBook mirror, agent-gateway's direct-call log, the retired LiteLLM bridge,
+MacBook mirror, the retired LiteLLM bridge,
 machine attribution, the Feuer sqlite quirk) and the sharp edges each one
 hit: [`docs/collectors.md`](docs/collectors.md).
 
