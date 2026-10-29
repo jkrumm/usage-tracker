@@ -229,6 +229,10 @@ carry agent-gateway lanes).
 
 ### agent-gateway OpenCode store (`agent-gateway-opencode`)
 
+> Kept on purpose (2026-10-29): `review:*` moved to agent-workflows, but `narrative`,
+> `excalidraw-diagram` and `dispatch` still wrote through this store (last `narrative` row 2026-10-29
+> 05:46Z; `dispatch` runs until P6). Revisit after P6. See `docs/reconciliation/2026-10-29-agent-workflows.md`.
+
 Since 2026-10-14 agent-gateway runs its OpenCode v2 server on its own store,
 `~/.local/share/agent-gateway/opencode/opencode.db` (override `USAGE_AGW_OPENCODE_DB`),
 not the interactive `oc` store the legacy `opencode` collector reads (frozen at
@@ -303,6 +307,10 @@ ingest and never flips claude-code's own `ok`/`note` (its own
 
 ### agent-gateway direct IU calls (`agent-gateway-iu`)
 
+> Kept on purpose (2026-10-29): `review:adversary`/`router` and `prose` moved to agent-workflows, but
+> `triage` (last row 2026-10-29 11:40Z) and `narrative` still write here. See
+> `docs/reconciliation/2026-10-29-agent-workflows.md`.
+
 agent-gateway's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
 retired 2026-07, historical rows stay queryable) and the `review` adversary
 critic call the IU OpenAI transport with plain `fetch` — no `claude -p`
@@ -357,36 +365,14 @@ the key is read from stdin and never touches disk.
   successful ingest, atomically, dir created; agent-gateway's OCR gate reads it.
   `IU_PORTAL_ROOT` overrides the directory (tests).
 
-### research-gateway (`research-gateway`)
+### research-gateway (retired)
 
-research-gateway appends one line per usage record to
-`~/.local/share/usage-tracker/research-gateway.jsonl` — its argo usage record
-verbatim, the same directory and append-only shape as agent-gateway's
-`agent-gateway-iu.jsonl`, so the collector reads it by byte offset the same way.
-`source_id` is the dedup key (`<jobId>:lead`, `<jobId>:worker`, `<jobId>:sonar`,
-`<jobId>:tavily`, … or the fixed `tavily-account`); the `tavily-account` snapshot
-is re-sent, and because upsert is keyed on `(source, source_id)` the last line
-wins, exactly like a session whose token counts grew.
-
-The line's `billing` and `machine` are ignored: billing is derived centrally
-(always `iu` here) and `machine` is stamped by `upsertRecords` from
-`machine.ts`, not taken from the line's `"mini"`. `sub_tool`, `outcome` (with a
-non-`ok`/`error` original kept as `raw.rawOutcome`) and `raw` pass through.
-
-Cost is the one thing split by row. A row with a `model` (the `lead`/`worker`
-LLM calls, e.g. `deepseek-v4.1-flash`) is priced from its tokens by the central
-table — the line's own `cost_usd` is never trusted. A `cost_source:"reported"`
-row keeps the line's `cost_usd` by carrying it on `UsageRecord.authoritativeCostUsd`,
-which `upsertRecords` stores with `cost_source = "reported"` and `reprice`
-leaves untouched. Exception: `sonar` (`IGNORE_REPORTED_COST` in `pricing.ts`) —
-Perplexity's reported cost is its list price with per-request fees, which IU does
-not bill (portal $0.18 vs $30.66 reported), so sonar is priced from tokens at
-$1/M. A row with no model and `cost_source:"none"` stays null.
-
-The collector also recovers from a truncated or rotated file: when the file is
-shorter than the persisted offset it resumes from the top instead of stalling
-past EOF (safe because the upsert is idempotent). The other offset collectors
-still simply hold their offset in that case.
+The `research-gateway` collector was removed 2026-10-29: research moved to agent-workflows
+(`source='agent-workflows'`, which posts its own rows to Argo) and the MCP was deleted. Its source was silent
+from 2026-10-28 15:30Z, the VPS instance since 2026-09-25, and every local row is already in Argo
+(`docs/reconciliation/2026-10-29-agent-workflows.md`). Historical rows stay in the DB and in Argo; the
+`research-gateway.jsonl` log is no longer read. Its `sonar` rows are still the reason for
+`IGNORE_REPORTED_COST` in `pricing.ts` (vendor cost ignored, token-priced).
 
 ### audio-gateway (`audio-gateway`, `audio-gateway-vps`)
 

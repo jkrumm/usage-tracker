@@ -10,7 +10,6 @@ import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
-import { researchGatewayCollector } from "./research-gateway.ts";
 import { agentGatewayOpencodeCollector } from "./agent-gateway-opencode.ts";
 import { agentGatewayIuCollector } from "./agent-gateway-iu.ts";
 import { agentGatewaySessionsCollector } from "./agent-gateway-sessions.ts";
@@ -46,7 +45,6 @@ export const collectors: Collector[] = [
   agentGatewayIuCollector,
   agentGatewaySessionsCollector,
   agentGatewayOpencodeCollector,
-  researchGatewayCollector,
   audioGatewayCollector,
   audioGatewayVpsCollector,
   modelpickCollector,

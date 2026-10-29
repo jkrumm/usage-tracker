@@ -16,7 +16,7 @@ import type { Grain } from "./types.ts";
  * disagreeing.
  *
  * A vendor-reported row (`cost_source = 'reported'`) is skipped outright: its
- * cost_usd came straight from the vendor's own gateway (research-gateway's
+ * cost_usd came straight from the vendor's own gateway (the retired research-gateway's
  * `sonar` rows, agent-gateway-iu's `usage.cost`), not this table, and computeCost
  * has no way to reproduce that figure from tokens alone — recomputing it
  * would silently replace a real reported cost with a list-price guess.
@@ -91,7 +91,7 @@ export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult 
   let reportedSkipped = 0;
 
   for (const row of rows) {
-    // A vendor-reported cost (cost_source 'reported', e.g. research-gateway's
+    // A vendor-reported cost (cost_source 'reported', e.g. the retired research-gateway's
     // sonar rows or agent-gateway-iu's gateway `usage.cost`) is not ours to
     // recompute: the table has no rate for a per-call vendor bill, so leave
     // the row exactly as it landed.
