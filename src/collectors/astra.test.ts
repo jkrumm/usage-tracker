@@ -6,7 +6,7 @@ import { iumacUsageJsonlDir } from "../remote.ts";
 import type { Logger } from "../types.ts";
 import { astraCollector } from "./astra.ts";
 
-// Pins the offset-incremental jsonl read (cloned from agent-gateway-iu.ts) and the
+// Pins the offset-incremental jsonl read and the
 // input_tokens/cached_tokens split, which mirrors codex.ts's Responses-shaped
 // usage handling: input_tokens is inclusive of cached_tokens, reasoning_tokens
 // is additive (not nested in output_tokens — astra.sh's own log format, not a

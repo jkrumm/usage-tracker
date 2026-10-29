@@ -227,25 +227,6 @@ so a null would make the upsert erase an agent-gateway lane once its log line is
 pruned and not yet in the `session_env` table (only rows since 2026-10-06 still
 carry agent-gateway lanes).
 
-### agent-gateway OpenCode store (`agent-gateway-opencode`)
-
-> Kept on purpose (2026-10-29): `review:*` moved to agent-workflows, but `narrative`,
-> `excalidraw-diagram` and `dispatch` still wrote through this store (last `narrative` row 2026-10-29
-> 05:46Z; `dispatch` runs until P6). Revisit after P6. See `docs/reconciliation/2026-10-29-agent-workflows.md`.
-
-Since 2026-10-14 agent-gateway runs its OpenCode v2 server on its own store,
-`~/.local/share/agent-gateway/opencode/opencode.db` (override `USAGE_AGW_OPENCODE_DB`),
-not the interactive `oc` store the legacy `opencode` collector reads (frozen at
-2026-10-13, kept for history). Schema: `session_v2` (`metadata` JSON
-`{agw:{jobId,tool}}`, `directory`) and `session_message` (`type='assistant'`, `data`
-JSON with `cost`, `tokens`, `model{id,providerID}`, `time`). One record per assistant
-message; the message `cost` is stored verbatim (`cost_source='reported'`, the session
-cost column is the exact sum of its messages). `sub_tool` = `agw.tool` (`bench:*`
-collapses to `bench`), `raw.jobId` carries the agw job id, `project` is the session
-directory, workspace is `work` under `/IuRoot/`, else `private`. Incremental on
-`session_message.time_updated >= cursor` (assistant rows are rewritten while
-streaming). Billing is `iu` (every provider in the store is `iu-*`).
-
 ### modelpick benchmark spend (`modelpick`)
 
 `~/SourceRoot/modelpick/modelpick.db` records real spend that otherwise never
@@ -274,12 +255,12 @@ closed when the DB is absent.
 `astra` (dotfiles' `astra.sh`) is a one-shot OpenAI Responses call —
 `gpt-6-astra`, `reasoning.mode=pro`, effort `xhigh` — the highest per-call cost
 in the estate. It isn't a Codex session (no rollout JSONL) and doesn't go
-through agent-gateway's IU transport either, so nothing else here ever sees it.
+through a gateway's IU transport either, so nothing else here ever sees it.
 `astra.sh` appends one JSON object per call to
 `~/.local/share/usage-tracker/astra.jsonl`
 (`{ ts, request_id, model, input_tokens, output_tokens, reasoning_tokens,
 cached_tokens, effort, mode, outcome, duration_ms }`); the collector's
-byte-offset jsonl read started as a clone of `agent-gateway-iu`'s single-file
+byte-offset jsonl read started as a single-file
 walker, grain `'message'`, `subTool` set to `mode`.
 
 Same Responses-shaped usage object codex.ts already handles: `input_tokens` is
@@ -299,31 +280,11 @@ started as; a persisted cursor still in that old shape is migrated in place
 (that N becomes the local file's starting offset) rather than dropped, so an
 upgrade doesn't force a full re-read. Both roots are walked and filtered to
 the `astra.jsonl` basename, since the mirror directory also carries other
-one-shot jsonl logs (e.g. `agent-gateway-iu.jsonl`) this collector must not
+one-shot jsonl logs this collector must not
 swallow. Mirror rows carry the MacBook's `machine` label the same way
 claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
 ingest and never flips claude-code's own `ok`/`note` (its own
 `SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
-
-### agent-gateway direct IU calls (`agent-gateway-iu`)
-
-> Kept on purpose (2026-10-29): `review:adversary`/`router` and `prose` moved to agent-workflows, but
-> `triage` (last row 2026-10-29 11:40Z) and `narrative` still write here. See
-> `docs/reconciliation/2026-10-29-agent-workflows.md`.
-
-agent-gateway's multimodal tools (`read_image`, `read_drawing`; `generate_image` was
-retired 2026-07, historical rows stay queryable) and the `review` adversary
-critic call the IU OpenAI transport with plain `fetch` — no `claude -p`
-session, so no transcript. agent-gateway's `recordIuUsage` appends one line per
-request to `~/.local/share/usage-tracker/agent-gateway-iu.jsonl`
-(`{ ts, request_id, tool, model, input_tokens, output_tokens, reasoning_tokens,
-cache_read_tokens, cache_write_tokens, cost_usd, outcome, latency_ms, bytes }`;
-the last four added 2026-09-25, older rows lack them and are treated as
-0/null/"ok"); the collector reads it by byte offset and maps `tool` to
-`sub_tool`. Billing is derived centrally (always `iu`), the line's own
-`billing` field is ignored. A numeric `cost_usd` is the gateway's own reported
-cost and is stored verbatim as the row's cost (`cost_source = "reported"`),
-taking precedence over this table's pricing.
 
 ### IU portal cost (`iu-portal`, not a `usage_record` source)
 
@@ -365,41 +326,24 @@ the key is read from stdin and never touches disk.
   successful ingest, atomically, dir created; agent-gateway's OCR gate reads it.
   `IU_PORTAL_ROOT` overrides the directory (tests).
 
-### research-gateway (retired)
+### Gateway collectors (retired)
+
+The `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway` and
+`audio-gateway-vps` collectors retired 2026-10-29 with the gateways (Wave 11); agent-workflows posts its
+own usage to Argo (`source='agent-workflows'`). Historical rows stay in the DB and in Argo; no code
+deletes, rewrites or reprices them. What still touches that history is below.
 
 The `research-gateway` collector was removed 2026-10-29: research moved to agent-workflows
 (`source='agent-workflows'`, which posts its own rows to Argo) and the MCP was deleted. Its source was silent
 from 2026-10-28 15:30Z, the VPS instance since 2026-09-25, and every local row is already in Argo
-(`docs/reconciliation/2026-10-29-agent-workflows.md`). Historical rows stay in the DB and in Argo; the
+(`docs/reconciliation/2026-10-29-agent-workflows.md`). The
 `research-gateway.jsonl` log is no longer read. Its `sonar` rows are still the reason for
 `IGNORE_REPORTED_COST` in `pricing.ts` (vendor cost ignored, token-priced).
 
-### audio-gateway (`audio-gateway`, `audio-gateway-vps`)
-
-audio-gateway records every upstream call (podcast outline/segment/review LLM steps,
-cover images, TTS, STT) in its own SQLite `usage_record` and pushes it nowhere. Before
-this collector that spend was only visible as unexplained IU portal cost (Wave 2's
-`claude-opus-5-5` / `-4-6` gap). There is no cost column.
-
-- **`audio-gateway`** (mini): `$AUDIO_GATEWAY_DATA_DIR` (default
-  `~/SourceRoot/audio-gateway/data`) `usage.db` plus every `<dir>/*/usage.db`
-  (`writer-bakeoff`, `writer-lab`, `wave3`: the lab scripts keep private ledgers by design
-  but spend through the same IU key). Opened read-only with bun:sqlite. Cursor: per-ledger max
-  `id` plus the first row's ts; a ledger whose max id drops below it, or whose first row changed, was recreated and is rescanned.
-- **`audio-gateway-vps`**: the DB lives in the container bind mount
-  `/var/lib/audio-gateway/usage.db`; the host has no sqlite3, so new rows come back as JSON from
-  `ssh vps python3 -` (script on stdin, `AUDIO_GATEWAY_VPS_HOST` overrides the alias). A failed ssh
-  skips the leg with a note and leaves the cursor, never failing other collectors.
-- **Mapping:** `source_id` = `<ledger>:<id>@<row ts>` (`mini`, `mini/<lab>`, `vps`; the ts keeps a recreated ledger's reused ids from overwriting the old generation), `machine` `vps` for the VPS leg, `sub_tool` = endpoint,
-  `project` `audio-gateway`, billing `iu` (central). Token shape comes from `usage_json`: OpenAI
-  (`prompt_tokens` incl. cached, reasoning split out of completion) or Anthropic (`input_tokens`
-  with separate cache fields), else the table columns.
-- **Cost:** `usage_json.cost` (the gateway's own number) is authoritative; token rows of a model
-  in the rate card are priced centrally; TTS/STT rows (seconds/chars only, no rate card entry) stay
-  unpriced with `raw.unpriced = true`. `*-request` endpoints repeat the inner call and are skipped.
-- **Result (2026-10-26 backfill):** `claude-opus-4-6` tracked $0.01 -> $13.49 vs portal $13.74;
-  `claude-opus-5-5` days 10-19/24/25 now match the portal to the cent. 10-22 ($32.59 Opus) has no
-  audio-gateway rows in any ledger, so that spike comes from a caller outside every collector.
+Kept because history still runs over it: the `agent-gateway:*` lanes and the
+`agent-gateway-sessions.jsonl` attribution log (`claude-code`/`opencode`/`litellm` re-ingest upserts
+`sub_tool`, so dropping the join would rewrite old rows; `relane` resolves the same lanes), the vendor-`reported`
+cost guard in `reprice`, and `classifyBilling`'s `agent-gateway-sessions` branch.
 
 ### LiteLLM bridge (retired)
 

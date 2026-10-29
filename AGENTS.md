@@ -67,27 +67,15 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
 
 ## Gotchas
 
-- **audio-gateway spend (`audio-gateway`, `audio-gateway-vps`).** audio-gateway logs its own LLM/TTS/STT
-  calls to its own SQLite (`~/SourceRoot/audio-gateway/data/usage.db`, no cost column) and the writer
-  bake-off/lab scripts keep private ledgers in `data/<lab>/usage.db`; the `audio-gateway` collector reads
-  all of them read-only (`source_id` = `mini:<id>@<ts>` / `mini/<lab>:<id>@<ts>`), the VPS instance via
-  `ssh vps python3` (`vps:<id>@<ts>`). It explained the whole `claude-opus-4-6` gap and most of
-  `claude-opus-5-5`. TTS/STT rows are unpriced (`raw.unpriced`; no rate card entry); `*-request`
-  endpoints are skipped as duplicates of the inner call. Disable the VPS leg with `AUDIO_GATEWAY_VPS_DISABLE=1`.
-- **agent-gateway spend is three disjoint sources — never fold them.**
-  `agent-gateway-opencode` = every OpenCode worker session (review angles/synthesis,
-  dispatch, check, bench, overview…) read from agw's own OpenCode store: tokens and exact
-  `cost`, `raw.jobId`. `agent-gateway-iu` = agw's own direct IU `fetch`es (review
-  adversary/router/OCR, read_image, prose, triage, decide…), logged to
-  `agent-gateway-iu.jsonl`. `agent-gateway-sessions` = the per-job operational log,
-  zero tokens and zero cost by design (outcome/duration only). Reconcile a day:
-  `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`
-  — no `sub_tool` should carry cost under `-sessions`, and `source_id`s never collide
-  across sources. The legacy `opencode` collector reads only the interactive `oc` store.
-  **Platform split (2026-10-29):** agent-workflows posts its own rows to Argo (`source='agent-workflows'`),
-  so no collector reads them. review/check/research/otel/prose/diagram moved there; the `research-gateway`
-  collector was removed (silent, every row already in Argo). `agent-gateway-opencode` and `agent-gateway-iu`
-  **stay**: `narrative`, `triage` and `dispatch` still write through agent-gateway until P6 — drop them then.
+- **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped;
+  agent-workflows posts its own rows to Argo (`source='agent-workflows'`), so no collector reads them.
+  Removed: `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`,
+  `audio-gateway-vps` (and earlier `research-gateway`). **Historical rows stay** in SQLite and Argo — never
+  delete, rewrite or reprice them. What still reads that history: `relane` and `claude-code`/`opencode`/`litellm`
+  re-ingest (`ingest --full` upserts overwrite `sub_tool`) use the `agent-gateway:*` lanes and the
+  `agent-gateway-sessions.jsonl` attribution log (`models.ts`), `reprice` skips their vendor-`reported` costs,
+  and `classifyBilling` keeps its `agent-gateway-sessions` branch. Reconcile a past day:
+  `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`.
   Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
 - **IU keys: spend is split per key, each key has its own $500 rolling cap.** `usage_record.iu_key`
   (`personal` | `athena-team`, set only for `billing='iu'` rows, NULL otherwise) is derived in

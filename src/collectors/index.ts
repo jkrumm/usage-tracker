@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Collector } from "../types.ts";
 import { athenaTeamchatDefault } from "./athena-teamchat.ts";
-import { audioGatewayCollector, audioGatewayVpsCollector } from "./audio-gateway.ts";
 import { astraCollector } from "./astra.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
 import { codexCollector } from "./codex.ts";
@@ -10,9 +9,6 @@ import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
 import { opencodeCollector } from "./opencode.ts";
-import { agentGatewayOpencodeCollector } from "./agent-gateway-opencode.ts";
-import { agentGatewayIuCollector } from "./agent-gateway-iu.ts";
-import { agentGatewaySessionsCollector } from "./agent-gateway-sessions.ts";
 
 // The registry. Adding a source = write a collector and append it here. Paths
 // are overridable via env so the registry stays machine-agnostic.
@@ -42,11 +38,6 @@ export const collectors: Collector[] = [
   }),
   opencodeCollector,
   litellmCollector,
-  agentGatewayIuCollector,
-  agentGatewaySessionsCollector,
-  agentGatewayOpencodeCollector,
-  audioGatewayCollector,
-  audioGatewayVpsCollector,
   modelpickCollector,
   astraCollector,
   athenaTeamchatDefault,
