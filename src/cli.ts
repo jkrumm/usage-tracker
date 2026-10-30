@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
+import { buildBudget, buildExplain, formatBudget, formatExplain } from "./budget.ts";
 import { formatQuotaReport } from "./collectors/claude-quota.ts";
 import { collectors } from "./collectors/index.ts";
-import { IU_KEYS, iuKeyDef } from "./iu-keys.ts";
+import { DEFAULT_IU_KEY, IU_KEYS, iuKeyDef } from "./iu-keys.ts";
 import { collectPortal, iuPortalFreshnessAll } from "./collectors/iu-portal.ts";
 import { formatRunSummary, runIngest } from "./ingest.ts";
 import {
@@ -17,9 +18,9 @@ import {
   unpricedByModel,
   type GroupBy,
 } from "./report.ts";
-import { checkPricingDrift, fetchRequestyModels } from "./pricing-drift.ts";
 import { connect } from "./pg/connect.ts";
 import { runPgCommand } from "./pg/cli.ts";
+import { formatReprice, reprice } from "./reprice.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
 
@@ -30,10 +31,13 @@ COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
     --source <name>      Only run one collector (claude-code|codex|hermes|feuer|opencode|litellm|modelpick|astra|athena-teamchat)
-  reprice                (moved to Postgres in the next step; exits 2)
+  reprice                Re-cost stored rows against the current prices (usage.compute_cost); provider-reported rows are never touched
+    --model <name>       Only this records.model
+    --dry-run            Report rows and dollars per model that would change, without writing
   quota                  Claude account 5h/7d quota series + picker decisions
     --days <N>           Window in days (default 7)
-  budget                 (moved to Postgres in the next step; exits 2)
+  budget [--key <id>]    IU cap per key (rolling 30 days): portal cost vs the limit, drop-off, portal vs tracked per day/model
+    --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
   iu-portal [--key <id>] Fetch the IU portal cost report now, every key unless given (ignores the 4 h throttle)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo
@@ -46,7 +50,6 @@ COMMANDS
   pg-migrate             Apply migrations/pg/*.sql to the usage schema (USAGE_PG_URL)
   prices-sync            Daily: write usage.prices rows for aliased models whose catalog price changed
   prices-seed-history    One-off: seed usage.prices from LiteLLM's git history (--since YYYY-MM-DD, default 2026-04-01)
-  pricing-drift          Read-only: compare PRICING peak rates against Requesty's public catalogue (exit 1 on drift >1%)
   help                   This message
 
 ENV
@@ -62,7 +65,7 @@ ENV
   USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `;
 
-const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit"]);
+const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit", "budget", "reprice"]);
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -76,17 +79,6 @@ async function main(): Promise<number> {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     process.stdout.write(HELP);
     return 0;
-  }
-
-  if (cmd === "pricing-drift") {
-    const result = checkPricingDrift(await fetchRequestyModels());
-    process.stdout.write(`${result.lines.join("\n")}\n`);
-    return result.ok ? 0 : 1;
-  }
-
-  if (cmd === "budget" || cmd === "reprice") {
-    process.stderr.write(`${cmd}: moved to Postgres in the next step\n`);
-    return 2;
   }
 
   const pgCode = await runPgCommand(cmd, rest);
@@ -145,6 +137,28 @@ async function main(): Promise<number> {
         return 2;
       }
       process.stdout.write(`${await formatQuotaReport(sql, days)}\n`);
+      return 0;
+    }
+
+    if (cmd === "reprice") {
+      const result = await reprice(sql, { model: flag(rest, "--model"), dryRun: rest.includes("--dry-run") });
+      process.stdout.write(`${formatReprice(result)}\n`);
+      return 0;
+    }
+
+    if (cmd === "budget") {
+      const explain = flag(rest, "--explain");
+      const keyFlag = flag(rest, "--key");
+      if (keyFlag !== undefined && !iuKeyDef(keyFlag)) throw new Error(`--key must be one of: ${IU_KEYS.map((k) => k.id).join(", ")}`);
+      if (explain) {
+        process.stdout.write(`${formatExplain(await buildExplain(sql, explain, Date.now(), keyFlag ?? DEFAULT_IU_KEY), explain)}\n`);
+        return 0;
+      }
+      // No --key: every registered key, each against its own cap.
+      const keys = keyFlag ? [keyFlag] : IU_KEYS.map((k) => k.id);
+      const reports = [];
+      for (const k of keys) reports.push(formatBudget(await buildBudget(sql, Date.now(), k)));
+      process.stdout.write(`${reports.join("\n\n")}\n`);
       return 0;
     }
 

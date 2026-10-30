@@ -1,50 +1,25 @@
-import type { Database } from "bun:sqlite";
-import { computeCost, IGNORE_REPORTED_COST } from "./pricing.ts";
-import type { Grain } from "./types.ts";
+import type { SQL } from "bun";
 
 /**
- * Re-cost already-ingested rows against the current PRICING table.
+ * Re-cost already-ingested rows against the prices in force now (usage.prices, usage.price_overrides).
  *
- * Ingest prices a row once, at write time, and the collectors are incremental —
- * so a rate correction only reaches rows a collector happens to re-read. Every
- * older row keeps the price that was current when it landed, which silently
- * skews any historical report. This walks the table and rewrites the rows whose
- * cost the current table disagrees with.
+ * The writer prices a row once, at write time, and the collectors are incremental, so a price correction
+ * (a sync that backfilled history, a new override) only reaches rows a collector happens to re-read. This
+ * rewrites every row whose cost `usage.compute_cost` now disagrees with, in one set-based UPDATE.
  *
- * Repriced rows get `synced_at = NULL` so the next `sync` re-pushes them: Argo
- * holds its own copy of `cost_usd`, and a local-only fix would leave the two
- * disagreeing.
- *
- * A vendor-reported row (`cost_source = 'reported'`) is skipped outright: its
- * cost_usd came straight from the vendor's own gateway (the retired research-gateway's
- * `sonar` rows, agent-gateway-iu's `usage.cost`), not this table, and computeCost
- * has no way to reproduce that figure from tokens alone — recomputing it
- * would silently replace a real reported cost with a list-price guess.
- *
- * A row the current table cannot price is left exactly as it is. Rates get
- * *removed* from PRICING when a collector is retired (the audio-proxy models
- * went that way), so "no entry today" means the table forgot the model, not
- * that those calls were free — rewriting them to NULL would destroy real
- * historical cost. Repricing only ever moves a row between two known prices.
+ * - A provider-reported row (`cost_reported_usd IS NOT NULL`) is never touched: compute_cost has no way to
+ *   reproduce a per-call vendor bill from tokens, so recomputing would replace a real cost with a list-price guess.
+ *   (`sonar` is the IU exception, and the writer already stores it without `cost_reported_usd`, so tokens price it.)
+ * - A row the prices cannot cover now is left as it is. Prices vanish when a model leaves the catalog, which
+ *   means the table forgot the model, not that those calls were free: repricing only moves a row between two
+ *   known prices (or prices a row that had none).
+ * - The stored token columns are the input, so `reasoning_tokens` is already 0 for the rows IU billed no reasoning
+ *   on (`REASONING_FREE_BEFORE` in the writer, the count kept in `raw.reasoningTokensUnbilled`) and stays so.
+ * - `ingested_at` is left alone: a reprice is not an ingest.
  */
 
-interface RepriceRow {
-  id: number;
-  model_norm: string | null;
-  grain: Grain;
-  ts: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
-  cache_write_1h_tokens: number;
-  reasoning_tokens: number;
-  cost_usd: number | null;
-  cost_source: string;
-}
-
 export interface RepriceOptions {
-  /** Only rows with this `model_norm`. Omit for the whole table. */
+  /** Only rows with this `model`. Omit for the whole table. */
   model?: string | undefined;
   /** Report what would change without writing. */
   dryRun?: boolean | undefined;
@@ -52,127 +27,82 @@ export interface RepriceOptions {
 
 export interface RepriceModelSummary {
   model: string;
-  rows: number;
+  /** Rows whose cost, source or price row changes. */
   changed: number;
   oldCostUsd: number;
   newCostUsd: number;
 }
 
 export interface RepriceResult {
+  /** Rows compared: everything that is not provider-reported. */
   scanned: number;
   changed: number;
-  /** Priced rows whose model has no rate today — deliberately left untouched. */
+  /** Priced rows whose model has no price today: deliberately left untouched. */
   preserved: number;
-  /** Rows with a source-reported cost (cost_source = "reported") — never recomputed. */
+  /** Rows with a provider-reported cost (`cost_reported_usd`): never recomputed. */
   reportedSkipped: number;
   dryRun: boolean;
   models: RepriceModelSummary[];
 }
 
-/** A float round-trip through SQLite is not bit-exact; ignore sub-cent noise. */
+/** Sub-cent noise from a float round trip (a backfill) is not a change. */
 const EPSILON = 1e-9;
 
-export function reprice(db: Database, opts: RepriceOptions = {}): RepriceResult {
+// One statement. `calc` prices every candidate through compute_cost, `diff` keeps the rows that move, `upd` writes
+// them (a data-modifying CTE always runs, so the dry run gates it with $2), the final SELECT reports from `diff`.
+const REPRICE_SQL = `
+WITH calc AS (
+  SELECT r.id, r.model,
+         r.cost_usd AS old_usd, r.cost_source AS old_source, r.price_id AS old_price,
+         c.cost_usd AS new_usd, c.cost_source AS new_source, c.price_id AS new_price
+  FROM usage.records r
+  CROSS JOIN LATERAL usage.compute_cost(r.model, r.ts, r.input_tokens, r.output_tokens, r.cache_read_tokens,
+         r.cache_write_5m_tokens, r.cache_write_1h_tokens, r.reasoning_tokens, r.grain, NULL) AS c
+  WHERE r.cost_reported_usd IS NULL AND ($1::text IS NULL OR r.model = $1::text)
+), diff AS (
+  SELECT * FROM calc
+  WHERE new_usd IS NOT NULL
+    AND (old_usd IS NULL OR abs(new_usd - old_usd) > ${EPSILON}
+         OR new_source IS DISTINCT FROM old_source OR new_price IS DISTINCT FROM old_price)
+), upd AS (
+  UPDATE usage.records r
+  SET cost_usd = d.new_usd, cost_source = d.new_source, price_id = d.new_price
+  FROM diff d
+  WHERE r.id = d.id AND NOT $2::boolean
+  RETURNING r.id
+), per_model AS (
+  SELECT coalesce(model, '(unknown)') AS model, count(*)::int AS changed,
+         sum(coalesce(old_usd, 0))::float8 AS "oldCostUsd", sum(new_usd)::float8 AS "newCostUsd"
+  FROM diff GROUP BY 1
+)
+SELECT (SELECT count(*) FROM calc)::int AS scanned,
+       (SELECT count(*) FROM calc WHERE new_usd IS NULL AND old_usd IS NOT NULL)::int AS preserved,
+       (SELECT count(*) FROM usage.records WHERE cost_reported_usd IS NOT NULL AND ($1::text IS NULL OR model = $1::text))::int AS reported,
+       coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY abs(p."newCostUsd" - p."oldCostUsd") DESC, p.model) FROM per_model p), '[]'::jsonb) AS models`;
+
+export async function reprice(sql: SQL, opts: RepriceOptions = {}): Promise<RepriceResult> {
   const dryRun = opts.dryRun ?? false;
-  const where = opts.model ? "WHERE model_norm = ?" : "";
-  const params = opts.model ? [opts.model] : [];
-  const rows = db
-    .query<RepriceRow, string[]>(
-      `SELECT id, model_norm, grain, ts, input_tokens, output_tokens, cache_read_tokens,
-              cache_write_tokens, cache_write_1h_tokens, reasoning_tokens,
-              cost_usd, cost_source
-       FROM usage_record ${where} ORDER BY id`,
-    )
-    .all(...params);
-
-  const byModel = new Map<string, RepriceModelSummary>();
-  const updates: Array<{ id: number; usd: number | null; source: string }> = [];
-  let preserved = 0;
-  let reportedSkipped = 0;
-
-  for (const row of rows) {
-    // A vendor-reported cost (cost_source 'reported', e.g. the retired research-gateway's
-    // sonar rows or agent-gateway-iu's gateway `usage.cost`) is not ours to
-    // recompute: the table has no rate for a per-call vendor bill, so leave
-    // the row exactly as it landed.
-    if (row.cost_source === "reported" && !IGNORE_REPORTED_COST.has(row.model_norm ?? "")) {
-      reportedSkipped++;
-      continue;
-    }
-    const cost = computeCost(row.model_norm, {
-      input: row.input_tokens,
-      output: row.output_tokens,
-      cacheRead: row.cache_read_tokens,
-      cacheWrite: row.cache_write_tokens,
-      cacheWrite1h: row.cache_write_1h_tokens,
-      reasoning: row.reasoning_tokens,
-      grain: row.grain,
-      ts: row.ts,
-    });
-
-    if (cost.usd === null && row.cost_usd !== null) {
-      preserved++;
-      continue;
-    }
-
-    const key = row.model_norm ?? "(unknown)";
-    const summary = byModel.get(key) ?? {
-      model: key,
-      rows: 0,
-      changed: 0,
-      oldCostUsd: 0,
-      newCostUsd: 0,
-    };
-    summary.rows++;
-    summary.oldCostUsd += row.cost_usd ?? 0;
-    summary.newCostUsd += cost.usd ?? 0;
-
-    const costDiffers = Math.abs((cost.usd ?? 0) - (row.cost_usd ?? 0)) > EPSILON;
-    const nullnessDiffers = (cost.usd === null) !== (row.cost_usd === null);
-    if (costDiffers || nullnessDiffers || cost.source !== row.cost_source) {
-      summary.changed++;
-      updates.push({ id: row.id, usd: cost.usd, source: cost.source });
-    }
-    byModel.set(key, summary);
-  }
-
-  if (!dryRun && updates.length > 0) {
-    const stmt = db.prepare(
-      `UPDATE usage_record
-       SET cost_usd = $cost_usd, cost_source = $cost_source, synced_at = NULL
-       WHERE id = $id`,
-    );
-    const tx = db.transaction((batch: typeof updates) => {
-      for (const u of batch) {
-        stmt.run({ $id: u.id, $cost_usd: u.usd, $cost_source: u.source });
-      }
-    });
-    tx(updates);
-  }
-
+  const [row] = await sql.unsafe(REPRICE_SQL, [opts.model ?? null, dryRun]);
+  const models = (typeof row.models === "string" ? JSON.parse(row.models) : row.models) as RepriceModelSummary[];
   return {
-    scanned: rows.length,
-    changed: updates.length,
-    preserved,
-    reportedSkipped,
+    scanned: row.scanned,
+    changed: models.reduce((n, m) => n + m.changed, 0),
+    preserved: row.preserved,
+    reportedSkipped: row.reported,
     dryRun,
-    models: [...byModel.values()]
-      .filter((m) => m.changed > 0)
-      .sort((a, b) => Math.abs(b.newCostUsd - b.oldCostUsd) - Math.abs(a.newCostUsd - a.oldCostUsd)),
+    models,
   };
 }
 
 export function formatReprice(result: RepriceResult): string {
   const preservedNote =
-    result.preserved > 0
-      ? `\n${result.preserved} priced rows kept as-is: their model has no rate in the current table`
-      : "";
+    result.preserved > 0 ? `\n${result.preserved} priced rows kept as-is: their model has no price today` : "";
   const reportedNote =
     result.reportedSkipped > 0
-      ? `\n${result.reportedSkipped} rows kept as-is: cost_source = "reported" (source's own gateway cost)`
+      ? `\n${result.reportedSkipped} rows kept as-is: provider-reported cost (cost_reported_usd)`
       : "";
   if (result.changed === 0) {
-    return `reprice: ${result.scanned} rows scanned, everything already matches the current rates${preservedNote}${reportedNote}`;
+    return `reprice: ${result.scanned} rows scanned, everything already matches the current prices${preservedNote}${reportedNote}`;
   }
   const lines = [
     `${"model".padEnd(24)} ${"rows".padStart(7)} ${"was".padStart(11)} ${"now".padStart(11)} ${"delta".padStart(11)}`,
@@ -189,7 +119,7 @@ export function formatReprice(result: RepriceResult): string {
   lines.push("");
   lines.push(
     `${verb} ${result.changed} of ${result.scanned} rows` +
-      (result.dryRun ? " (dry run — nothing written)" : "; cleared synced_at so `sync` re-pushes them") +
+      (result.dryRun ? " (dry run — nothing written)" : "") +
       preservedNote +
       reportedNote,
   );

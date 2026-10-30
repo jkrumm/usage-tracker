@@ -34,12 +34,12 @@ ingest-iumac: ## Force-refresh the iumac mirror and run claude-code ingest only
 stats: ## Token + cost report (override: make stats BY=model SINCE=7; BY is source|model|billing|day|machine|lane|account|iu_key|repo)
 	bun run src/cli.ts stats $(if $(BY),--by $(BY)) $(if $(SINCE),--since $(SINCE))
 
-reprice: ## (moved to Postgres in the next step; exits 2)
+reprice: ## Re-cost stored rows against the current prices (MODEL=<name>, DRYRUN=1 reports without writing; provider-reported rows are never touched)
 	bun run src/cli.ts reprice $(if $(MODEL),--model $(MODEL)) $(if $(DRYRUN),--dry-run)
 
 IU_PORTAL_DIR := .local/share/iu-portal/tool
 
-budget: ## (moved to Postgres in the next step; exits 2)
+budget: ## IU cap per key, rolling 30 days: portal vs tracked (KEY=<id>, MODEL=<name> for the day-by-day explain)
 	bun run src/cli.ts budget $(if $(KEY),--key $(KEY)) $(if $(MODEL),--explain $(MODEL))
 
 iu-portal: ## Fetch the IU portal cost report now (via iumac, ignores the 4 h throttle)

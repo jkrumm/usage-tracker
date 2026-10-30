@@ -1,12 +1,13 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { addDays, WINDOW_DAYS } from "../tools/iu-portal/latest.ts";
-import { readPortalState } from "./legacy-sqlite.ts";
+import { readPortalState } from "./collectors/iu-portal.ts";
 import { DEFAULT_IU_KEY, iuKeyDef, type IuKey } from "./iu-keys.ts";
 
 // The IU employee cap is a ROLLING 30-day window (today plus the 29 days before),
-// measured by IU's portal. usage_record.cost_usd for billing='iu' is our own
+// measured by IU's portal (usage.iu_portal_cost). usage.records.cost_usd for billing='api_key' is our own
 // estimate and stays: this report compares the two so a wrong rate card, a
 // missing collector or an IU-side charge shows up. It never replaces either.
+// Days are UTC calendar days on both sides (the portal's calendar is assumed UTC).
 
 const BURN_DAYS = 7;
 const FLAG_MIN_USD = 1;
@@ -44,35 +45,42 @@ const sum = (xs: Iterable<number>) => [...xs].reduce((a, b) => a + b, 0);
 export const isOff = (c: { portal: number; tracked: number }) =>
   Math.abs(c.tracked - c.portal) > Math.max(FLAG_MIN_USD, FLAG_RATIO * c.portal);
 
-function localDay(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const utcDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+interface DayKeyUsd {
+  day: string;
+  key: string;
+  usd: number;
+}
+
+/** The portal's cells of one key in [from, to], per day and model (our model where the label matched, else the label). */
+async function portalCells(sql: SQL, iuKey: IuKey, from: string, to: string): Promise<DayKeyUsd[]> {
+  return (await sql`
+    SELECT day::text AS day, coalesce(model, label) AS key, sum(cost_usd)::float8 AS usd
+    FROM usage.iu_portal_cost
+    WHERE iu_key = ${iuKey} AND day BETWEEN ${from}::date AND ${to}::date
+    GROUP BY 1, 2`) as DayKeyUsd[];
 }
 
 /** Null when no portal report has been stored yet. */
-export function buildBudget(db: Database, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): BudgetReport | null {
+export async function buildBudget(sql: SQL, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): Promise<BudgetReport | null> {
   const limit = iuKeyDef(iuKey)?.limitUsd;
   if (limit === undefined) throw new Error(`unknown IU key "${iuKey}"`);
-  const state = readPortalState(db, iuKey);
-  const fetchedAt =
-    db.query<{ t: number | null }, [string]>("SELECT max(fetched_at) t FROM iu_portal_cost WHERE iu_key = ?").get(iuKey)?.t ?? null;
+  const state = await readPortalState(sql, iuKey);
+  const [fetched] = await sql`SELECT (extract(epoch FROM max(fetched_at)) * 1000)::float8 AS t FROM usage.iu_portal_cost WHERE iu_key = ${iuKey}`;
+  const fetchedAt = (fetched?.t as number | null | undefined) ?? null;
   if (fetchedAt === null) return null;
 
-  const today = state.lastDay ?? localDay(now);
+  const today = state.lastDay ?? utcDay(now);
   const windowStart = addDays(today, -(WINDOW_DAYS - 1));
 
-  const portalRows = db
-    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
-      `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost
-       WHERE iu_key = ? AND day BETWEEN ? AND ? GROUP BY day, key`,
-    )
-    .all(iuKey, windowStart, today);
-  const trackedRows = db
-    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
-      `SELECT substr(ts, 1, 10) day, COALESCE(model_norm, model, '?') key, sum(COALESCE(cost_usd, 0)) usd
-       FROM usage_record WHERE billing = 'iu' AND iu_key = ? AND substr(ts, 1, 10) BETWEEN ? AND ? GROUP BY day, key`,
-    )
-    .all(iuKey, windowStart, today);
+  const portalRows = await portalCells(sql, iuKey, windowStart, today);
+  const trackedRows = (await sql`
+    SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, coalesce(model, '?') AS key, sum(coalesce(cost_usd, 0))::float8 AS usd
+    FROM usage.records
+    WHERE billing = 'api_key' AND api_key = ${iuKey}
+      AND ts >= (${windowStart}::date::timestamp AT TIME ZONE 'UTC') AND ts < ((${today}::date + 1)::timestamp AT TIME ZONE 'UTC')
+    GROUP BY 1, 2`) as DayKeyUsd[];
 
   const portalDay = new Map<string, number>();
   const trackedDay = new Map<string, number>();
@@ -103,19 +111,13 @@ export function buildBudget(db: Database, now = Date.now(), iuKey: IuKey = DEFAU
     [...new Set([...a.keys(), ...b.keys()])].map((key) => ({ key, portal: a.get(key) ?? 0, tracked: b.get(key) ?? 0 }));
   const models = merge(portalModel, trackedModel).sort((a, b) => Math.max(b.portal, b.tracked) - Math.max(a.portal, a.tracked));
 
-  const monthly = db
-    .query<{ month: string; total_usd: number }, [string]>("SELECT month, total_usd FROM iu_portal_total WHERE iu_key = ? ORDER BY month")
-    .all(iuKey)
-    .map((m) => ({
-      month: m.month,
-      portal: m.total_usd,
-      dailySum:
-        db
-          .query<{ s: number | null }, [string, string]>(
-            "SELECT sum(cost_usd) s FROM iu_portal_cost WHERE iu_key = ? AND substr(day, 1, 7) = ?",
-          )
-          .get(iuKey, m.month)?.s ?? 0,
-    }));
+  const monthly = (await sql`
+    SELECT t.month, t.total_usd::float8 AS portal,
+           coalesce((SELECT sum(c.cost_usd) FROM usage.iu_portal_cost c
+                     WHERE c.iu_key = t.iu_key AND to_char(c.day, 'YYYY-MM') = t.month), 0)::float8 AS "dailySum"
+    FROM usage.iu_portal_total t
+    WHERE t.iu_key = ${iuKey}
+    ORDER BY t.month`) as BudgetReport["monthly"];
 
   return {
     iuKey,
@@ -164,7 +166,7 @@ export function formatBudget(b: BudgetReport | null, now = Date.now()): string {
     `drop-off, next ${BURN_DAYS} days (a day leaves the window tomorrow, the day after, …)`,
     `${pad("day", 11)} ${r("frees", 9)} ${r("headroom", 10)}`,
     ...b.dropoff.map((d) => `${pad(d.day, 11)} ${r(usdFmt(d.frees), 9)} ${r(usdFmt(d.headroomAfter), 10)}`),
-    ...cmpTable("per day: portal vs tracked (billing=iu); delta = tracked − portal, flag |delta| > max($1, 20% of portal)", b.days, 11),
+    ...cmpTable("per day: portal vs tracked (billing=api_key); delta = tracked − portal, flag |delta| > max($1, 20% of portal)", b.days, 11),
     ...cmpTable(`per model, window total (top ${TOP_MODELS})`, b.models.slice(0, TOP_MODELS), 36),
   ];
   const list = (title: string, rows: Cmp[], field: "portal" | "tracked") =>
@@ -202,34 +204,23 @@ export interface Explain {
 
 const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/** Day-by-day portal vs tracked for one model (a model_norm or a portal label), newest first. */
-export function buildExplain(db: Database, query: string, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): Explain | null {
-  const state = readPortalState(db, iuKey);
-  const today = state.lastDay ?? localDay(now);
+/** Day-by-day portal vs tracked for one model (a records.model or a portal label), newest first. */
+export async function buildExplain(sql: SQL, query: string, now = Date.now(), iuKey: IuKey = DEFAULT_IU_KEY): Promise<Explain | null> {
+  const state = await readPortalState(sql, iuKey);
+  const today = state.lastDay ?? utcDay(now);
   const from = addDays(today, -(WINDOW_DAYS - 1));
   const want = alnum(query);
 
-  const portal = db
-    .query<{ day: string; key: string; usd: number }, [string, string, string]>(
-      `SELECT day, COALESCE(model, label) key, sum(cost_usd) usd FROM iu_portal_cost
-       WHERE iu_key = ? AND day BETWEEN ? AND ? GROUP BY day, key`,
-    )
-    .all(iuKey, from, today)
-    .filter((r) => alnum(r.key) === want);
-  const tracked = db
-    .query<
-      { day: string; source: string; n: number; tok: number; usd: number },
-      [string, string, string, string]
-    >(
-      `SELECT substr(ts, 1, 10) day, source, count(*) n,
-              sum(input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens) tok,
-              sum(COALESCE(cost_usd, 0)) usd
-       FROM usage_record
-       WHERE billing = 'iu' AND iu_key = ? AND substr(ts, 1, 10) BETWEEN ? AND ?
-         AND replace(replace(replace(lower(COALESCE(model_norm, model, '')), '-', ''), '.', ''), '_', '') = ?
-       GROUP BY day, source`,
-    )
-    .all(iuKey, from, today, want);
+  const portal = (await portalCells(sql, iuKey, from, today)).filter((r) => alnum(r.key) === want);
+  const tracked = (await sql`
+    SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, source, count(*)::int AS n,
+           sum(input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens)::float8 AS tok,
+           sum(coalesce(cost_usd, 0))::float8 AS usd
+    FROM usage.records
+    WHERE billing = 'api_key' AND api_key = ${iuKey}
+      AND ts >= (${from}::date::timestamp AT TIME ZONE 'UTC') AND ts < ((${today}::date + 1)::timestamp AT TIME ZONE 'UTC')
+      AND regexp_replace(lower(coalesce(model, '')), '[^a-z0-9]', '', 'g') = ${want}
+    GROUP BY 1, 2`) as Array<{ day: string; source: string; n: number; tok: number; usd: number }>;
   if (portal.length === 0 && tracked.length === 0) return null;
 
   const days = new Map<string, ExplainDay>();
