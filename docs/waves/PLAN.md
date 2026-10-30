@@ -197,16 +197,37 @@ two commits); the blocking findings that held were fixed, the rest are below.
 - **Pre-existing, not mine:** hermes-agent `scripts/check-cron-registry.py` reports five jobs absent from or contradicting `docs/scheduled-jobs.md` (claude-release-watch, Fleet babysitter,
   quota-nudge, Morning briefing / Evening report paused vs registered live); its untracked `scripts/model-release-watch.py` is not committed.
 
-## Wave 5 — The first findings become changes            <!-- status: active -->
+## Wave 5 — The first findings become changes            <!-- status: done -->
 Lead's scope (2026-10-30): answer `subagent-effort:implementer` here, and build the record of change ref → finding id.
 `skill-size:wave` is answered by F1's retirement, which rewrites `dotfiles/skills/wave/SKILL.md` anyway (the program lead lands
 it and gives its commit); do not edit that skill here. `verifier` and `general-purpose` are below the impact bar: no change.
-- [ ] For each finding of Wave 4's report: the change, in the repo it belongs to (a skill's size in dotfiles, a
+- [x] For each finding of Wave 4's report: the change, in the repo it belongs to (a skill's size in dotfiles, a
   subagent's effort in its definition, an agw route). A role's tier or effort in `software-factory/config/roles.json` is
   written into **Left behind** for the program lead, not changed here.
-- [ ] Each change is recorded with the finding id it answers, so the next report shows the effect (a `findings` table or
+- [x] Each change is recorded with the finding id it answers, so the next report shows the effect (a `findings` table or
   a tracked file the report reads; decided in `docs/usage-schema.md`).
-**Left behind:**
+**Left behind:** shipped to master (usage-tracker `7093664` + three fix commits, this plan commit; dotfiles `0b0e61d`), no migration, `make deploy` done, `make verify` green.
+`make check`: 441 pass, 0 fail, 0 skip. `agw review` ran four times (the feature commit, then each fix round); the blocking findings that held were fixed, the rest are below.
+- **Changes per finding** (`docs/finding-changes.json`): `subagent-effort:implementer` landed, dotfiles `0b0e61d`: `agents/implementer.md` effort high -> medium (and the three
+  `skills/implement/SKILL.md` lines that name it). `subagent-effort:verifier` (0.048 pts/session, 46 sessions) and `subagent-effort:general-purpose` (0.0096, 179) declined: below the
+  impact bar, the rule fires on rank. `skill-size:wave` handed off: the program lead's F1 retirement rewrites `dotfiles/skills/wave/SKILL.md`; **the lead adds the `landed` entry
+  with its commit to `docs/finding-changes.json`** (no entry means the report keeps showing `handed-off`). No agw route and no factory role finding existed, so nothing for
+  `software-factory/config/roles.json`: no role finding in W43 (no session carried a role).
+- **Decision** (`docs/usage-schema.md` §Finding changes): a tracked file, not a table. The metric and both weeks are recomputed by the report anyway; the only non-derivable fact is
+  "which change answers which id", and a versioned file holds that without a second writer. `src/changes.ts` parses strictly (`loadChanges` throws on a missing or malformed file, a day
+  must be real, a landed entry needs `<repo>@<sha>`, an id must survive `clean`). The report prints `Change: landed <date> (<ref>): <summary>` under the finding (also under Resolved and
+  Unknown), `Changes without a listed finding` for the rest, and JSON carries `changes` per finding plus `otherChanges`. Each landed change carries `exposure` (`full` / `partial` /
+  `not-yet`) and `cleanFrom` (the first report whose two compared weeks both ran wholly under it).
+- **Proof (live):** `usage-tracker report weekly --week 2026-W43` lists all four ids with their entry; `implementer` shows `landed dotfiles@0b0e61d`, exposure `not-yet`, `cleanFrom 2026-W46`.
+  Caught by the test, not by review: `clean` turned the ref `dotfiles@0b0e61d` into `(address)`; the ref prints raw (it is regex-validated at parse).
+- **For Wave 6:** the change landed on 2026-10-30 (W44). The W44 report (Monday 2026-11-02) compares a partly changed week with W43; W45 (2026-11-09) compares partly changed W44 with
+  fully changed W45; the first clean `prev -> now` is the **W46** report (2026-11-16). Wave 6's "seven days after the last change" is earlier than that: read W45 as a trend only and
+  judge on W46. `subagent-effort:implementer` is the only finding with a landed change; a metric that rose or stayed flat under W46 is a revert or replacement (effort is per
+  request, so also check `stats --by effort` for implementer sessions after the change). Wave 6 stays `pending` (time-gated), not flipped to `active`.
+- **Known limits (reviewer findings not fixed):** a later entry for the same id does not mark the older one superseded (the reader judges); a bare hostname or IP in a summary or an id
+  is not caught by `clean` (the file is authored and reviewed in git; the doc says to keep hostnames out); `ChangeRecord` is not a discriminated union (the parser is the only producer);
+  the CLI path has no integration test for a malformed file (the parser and `loadChanges` are unit-tested). One `backfill-state` test failed once during a run beside my edits (`git show
+  failed`, a test that reads the repo's git state) and passed on every rerun.
 
 ## Wave 6 — The effect, a week later            <!-- status: pending -->
 Not before seven days after Wave 5's last change.
