@@ -32,12 +32,14 @@ export async function saveState(sql: SQL, source: string, u: StateUpdate): Promi
 }
 
 /** Every stored session_env line (a few thousand rows): the baseline the hook-log scan is merged onto. */
-export async function loadSessionEnvTable(sql: SQL): Promise<Array<Pick<SessionEnvRow, "session" | "base_url" | "lane" | "account">>> {
-  const rows = await sql`SELECT session, base_url, lane, account FROM usage.session_env`;
+export async function loadSessionEnvTable(sql: SQL): Promise<Array<Pick<SessionEnvRow, "session" | "base_url" | "lane" | "account" | "factory_role" | "factory_session">>> {
+  const rows = await sql`SELECT session, base_url, lane, account, factory_role, factory_session FROM usage.session_env`;
   return rows.map((r: Record<string, unknown>) => ({
     session: String(r.session),
     base_url: (r.base_url as string | null) ?? null,
     lane: (r.lane as string | null) ?? null,
     account: parseAccount(r.account),
+    factory_role: (r.factory_role as string | null) ?? null,
+    factory_session: (r.factory_session as string | null) ?? null,
   }));
 }

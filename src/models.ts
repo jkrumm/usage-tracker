@@ -39,6 +39,9 @@ interface SessionEnv {
   lane: string | null;
   /** Claude Max account id; null on lines older than the account field. */
   account: Account | null;
+  /** The factory runner's FACTORY_ROLE / FACTORY_SESSION; null on lines older than the fields and on sessions it did not spawn. */
+  factory_role: string | null;
+  factory_session: string | null;
   /** The log line's own timestamp (absent on stored rows and on lines without one). */
   seen_at?: Date;
 }
@@ -56,10 +59,25 @@ let changedSessions = new Set<string>();
  * only source.
  */
 export function useStoredSessionEnvs(
-  rows: Iterable<{ session: string; base_url: string | null; lane: string | null; account: string | null }>,
+  rows: Iterable<{
+    session: string;
+    base_url: string | null;
+    lane: string | null;
+    account: string | null;
+    factory_role?: string | null;
+    factory_session?: string | null;
+  }>,
 ): void {
   storedEnvs = new Map();
-  for (const r of rows) storedEnvs.set(r.session, { base_url: r.base_url, lane: r.lane, account: parseAccount(r.account) });
+  for (const r of rows) {
+    storedEnvs.set(r.session, {
+      base_url: r.base_url,
+      lane: r.lane,
+      account: parseAccount(r.account),
+      factory_role: r.factory_role ?? null,
+      factory_session: r.factory_session ?? null,
+    });
+  }
   sessionEnvs = null;
   changedSessions = new Set();
 }
@@ -70,6 +88,8 @@ export interface SessionEnvChange {
   base_url: string | null;
   lane: string | null;
   account: Account | null;
+  factory_role: string | null;
+  factory_session: string | null;
   /** The log line's timestamp, so usage.session_env keeps the newest line by the line's time, not the run's. */
   seen_at?: Date;
 }
@@ -138,8 +158,17 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
     env.account ??= stored?.account ?? null;
     // Same for the lane: a resume without USAGE_LANE does not unset the stored one (usage.session_env keeps it too).
     env.lane ??= stored?.lane ?? null;
+    env.factory_role ??= stored?.factory_role ?? null;
+    env.factory_session ??= stored?.factory_session ?? null;
     map.set(session, env);
-    if (!stored || stored.base_url !== env.base_url || stored.lane !== env.lane || stored.account !== env.account) {
+    if (
+      !stored ||
+      stored.base_url !== env.base_url ||
+      stored.lane !== env.lane ||
+      stored.account !== env.account ||
+      stored.factory_role !== env.factory_role ||
+      stored.factory_session !== env.factory_session
+    ) {
       changedSessions.add(session);
     }
   }
@@ -166,7 +195,14 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
             const entry = JSON.parse(line) as {
               ts?: string;
               event?: string;
-              data?: { session?: string; base_url?: string | null; lane?: string | null; account?: string | null };
+              data?: {
+                session?: string;
+                base_url?: string | null;
+                lane?: string | null;
+                account?: string | null;
+                factory_role?: string | null;
+                factory_session?: string | null;
+              };
             };
             if (entry.event === "session_env" && entry.data?.session) {
               const seen = typeof entry.ts === "string" ? new Date(entry.ts) : undefined;
@@ -180,6 +216,8 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
                 // A later line that omits the lane or the account keeps the one already seen.
                 lane: entry.data.lane ?? prev?.lane ?? null,
                 account: parseAccount(entry.data.account) ?? prev?.account ?? null,
+                factory_role: entry.data.factory_role ?? prev?.factory_role ?? null,
+                factory_session: entry.data.factory_session ?? prev?.factory_session ?? null,
               });
             }
           } catch {
@@ -211,6 +249,20 @@ export function getSessionLane(sessionId: string | null | undefined): string | n
   if (!sessionId) return undefined;
   if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
   return sessionEnvs.get(sessionId)?.lane;
+}
+
+/** The factory role (`FACTORY_ROLE`) that spawned the session; `undefined`/`null` = no line, or not a factory spawn. */
+export function getSessionFactoryRole(sessionId: string | null | undefined): string | null | undefined {
+  if (!sessionId) return undefined;
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  return sessionEnvs.get(sessionId)?.factory_role;
+}
+
+/** The factory's spawn key (`FACTORY_SESSION`) of the session, same lookup as the role. */
+export function getSessionFactorySession(sessionId: string | null | undefined): string | null | undefined {
+  if (!sessionId) return undefined;
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  return sessionEnvs.get(sessionId)?.factory_session;
 }
 
 /**

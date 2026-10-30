@@ -6,6 +6,8 @@ import {
   classifyBilling,
   entrypointLane,
   getSessionBaseUrl,
+  getSessionFactoryRole,
+  getSessionFactorySession,
   getSessionLane,
   getAgentGatewayLane,
   isBridgeRouted,
@@ -246,11 +248,16 @@ describe("stored session_env lines", () => {
 
   const sessionEnvLine = (data: Record<string, unknown>) =>
     `${JSON.stringify({ event: "session_env", data })}\n`;
-  const stored = (session: string, over: Partial<{ base_url: string | null; lane: string | null; account: string | null }> = {}) => ({
+  const stored = (
+    session: string,
+    over: Partial<{ base_url: string | null; lane: string | null; account: string | null; factory_role: string | null; factory_session: string | null }> = {},
+  ) => ({
     session,
     base_url: null,
     lane: null,
     account: null,
+    factory_role: null,
+    factory_session: null,
     ...over,
   });
 
@@ -288,10 +295,30 @@ describe("stored session_env lines", () => {
 
     expect(getSessionLane("s")).toBe("wave");
     // the line has no account (a hook that predates the field): the stored one is carried forward
-    expect(pendingSessionEnvs()).toEqual([{ session: "s", base_url: null, lane: "wave", account: "me" }]);
+    expect(pendingSessionEnvs()).toEqual([{ session: "s", base_url: null, lane: "wave", account: "me", factory_role: null, factory_session: null }]);
     markSessionEnvsPersisted([{ session: "s" }]);
     expect(pendingSessionEnvs()).toEqual([]);
     expect(getSessionLane("s")).toBe("wave");
+  });
+
+  test("a line's factory role and session are read, carried forward over a line without them, and make a line pending", () => {
+    useStoredSessionEnvs([stored("s", { lane: "wave" })]);
+    writeFileSync(
+      join(localDir, "2026-10-06.jsonl"),
+      sessionEnvLine({ session: "s", base_url: null, lane: "wave", factory_role: "lead", factory_session: "spawn-1" }),
+    );
+    expect(getSessionFactoryRole("s")).toBe("lead");
+    expect(getSessionFactorySession("s")).toBe("spawn-1");
+    expect(pendingSessionEnvs()).toEqual([
+      { session: "s", base_url: null, lane: "wave", account: null, factory_role: "lead", factory_session: "spawn-1" },
+    ]);
+
+    // a resume line without the fields keeps what is stored, and is not pending
+    resetSessionBaseUrlsCacheForTest();
+    useStoredSessionEnvs([stored("s", { lane: "wave", factory_role: "lead", factory_session: "spawn-1" })]);
+    writeFileSync(join(localDir, "2026-10-06.jsonl"), sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
+    expect(getSessionFactoryRole("s")).toBe("lead");
+    expect(pendingSessionEnvs()).toEqual([]);
   });
 
   test("only new or changed lines are pending", () => {
@@ -300,7 +327,7 @@ describe("stored session_env lines", () => {
       join(localDir, "2026-10-06.jsonl"),
       sessionEnvLine({ session: "same", base_url: "", lane: "wave" }) + sessionEnvLine({ session: "fresh", base_url: "", lane: "bg", account: "a" }),
     );
-    expect(pendingSessionEnvs()).toEqual([{ session: "fresh", base_url: "", lane: "bg", account: "iu" }]);
+    expect(pendingSessionEnvs()).toEqual([{ session: "fresh", base_url: "", lane: "bg", account: "iu", factory_role: null, factory_session: null }]);
   });
 
   test("without stored lines nothing is pending from an empty log and a pruned line is gone", () => {

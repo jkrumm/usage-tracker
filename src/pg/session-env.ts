@@ -11,11 +11,14 @@ export interface SessionEnvRow {
   lane: string | null;
   /** Claude Max account id; null on lines older than the account field. */
   account: Account | null;
+  /** FACTORY_ROLE / FACTORY_SESSION of a factory-spawned session; null on older lines and on every other session. */
+  factory_role: string | null;
+  factory_session: string | null;
   seen_at: Date;
 }
 
 export type SessionEnvInput = Pick<SessionEnvRow, "session"> &
-  Partial<Pick<SessionEnvRow, "base_url" | "lane" | "account" | "seen_at">>;
+  Partial<Pick<SessionEnvRow, "base_url" | "lane" | "account" | "factory_role" | "factory_session" | "seen_at">>;
 
 const CHUNK = 1000;
 
@@ -42,22 +45,28 @@ export async function upsertSessionEnv(sql: SQL, rows: SessionEnvInput[], now: D
       base_url: r.base_url ?? null,
       lane: r.lane ?? null,
       account: parseAccount(r.account),
+      factory_role: r.factory_role ?? null,
+      factory_session: r.factory_session ?? null,
       seen_at: (r.seen_at ?? now).toISOString(),
     }));
     await sql`
-      INSERT INTO usage.session_env AS e (session, base_url, lane, account, seen_at)
-      SELECT session, base_url, lane, account, seen_at
+      INSERT INTO usage.session_env AS e (session, base_url, lane, account, factory_role, factory_session, seen_at)
+      SELECT session, base_url, lane, account, factory_role, factory_session, seen_at
       FROM jsonb_to_recordset(${JSON.stringify(payload)}::text::jsonb)
-        AS j(session text, base_url text, lane text, account text, seen_at timestamptz)
+        AS j(session text, base_url text, lane text, account text, factory_role text, factory_session text, seen_at timestamptz)
       ORDER BY session
       ON CONFLICT (session) DO UPDATE SET
         base_url = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN EXCLUDED.base_url ELSE e.base_url END,
         lane = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.lane, e.lane) ELSE coalesce(e.lane, EXCLUDED.lane) END,
         account = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.account, e.account) ELSE coalesce(e.account, EXCLUDED.account) END,
+        factory_role = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.factory_role, e.factory_role) ELSE coalesce(e.factory_role, EXCLUDED.factory_role) END,
+        factory_session = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.factory_session, e.factory_session) ELSE coalesce(e.factory_session, EXCLUDED.factory_session) END,
         seen_at = greatest(EXCLUDED.seen_at, e.seen_at)
       WHERE EXCLUDED.seen_at >= e.seen_at
          OR (e.lane IS NULL AND EXCLUDED.lane IS NOT NULL)
-         OR (e.account IS NULL AND EXCLUDED.account IS NOT NULL)`;
+         OR (e.account IS NULL AND EXCLUDED.account IS NOT NULL)
+         OR (e.factory_role IS NULL AND EXCLUDED.factory_role IS NOT NULL)
+         OR (e.factory_session IS NULL AND EXCLUDED.factory_session IS NOT NULL)`;
   }
   return items.length;
 }
@@ -68,13 +77,15 @@ export async function readSessionEnv(sql: SQL, sessions: Iterable<string>): Prom
   const out = new Map<string, SessionEnvRow>();
   for (let i = 0; i < ids.length; i += CHUNK) {
     const part = ids.slice(i, i + CHUNK);
-    const rows = await sql`SELECT session, base_url, lane, account, seen_at FROM usage.session_env WHERE session IN ${sql(part)}`;
+    const rows = await sql`SELECT session, base_url, lane, account, factory_role, factory_session, seen_at FROM usage.session_env WHERE session IN ${sql(part)}`;
     for (const r of rows) {
       out.set(String(r.session), {
         session: String(r.session),
         base_url: r.base_url ?? null,
         lane: r.lane ?? null,
         account: parseAccount(r.account),
+        factory_role: r.factory_role ?? null,
+        factory_session: r.factory_session ?? null,
         seen_at: new Date(r.seen_at as string | Date),
       });
     }
