@@ -186,6 +186,8 @@ Hermes/Feuer sessions have no parent in the data the collector reads, and agent-
 | subagent line (`isSidechain` + `agentId`): `attributionAgent`, else the sibling `agent-<id>.meta.json`'s `agentType`, else `unknown` | `subagentType` | lane `subagent`, `lane_detail.subagent_type` |
 | subagent line: `agentId`, and the parent's `sessionId` | `agentId`, `parentSessionId` | the subagent's own session, `parent_session_id` |
 
+**Re-stamping history** is `make uninstall-agent && make restamp-claude-code && make deploy`: a full re-scan through the normal writer, a fingerprint of every record's cost and billing before and after (the run fails when it differs), and a recompute of every claude-code session's span from its records (subagent requests that moved had widened their parent's). Known limits: a subagent's sidecar or a mirror's hook log that arrives after its transcript was consumed leaves `unknown` / no role until the next restamp, and a role that reaches a session after its first batch fills `lane_detail.role` but does not move the session's lane.
+
 **Decision: a subagent is a session of its own.** `sessionKey` returns `<parent sessionId>:<agentId>` when `raw.agentId` is
 set, with lane `subagent`, `lane_detail {subagent_type, role}` (the role of the tree it belongs to), its own `effort` and
 `parent_session_id` = the parent. Why: the window share is per spawn (U5, FL4), and a subagent that burns the window must not
@@ -194,7 +196,7 @@ role) is looked up unchanged; `(source, source_id)` dedup is untouched (the requ
 over a session and its children (`parent_session_id`). Nested subagents (`spawnDepth` 2) link to the top-level session: the
 transcript does not name the intermediate agent. A session's `effort` is its first request's; the effort of a mid-session
 change is on the records. `lane_detail.role` exists only for sessions whose `session_env` line carries `factory_role` (hook
-lines before 2026-10-30 do not), so history before the hook change has no role.
+lines before 2026-10-30 do not), so history before the hook change has no role. The hook change (dotfiles `hooks/session-env.ts`) takes effect per host when that host's dotfiles are current; a session started before it never gets a role.
 
 ## Window share (headline metric, U5)
 

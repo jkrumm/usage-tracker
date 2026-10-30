@@ -110,3 +110,14 @@ describe("writer constants", () => {
     expect(mapBilling("unknown")).toBe("unknown");
   });
 });
+
+describe("aggregateSessions subagent detail", () => {
+  const input = (ts: number, type: string): SessionInput => ({
+    key: "s:a", parentKey: "s", ts, lane: "subagent", laneDetail: { subagent_type: type }, billing: "max", account: null, apiKey: null,
+    machine: null, model: null, effort: null, repo: null, issueId: null, runId: null,
+  });
+  test("an unknown type is replaced by the first known one in the batch", () => {
+    expect(aggregateSessions([input(1, "unknown"), input(2, "Explore")])[0]?.lane_detail).toEqual({ subagent_type: "Explore" });
+    expect(aggregateSessions([input(1, "unknown")])[0]?.lane_detail).toEqual({ subagent_type: "unknown" });
+  });
+});

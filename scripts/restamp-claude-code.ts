@@ -8,14 +8,22 @@ import { connect } from "../src/pg/connect.ts";
 // after and the run exits 1 when it differs (rows of the run's own time excluded). Afterwards the span of every claude-code session is recomputed from its
 // records, because subagent requests that moved into their own sessions had widened their parent's span.
 //
-//   bun scripts/restamp-claude-code.ts          (make restamp-claude-code)
+//   make uninstall-agent && make restamp-claude-code && make deploy      (idempotent: a failed run is simply run again)
+
+const AGENT_LABEL = "com.jkrumm.usage-tracker";
+// The ingest agent rewrites the same keys and saves the cursor this run saves: stop it first (`make uninstall-agent`), `make deploy` after.
+const loaded = Bun.spawnSync(["launchctl", "print", `gui/${process.getuid?.() ?? 0}/${AGENT_LABEL}`], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+if (loaded && !process.argv.includes("--force")) {
+  console.error(`restamp: refusing, the ingest LaunchAgent ${AGENT_LABEL} is loaded (make uninstall-agent first, make deploy after; --force overrides)`);
+  process.exit(1);
+}
 
 const sql = connect();
 // Only rows older than the run: transcript lines written while it runs are new rows, not a cost change.
 const cutoff = new Date().toISOString();
 const FINGERPRINT = `
   SELECT count(*)::int AS n, coalesce(sum(cost_usd), 0)::text AS total,
-         md5(string_agg(source_id || ':' || coalesce(cost_usd::text, 'null') || ':' || cost_source, ',' ORDER BY source_id)) AS hash
+         md5(string_agg(concat_ws(':', source_id, cost_usd, cost_source, billing, account, api_key), ',' ORDER BY source_id)) AS hash
   FROM usage.records WHERE source = 'claude-code' AND ts < '${cutoff}'`;
 try {
   const [before] = await sql.unsafe(FINGERPRINT);
@@ -23,7 +31,11 @@ try {
 
   const summary = await runIngest(sql, { full: true, only: "claude-code" });
   for (const r of summary.results) console.log(`${r.source}: ${r.status} +${r.newRows} new / ${r.processed} seen${r.note ? ` (${r.note})` : ""}`);
-  if (summary.results.some((r) => r.status === "error")) process.exit(1);
+  // Anything but a clean scan of every root (a skipped local root, a mirror sync that failed and rode along as a note) is an incomplete restamp.
+  if (summary.results.some((r) => r.status !== "ok" || r.note)) {
+    console.error("restamp: the scan was not clean; fix the note above and run again (idempotent)");
+    process.exit(1);
+  }
 
   const spans = await sql.unsafe(`
     UPDATE usage.sessions s SET first_ts = a.mn, last_ts = a.mx

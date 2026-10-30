@@ -101,7 +101,8 @@ export function aggregateSessions(inputs: SessionInput[]): SessionRow[] {
       source_session_id: key,
       parent_key: pick((i) => (i.parentKey && i.parentKey !== key ? i.parentKey : null)),
       lane: first.lane,
-      lane_detail: first.laneDetail,
+      // a subagent whose first request carried no type (`unknown`) takes the first known one of the batch
+      lane_detail: first.lane === "subagent" ? (ordered.find((i) => i.laneDetail?.subagent_type !== "unknown")?.laneDetail ?? first.laneDetail) : first.laneDetail,
       account: pick((i) => i.account),
       billing: pick((i) => (i.billing === "unknown" ? null : i.billing)) ?? "unknown",
       api_key: pick((i) => i.apiKey),
