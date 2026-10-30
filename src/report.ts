@@ -1,10 +1,10 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { getSessionBaseUrl } from "./models.ts";
 
-// Read-side queries for the CLI. All output is plain aligned text (stdout) so it
+// Read-side queries for the CLI, over the Postgres usage schema. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "sub_tool" | "account" | "iu_key";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "lane" | "account" | "iu_key" | "repo";
 
 interface StatRow {
   key: string;
@@ -16,47 +16,50 @@ interface StatRow {
   costUsd: number | null;
 }
 
+/** Whitelisted: the only strings ever spliced into the query. `iu_key` is the IU key id, stored in `api_key`. */
 const GROUP_EXPR: Record<GroupBy, string> = {
   source: "source",
-  model: "coalesce(model_norm, '(unknown)')",
+  model: "coalesce(model, '(unknown)')",
   billing: "billing",
-  day: "substr(ts, 1, 10)",
+  day: "to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
   machine: "coalesce(machine, '(unknown)')",
-  sub_tool: "coalesce(sub_tool, '(none)')",
+  lane: "coalesce(lane, '(none)')",
   account: "coalesce(account, '(n/a)')",
-  iu_key: "coalesce(iu_key, '(n/a)')",
+  iu_key: "coalesce(api_key, '(n/a)')",
+  repo: "coalesce(repo, '(none)')",
 };
 
-export function stats(db: Database, opts: { by: GroupBy; sinceDays?: number }): StatRow[] {
+export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[];
+
+export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number }): Promise<StatRow[]> {
+  const expr = GROUP_EXPR[opts.by];
+  if (!expr) throw new Error(`--by must be one of: ${GROUP_BY_DIMS.join(", ")}`);
   // Error rows carry no tokens and would only dilute counts — keep token/cost
   // aggregates to successful requests; the error rate lives in `sources`.
   //
   // cache_read_tokens is deliberately NOT summed here: Anthropic reports it as
   // the full accumulated prior context re-read from cache on *every* turn, not
   // a delta, so summing it across many rows re-counts the same underlying
-  // tokens repeatedly and inflates the total. cache_write_tokens (cache
-  // creation) is genuinely incremental per turn, so it's safe to sum. cost_usd
-  // is unaffected — it's computed per-row with cache_read's own cheap rate
+  // tokens repeatedly and inflates the total. Cache writes (cache creation) are
+  // genuinely incremental per turn, so they are safe to sum. cost_usd is
+  // unaffected — it's computed per-row with cache_read's own cheap rate
   // before being summed, so dollar totals stay correct.
-  const conds = ["outcome = 'ok'"];
-  if (opts.sinceDays) {
-    conds.push(`ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
-  }
-  const where = `WHERE ${conds.join(" AND ")}`;
-  return db
-    .query<StatRow, []>(
-      `SELECT ${GROUP_EXPR[opts.by]} AS key,
-              count(*)                  AS records,
-              sum(input_tokens)         AS input,
-              sum(output_tokens)        AS output,
-              sum(cache_write_tokens)   AS cacheWrite,
-              sum(reasoning_tokens)     AS reasoning,
-              sum(cost_usd)             AS costUsd
-       FROM usage_record ${where}
-       GROUP BY key
-       ORDER BY costUsd DESC NULLS LAST, records DESC`,
-    )
-    .all();
+  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null;
+  const rows = await sql.unsafe(
+    `SELECT ${expr} AS key,
+            count(*)::int                                        AS records,
+            coalesce(sum(input_tokens), 0)::float8               AS input,
+            coalesce(sum(output_tokens), 0)::float8              AS output,
+            coalesce(sum(cache_write_5m_tokens + cache_write_1h_tokens), 0)::float8 AS "cacheWrite",
+            coalesce(sum(reasoning_tokens), 0)::float8           AS reasoning,
+            sum(cost_usd)::float8                                AS "costUsd"
+     FROM usage.records
+     WHERE outcome = 'ok' AND ($1::int IS NULL OR ts >= now() - make_interval(days => $1::int))
+     GROUP BY 1
+     ORDER BY "costUsd" DESC NULLS LAST, records DESC`,
+    [since],
+  );
+  return rows as StatRow[];
 }
 
 export interface UnpricedModel {
@@ -65,21 +68,19 @@ export interface UnpricedModel {
 }
 
 /**
- * Rows the current pricing table can't price at all (cost_source = 'none') —
- * a new/unrecognized model id silently costs $0 otherwise, which looks
- * identical to a genuinely free local model. Grouped by model so the ingest
- * summary can name the culprit instead of just a count.
+ * Rows no price covers (cost_source = 'none') — a new/unrecognized model id
+ * is NULL-cost otherwise, which looks identical to a genuinely free local
+ * model. Grouped by model so the ingest summary can name the culprit instead
+ * of just a count.
  */
-export function unpricedByModel(db: Database): UnpricedModel[] {
-  return db
-    .query<UnpricedModel, []>(
-      `SELECT coalesce(model_norm, '(unknown)') AS model, count(*) AS rows
-       FROM usage_record
-       WHERE cost_source = 'none'
-       GROUP BY model
-       ORDER BY rows DESC`,
-    )
-    .all();
+export async function unpricedByModel(sql: SQL): Promise<UnpricedModel[]> {
+  const rows = await sql`
+    SELECT coalesce(model, '(unknown)') AS model, count(*)::int AS rows
+    FROM usage.records
+    WHERE cost_source = 'none'
+    GROUP BY 1
+    ORDER BY 2 DESC`;
+  return rows.map((r: Record<string, unknown>) => ({ model: String(r.model), rows: Number(r.rows) }));
 }
 
 export interface SourceStatus {
@@ -92,29 +93,27 @@ export interface SourceStatus {
   total: number;
 }
 
-export function sourceStatus(db: Database): SourceStatus[] {
+export async function sourceStatus(sql: SQL): Promise<SourceStatus[]> {
   // errors/total come from the rows themselves (LEFT JOIN), so sources that
   // never log failures simply show 0 — only the bridge surfaces a real rate.
-  return db
-    .query<SourceStatus, []>(
-      `SELECT cs.source                              AS source,
-              cs.records_total                       AS records,
-              cs.last_run_at                         AS lastRunAt,
-              cs.last_status                         AS lastStatus,
-              cs.last_note                           AS lastNote,
-              coalesce(oc.errors, 0)                 AS errors,
-              coalesce(oc.total, 0)                  AS total
-       FROM collector_state cs
-       LEFT JOIN (
-         SELECT source,
-                sum(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS errors,
-                count(*)                                           AS total
-         FROM usage_record
-         GROUP BY source
-       ) oc ON oc.source = cs.source
-       ORDER BY cs.source`,
-    )
-    .all();
+  const rows = await sql`
+    SELECT cs.source                               AS source,
+           cs.records_total::float8                AS records,
+           to_char(cs.last_run_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') AS "lastRunAt",
+           cs.last_status                          AS "lastStatus",
+           cs.last_note                            AS "lastNote",
+           coalesce(oc.errors, 0)::int             AS errors,
+           coalesce(oc.total, 0)::int              AS total
+    FROM usage.collector_state cs
+    LEFT JOIN (
+      SELECT source,
+             count(*) FILTER (WHERE outcome = 'error') AS errors,
+             count(*)                                  AS total
+      FROM usage.records
+      GROUP BY source
+    ) oc ON oc.source = cs.source
+    ORDER BY cs.source`;
+  return rows as unknown as SourceStatus[];
 }
 
 export interface BillingAuditRow {
@@ -132,70 +131,53 @@ export interface BillingAuditRow {
   mismatch: boolean;
 }
 
-interface RawAuditRow {
-  sessionId: string;
-  records: number;
-  models: string | null;
-  billings: string | null;
-  accounts: string | null;
-  costUsd: number | null;
-  firstTs: string;
-  lastTs: string;
-}
-
 /**
  * Per-session view over claude-code rows, cross-referenced against the live
- * `session_env` log (`getSessionBaseUrl`) rather than trusting the stored
- * `billing` column alone — that's the whole point of the audit. A session
- * showing more than one distinct `billing` value is a bug post-fix (every row
- * in a session, subagents included, must bill the same way); `mismatch` is
- * only set when the live log can still answer (inside its 3-day retention).
+ * hook log (`getSessionBaseUrl`) rather than trusting the stored `billing`
+ * column alone — that's the whole point of the audit. A session showing more
+ * than one distinct `billing` value is a bug post-fix (every row in a session,
+ * subagents included, must bill the same way); `mismatch` is only set when the
+ * live log can still answer (inside its 3-day retention). A non-empty live
+ * base_url means `api_key` billing, an empty one `max`.
  */
-export function sessionBillingAudit(
-  db: Database,
+export async function sessionBillingAudit(
+  sql: SQL,
   opts: { sinceDays?: number; sessionId?: string } = {},
-): BillingAuditRow[] {
-  const conds = ["source = 'claude-code'", "json_extract(raw, '$.sessionId') IS NOT NULL"];
-  const params: string[] = [];
-  if (opts.sinceDays) {
-    conds.push(`ts >= datetime('now', '-${Math.floor(opts.sinceDays)} days')`);
-  }
-  if (opts.sessionId) {
-    conds.push("json_extract(raw, '$.sessionId') = ?");
-    params.push(opts.sessionId);
-  }
-  const where = `WHERE ${conds.join(" AND ")}`;
-  const rows = db
-    .query<RawAuditRow, string[]>(
-      `SELECT json_extract(raw, '$.sessionId') AS sessionId,
-              count(*)                         AS records,
-              group_concat(DISTINCT model_norm) AS models,
-              group_concat(DISTINCT billing)    AS billings,
-              group_concat(DISTINCT account)    AS accounts,
-              sum(cost_usd)                     AS costUsd,
-              min(ts)                           AS firstTs,
-              max(ts)                           AS lastTs
-       FROM usage_record ${where}
-       GROUP BY sessionId
-       ORDER BY lastTs DESC`,
-    )
-    .all(...params);
+): Promise<BillingAuditRow[]> {
+  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null;
+  const rows = await sql`
+    SELECT s.source_session_id                                   AS "sessionId",
+           count(*)::int                                         AS records,
+           coalesce(string_agg(DISTINCT r.model, ','), '')       AS models,
+           coalesce(string_agg(DISTINCT r.billing, ','), '')     AS billings,
+           coalesce(string_agg(DISTINCT r.account, ','), '')     AS accounts,
+           sum(r.cost_usd)::float8                               AS "costUsd",
+           to_char(min(r.ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "firstTs",
+           to_char(max(r.ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "lastTs"
+    FROM usage.records r
+    JOIN usage.sessions s ON s.id = r.session_id
+    WHERE r.source = 'claude-code'
+      AND (${since}::int IS NULL OR r.ts >= now() - make_interval(days => ${since}::int))
+      AND (${opts.sessionId ?? null}::text IS NULL OR s.source_session_id = ${opts.sessionId ?? null}::text)
+    GROUP BY 1
+    ORDER BY max(r.ts) DESC`;
 
-  return rows.map((row) => {
-    const liveBaseUrl = getSessionBaseUrl(row.sessionId);
+  return rows.map((row: Record<string, unknown>) => {
+    const sessionId = String(row.sessionId);
+    const liveBaseUrl = getSessionBaseUrl(sessionId);
     const liveLabel: BillingAuditRow["liveLabel"] =
       liveBaseUrl === undefined ? "expired/missing" : liveBaseUrl ? "iu (ca)" : "max (c)";
-    const billingValues = (row.billings ?? "").split(",").filter(Boolean);
-    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "iu" : "max";
+    const billingValues = String(row.billings).split(",").filter(Boolean);
+    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "api_key" : "max";
     return {
-      sessionId: row.sessionId,
-      records: row.records,
-      models: row.models ?? "",
-      billings: row.billings ?? "",
-      accounts: row.accounts ?? "",
-      costUsd: row.costUsd,
-      firstTs: row.firstTs,
-      lastTs: row.lastTs,
+      sessionId,
+      records: Number(row.records),
+      models: String(row.models),
+      billings: String(row.billings),
+      accounts: String(row.accounts),
+      costUsd: row.costUsd == null ? null : Number(row.costUsd),
+      firstTs: String(row.firstTs),
+      lastTs: String(row.lastTs),
       liveLabel,
       multiBilling: billingValues.length > 1,
       mismatch: expected != null && !(billingValues.length === 1 && billingValues[0] === expected),
@@ -313,38 +295,40 @@ export interface StaleSource {
 
 /**
  * Sources whose newest row is older than their declared cadence. Judged on the
- * rows themselves, not on collector_state: a collector pointed at a moved store
- * still reports `ok` with zero records, which is exactly how the agent-gateway
- * OpenCode spend went missing. Only collectors present on this machine count.
+ * rows themselves (`max(ts)` in usage.records), not on collector_state: a
+ * collector pointed at a moved store still reports `ok` with zero records,
+ * which is exactly how the agent-gateway OpenCode spend went missing. Only
+ * collectors present on this machine count.
  */
-export function staleSources(
-  db: Database,
+export async function staleSources(
+  sql: SQL,
   collectors: ReadonlyArray<{
     source: string;
     staleAfterHours?: number | null;
-    available(db?: Database): boolean;
-    /** Freshness for sources that keep no usage_record rows (default: newest usage_record.ts). */
-    newest?(db: Database): string | null;
+    available(sql?: SQL): boolean | Promise<boolean>;
+    /** Freshness for sources that keep no records rows (default: newest usage.records.ts). */
+    newest?(sql: SQL): Promise<string | null>;
   }>,
   now = new Date(),
-): StaleSource[] {
+): Promise<StaleSource[]> {
+  const watched = collectors.filter((c) => c.staleAfterHours != null);
+  if (watched.length === 0) return [];
+  // One grouped read for every source instead of a max(ts) scan per source.
+  const rows = await sql`SELECT source, max(ts) AS ts FROM usage.records GROUP BY source`;
+  const newestBySource = new Map<string, string>(rows.map((r: Record<string, unknown>) => [String(r.source), new Date(r.ts as string | Date).toISOString()]));
+
   const stale: StaleSource[] = [];
-  for (const c of collectors) {
-    if (c.staleAfterHours == null) continue;
-    const newestTs =
-      c.newest?.(db) ??
-      db
-        .query<{ ts: string | null }, [string]>("SELECT max(ts) AS ts FROM usage_record WHERE source = ?")
-        .get(c.source)?.ts ??
-      null;
+  for (const c of watched) {
+    const limit = c.staleAfterHours as number;
+    const newestTs = (c.newest ? await c.newest(sql) : null) ?? newestBySource.get(c.source) ?? null;
     // A source that has produced rows but whose store vanished is the moved-store
     // failure itself; only a source never seen on this machine is exempt.
-    if (!c.available(db) && newestTs === null) continue;
+    if (!(await c.available(sql)) && newestTs === null) continue;
     const ageHours = newestTs ? (now.getTime() - Date.parse(newestTs)) / 3_600_000 : null;
     // A non-finite or future-dated newest row (beyond clock skew) can't prove
     // freshness, so it counts as stale rather than passing every comparison.
-    const fresh = ageHours !== null && ageHours >= -FUTURE_SKEW_HOURS && ageHours <= c.staleAfterHours;
-    if (!fresh) stale.push({ source: c.source, newestTs, ageHours, limitHours: c.staleAfterHours });
+    const fresh = ageHours !== null && ageHours >= -FUTURE_SKEW_HOURS && ageHours <= limit;
+    if (!fresh) stale.push({ source: c.source, newestTs, ageHours, limitHours: limit });
   }
   return stale;
 }

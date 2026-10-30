@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,11 +13,12 @@ import {
   normalizeModel,
   resetSessionBaseUrlsCacheForTest,
   resetAgentGatewayWindowsCacheForTest,
-  useSessionEnvStore,
+  markSessionEnvsPersisted,
+  pendingSessionEnvs,
+  useStoredSessionEnvs,
 } from "./models.ts";
 import { PRICING } from "./pricing.ts";
 import { iumacLogsDir } from "./remote.ts";
-import { SCHEMA } from "./schema.ts";
 
 // normalizeModel is the join between a source's raw model string and the
 // PRICING table: miss here and the record silently prices as unknown (usd:
@@ -243,22 +243,27 @@ describe("getSessionLane", () => {
   });
 });
 
-// With the DB registered as a store, a session_env line outlives the log file
-// it came from — herdr panes run longer than the hook's 3-day retention.
+// With the stored usage.session_env lines primed, a line outlives the log file
+// it came from — herdr panes run longer than the hook's 3-day retention — and
+// the lines the logs add or change are what ingest still has to persist.
 
-describe("session_env store", () => {
+describe("stored session_env lines", () => {
   let localDir: string;
-  let db: Database;
 
   const sessionEnvLine = (data: Record<string, unknown>) =>
     `${JSON.stringify({ event: "session_env", data })}\n`;
+  const stored = (session: string, over: Partial<{ base_url: string | null; lane: string | null; account: string | null }> = {}) => ({
+    session,
+    base_url: null,
+    lane: null,
+    account: null,
+    ...over,
+  });
 
   beforeEach(() => {
     localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
     process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
     process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
-    db = new Database(":memory:");
-    db.exec(SCHEMA);
     resetSessionBaseUrlsCacheForTest();
   });
 
@@ -267,57 +272,53 @@ describe("session_env store", () => {
     delete process.env.USAGE_REMOTE_DIR;
     rmSync(localDir, { recursive: true, force: true });
     resetSessionBaseUrlsCacheForTest();
-    db.close();
   });
 
-  test("a line seen in run 1 still resolves lane and base_url in run 2 after its log file is gone", () => {
-    const logFile = join(localDir, "2026-10-06.jsonl");
-    writeFileSync(logFile, sessionEnvLine({ session: "wave-1", base_url: "https://iu.example", lane: "wave" }));
-    useSessionEnvStore(db);
-    expect(getSessionLane("wave-1")).toBe("wave");
-
-    rmSync(logFile);
-    resetSessionBaseUrlsCacheForTest();
-    useSessionEnvStore(db);
-
+  test("a stored line still resolves lane, base_url and billing once its log file is gone", () => {
+    useStoredSessionEnvs([stored("wave-1", { base_url: "https://iu.example", lane: "wave" })]);
     expect(getSessionLane("wave-1")).toBe("wave");
     expect(getSessionBaseUrl("wave-1")).toBe("https://iu.example");
     expect(classifyBilling("claude-code", "claude-sonnet-5", "wave-1")).toBe("iu");
+    expect(pendingSessionEnvs()).toEqual([]);
   });
 
   test("a stored row with a NULL lane still means the line exists", () => {
-    const logFile = join(localDir, "2026-10-06.jsonl");
-    writeFileSync(logFile, sessionEnvLine({ session: "manual-1", base_url: null }));
-    useSessionEnvStore(db);
-    expect(getSessionLane("manual-1")).toBeNull();
-
-    rmSync(logFile);
-    resetSessionBaseUrlsCacheForTest();
-    useSessionEnvStore(db);
-
+    useStoredSessionEnvs([stored("manual-1")]);
     expect(getSessionLane("manual-1")).toBeNull();
     expect(getSessionLane("never-seen")).toBeUndefined();
   });
 
-  test("a log entry wins over the stored row for the same session", () => {
-    db.run("INSERT INTO session_env (session, base_url, lane, seen_at) VALUES ('s', NULL, 'bg', '2026-10-01')");
+  test("a log entry wins over the stored row for the same session and is pending until persisted", () => {
+    useStoredSessionEnvs([stored("s", { lane: "bg", account: "me" })]);
     writeFileSync(join(localDir, "2026-10-06.jsonl"), sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
-    useSessionEnvStore(db);
 
     expect(getSessionLane("s")).toBe("wave");
-    const row = db.query<{ lane: string }, []>("SELECT lane FROM session_env WHERE session = 's'").get();
-    expect(row?.lane).toBe("wave");
+    // the line has no account (a hook that predates the field): the stored one is carried forward
+    expect(pendingSessionEnvs()).toEqual([{ session: "s", base_url: null, lane: "wave", account: "me" }]);
+    markSessionEnvsPersisted([{ session: "s" }]);
+    expect(pendingSessionEnvs()).toEqual([]);
+    expect(getSessionLane("s")).toBe("wave");
   });
 
-  test("without a store nothing is persisted and a pruned line is gone", () => {
+  test("only new or changed lines are pending", () => {
+    useStoredSessionEnvs([stored("same", { base_url: "", lane: "wave" })]);
+    writeFileSync(
+      join(localDir, "2026-10-06.jsonl"),
+      sessionEnvLine({ session: "same", base_url: "", lane: "wave" }) + sessionEnvLine({ session: "fresh", base_url: "", lane: "bg", account: "a" }),
+    );
+    expect(pendingSessionEnvs()).toEqual([{ session: "fresh", base_url: "", lane: "bg", account: "iu" }]);
+  });
+
+  test("without stored lines nothing is pending from an empty log and a pruned line is gone", () => {
     const logFile = join(localDir, "2026-10-06.jsonl");
     writeFileSync(logFile, sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
     expect(getSessionLane("s")).toBe("wave");
-    expect(db.query("SELECT 1 FROM session_env").all()).toHaveLength(0);
+    expect(pendingSessionEnvs()).toHaveLength(1);
 
     rmSync(logFile);
     resetSessionBaseUrlsCacheForTest();
     expect(getSessionLane("s")).toBeUndefined();
+    expect(pendingSessionEnvs()).toEqual([]);
   });
 });
 

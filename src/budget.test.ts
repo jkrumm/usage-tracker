@@ -4,27 +4,41 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildBudget, buildExplain, formatBudget, formatExplain, isOff } from "./budget.ts";
-import { collectPortal } from "./collectors/iu-portal.ts";
-import { openDb } from "./db.ts";
-import { iuKeyDef } from "./iu-keys.ts";
-
-const PERSONAL = [iuKeyDef("personal")!];
+import { openLegacyDb } from "./legacy-sqlite.ts";
 
 const NOW = Date.parse("2026-10-26T08:00:00Z");
 
+/**
+ * A stored portal report for one IU key, as the (now Postgres) collector used to leave it in SQLite: one row per
+ * non-zero cell, the scrape state (newest period = the portal's "today") and the Haiku label resolved to our model.
+ */
+function seedPortal(
+  db: Database,
+  iuKey: string,
+  periods: string[],
+  rows: Array<{ label: string; row: number; cells: Record<string, number> }>,
+): void {
+  const insert = db.prepare("INSERT INTO iu_portal_cost (iu_key, day, label, row, model, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  for (const r of rows) {
+    const model = r.label.includes("Haiku") ? "claude-haiku-5-5" : null;
+    for (const [day, usd] of Object.entries(r.cells)) insert.run(iuKey, day, r.label, r.row, model, usd, NOW);
+  }
+  const state = { lastOk: NOW, lastAttempt: NOW, lastCode: 0, lastDay: periods.at(-1) ?? null };
+  db.run("INSERT INTO collector_state (source, cursor, last_status) VALUES (?, ?, 'ok')", [
+    iuKey === "personal" ? "iu-portal" : `iu-portal:${iuKey}`,
+    JSON.stringify(state),
+  ]);
+}
+
 /** 30 days ending 2026-10-26, $2/day on model A, plus $20 today on an untracked model. */
-function seed(db: Database): Promise<number> {
+function seed(db: Database): Promise<void> {
   const periods: string[] = [];
   for (let i = 0; i < 31; i++) periods.push(new Date(Date.UTC(2026, 8, 26 + i)).toISOString().slice(0, 10));
-  const doc = {
-    granularity: "daily",
-    periods,
-    rows: [
-      { label: "Claude Haiku 5 5 Eu", row: 1, cells: Object.fromEntries(periods.map((p) => [p, 2])) },
-      { label: "Untracked Thing", row: 2, cells: { "2026-10-26": 20 } },
-    ],
-  };
-  return collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ({ code: 0, stdout: JSON.stringify(doc), stderr: "" }) });
+  seedPortal(db, "personal", periods, [
+    { label: "Claude Haiku 5 5 Eu", row: 1, cells: Object.fromEntries(periods.map((p) => [p, 2])) },
+    { label: "Untracked Thing", row: 2, cells: { "2026-10-26": 20 } },
+  ]);
+  return Promise.resolve();
 }
 
 let dir: string;
@@ -34,7 +48,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-budget-"));
   prevRoot = process.env.IU_PORTAL_ROOT;
   process.env.IU_PORTAL_ROOT = join(dir, "iu-portal");
-  db = openDb(join(dir, "usage.db"));
+  db = openLegacyDb(join(dir, "usage.db"));
   const ins = db.prepare(
     `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, iu_key, cost_usd, ingested_at)
      VALUES ('s', ?, 'message', ?, ?, ?, 'iu', 'personal', ?, 'x')`,
@@ -101,12 +115,9 @@ describe("buildBudget", () => {
 describe("buildBudget per IU key", () => {
   test("each key has its own report, tracked spend and cap", async () => {
     await seed(db);
-    const team = { granularity: "daily", periods: ["2026-10-25", "2026-10-26"], rows: [{ label: "Claude Haiku 5 5 Eu", row: 1, cells: { "2026-10-25": 30, "2026-10-26": 40 } }] };
-    await collectPortal(db, {
-      keys: [iuKeyDef("athena-team")!],
-      now: NOW,
-      fetch: async () => ({ code: 0, stdout: JSON.stringify(team), stderr: "" }),
-    });
+    seedPortal(db, "athena-team", ["2026-10-25", "2026-10-26"], [
+      { label: "Claude Haiku 5 5 Eu", row: 1, cells: { "2026-10-25": 30, "2026-10-26": 40 } },
+    ]);
     db.run(
       `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, iu_key, cost_usd, ingested_at)
        VALUES ('athena-teamchat', 't1', 'message', '2026-10-26T10:00:00Z', NULL, NULL, 'iu', 'athena-team', 12, 'x')`,

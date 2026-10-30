@@ -1,20 +1,20 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildLatest } from "../../tools/iu-portal/latest.ts";
 import type { PortalDocument } from "../../tools/iu-portal/parse.ts";
-import { loadCursor, saveState } from "../db.ts";
 import { DEFAULT_IU_KEY, IU_KEYS, type IuKey, type IuKeyDef } from "../iu-keys.ts";
 import { log } from "../log.ts";
 import { normalizeModel } from "../models.ts";
+import { loadCursor, saveState } from "../pg/state.ts";
 import { iumacDisabled, iumacHost, SSH_OPTS } from "../remote.ts";
 
 // IU's own cost report, the number that counts against the employee cap. No API
 // carries it: the self-service portal is scraped from the MacBook (IU-managed
 // Chrome holds the Entra session) by tools/iu-portal/scrape.ts over ssh, the API
-// key piped through stdin so it never touches disk. Not a usage_record source:
-// rows go to iu_portal_cost / iu_portal_total. A MacBook that is asleep, a
+// key piped through stdin so it never touches disk. Not a records source:
+// rows go to usage.iu_portal_cost / usage.iu_portal_total. A MacBook that is asleep, a
 // logged-out session or a broken scrape are all "skip and say why" — never a
 // reason to fail the other collectors; `health` flags a stale source via
 // `iuPortalFreshness`. Every successful ingest also writes latest.json here on the
@@ -48,7 +48,7 @@ interface PortalDoc {
   rows: Array<{ label: string; row: number; cells: Record<string, number> }>;
 }
 
-interface PortalState {
+export interface PortalState {
   lastOk: number | null;
   lastAttempt: number | null;
   lastCode: number | null;
@@ -60,8 +60,8 @@ const EMPTY_STATE: PortalState = { lastOk: null, lastAttempt: null, lastCode: nu
 
 const stateSource = (iuKey: IuKey) => (iuKey === DEFAULT_IU_KEY ? PORTAL_SOURCE : `${PORTAL_SOURCE}:${iuKey}`);
 
-export function readPortalState(db: Database, iuKey: IuKey = DEFAULT_IU_KEY): PortalState {
-  const raw = loadCursor(db, stateSource(iuKey));
+export async function readPortalState(sql: SQL, iuKey: IuKey = DEFAULT_IU_KEY): Promise<PortalState> {
+  const raw = await loadCursor(sql, stateSource(iuKey));
   if (!raw) return EMPTY_STATE;
   try {
     return { ...EMPTY_STATE, ...(JSON.parse(raw) as Partial<PortalState>) };
@@ -70,21 +70,30 @@ export function readPortalState(db: Database, iuKey: IuKey = DEFAULT_IU_KEY): Po
   }
 }
 
-function writePortalState(db: Database, iuKey: IuKey, state: PortalState, status: "ok" | "error", note: string): void {
-  saveState(db, stateSource(iuKey), { result: { records: [], cursor: JSON.stringify(state), note }, status, processed: 0 });
+async function writePortalState(sql: SQL, iuKey: IuKey, state: PortalState, status: "ok" | "error", note: string): Promise<void> {
+  await saveState(sql, stateSource(iuKey), { cursor: JSON.stringify(state), status, note });
 }
 
-/** Freshness entries for `health` (one per IU key): the portal has kept no usage_record rows. */
+/**
+ * Freshness entries for `health` (one per IU key): the portal keeps no records rows. The newest sign of life is
+ * the later of the last successful scrape (collector_state) and the newest cell/total the tables hold.
+ */
 export const iuPortalFreshnessAll = IU_KEYS.map((def) => ({
   source: stateSource(def.id),
   staleAfterHours: 48,
   // A secondary key counts once it has been tried: a key never attempted (not deployed yet) is not
   // stale, but one that keeps failing (secret missing, rejected) goes red like the personal one.
-  available: (db?: Database) =>
-    !iumacDisabled() && (def.id === DEFAULT_IU_KEY || !db || readPortalState(db, def.id).lastAttempt !== null),
-  newest: (db: Database): string | null => {
-    const ok = readPortalState(db, def.id).lastOk;
-    return ok === null ? null : new Date(ok).toISOString();
+  available: async (sql?: SQL): Promise<boolean> =>
+    !iumacDisabled() && (def.id === DEFAULT_IU_KEY || !sql || (await readPortalState(sql, def.id)).lastAttempt !== null),
+  newest: async (sql: SQL): Promise<string | null> => {
+    const ok = (await readPortalState(sql, def.id)).lastOk;
+    const [row] = await sql`
+      SELECT greatest(
+        (SELECT max(fetched_at) FROM usage.iu_portal_cost WHERE iu_key = ${def.id}),
+        (SELECT max(fetched_at) FROM usage.iu_portal_total WHERE iu_key = ${def.id})) AS fetched`;
+    const stored = row?.fetched ? new Date(row.fetched as string | Date).getTime() : null;
+    const newest = Math.max(ok ?? -Infinity, stored ?? -Infinity);
+    return Number.isFinite(newest) ? new Date(newest).toISOString() : null;
   },
 }));
 
@@ -150,67 +159,63 @@ function parseDocs(stdout: string): PortalDoc[] {
 const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /**
- * Map each portal label onto our model_norm by comparing alphanumerics of the
+ * Map each portal label onto our model by comparing alphanumerics of the
  * label with those of every IU-billed raw model id and its normalization
  * (`Claude Haiku 5 5 Eu` = `claude-haiku-5-5-eu` → `claude-haiku-5-5`). Unmatched
  * labels stay NULL, which is the "spend we cannot see" signal.
  */
-export function resolvePortalModels(db: Database): void {
+export async function resolvePortalModels(sql: SQL): Promise<void> {
   const known = new Map<string, string>();
-  const rows = db
-    .query<{ model: string | null; model_norm: string | null }, []>(
-      "SELECT DISTINCT model, model_norm FROM usage_record WHERE billing = 'iu' AND model_norm IS NOT NULL",
-    )
-    .all();
+  const rows = await sql`SELECT DISTINCT model_raw, model FROM usage.records WHERE billing = 'api_key' AND model IS NOT NULL`;
   for (const r of rows) {
-    const norm = r.model_norm!;
+    const norm = String(r.model);
     known.set(alnum(norm), norm);
-    if (r.model) known.set(alnum(r.model), norm);
-    const viaRaw = r.model ? normalizeModel(r.model) : null;
+    if (r.model_raw) known.set(alnum(String(r.model_raw)), norm);
+    const viaRaw = r.model_raw ? normalizeModel(String(r.model_raw)) : null;
     if (viaRaw) known.set(alnum(viaRaw), norm);
   }
-  const labels = db.query<{ label: string }, []>("SELECT DISTINCT label FROM iu_portal_cost").all();
-  const set = db.prepare("UPDATE iu_portal_cost SET model = ? WHERE label = ? AND model IS NOT ?");
-  for (const { label } of labels) {
-    const model = known.get(alnum(label)) ?? null;
-    set.run(model, label, model);
-  }
+  const labels = await sql`SELECT DISTINCT label FROM usage.iu_portal_cost`;
+  const mapping = labels.map((l: Record<string, unknown>) => ({ label: String(l.label), model: known.get(alnum(String(l.label))) ?? null }));
+  if (mapping.length === 0) return;
+  await sql`
+    UPDATE usage.iu_portal_cost c SET model = j.model
+    FROM jsonb_to_recordset(${JSON.stringify(mapping)}::text::jsonb) AS j(label text, model text)
+    WHERE c.label = j.label AND c.model IS DISTINCT FROM j.model`;
 }
 
-function storeDaily(db: Database, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): number {
+async function storeDaily(sql: SQL, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): Promise<number> {
   const first = doc.periods[0];
   const last = doc.periods.at(-1);
   if (!first || !last) return 0;
-  const insert = db.prepare(
-    `INSERT INTO iu_portal_cost (iu_key, day, label, row, cost_usd, fetched_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (iu_key, day, label, row) DO UPDATE SET cost_usd = excluded.cost_usd, fetched_at = excluded.fetched_at`,
-  );
-  let written = 0;
-  db.transaction(() => {
+  const cells: Array<{ day: string; label: string; row: number; cost_usd: number }> = [];
+  for (const row of doc.rows) {
+    for (const [day, usd] of Object.entries(row.cells)) cells.push({ day, label: row.label, row: row.row, cost_usd: usd });
+  }
+  await sql.begin(async (tx) => {
     // The report is the whole truth for its window: a cell that went away is gone.
-    db.run("DELETE FROM iu_portal_cost WHERE iu_key = ? AND day >= ? AND day <= ?", [iuKey, first, last]);
-    for (const row of doc.rows) {
-      for (const [day, usd] of Object.entries(row.cells)) {
-        insert.run(iuKey, day, row.label, row.row, usd, fetchedAt);
-        written++;
-      }
-    }
-  })();
-  return written;
+    await tx`DELETE FROM usage.iu_portal_cost WHERE iu_key = ${iuKey} AND day >= ${first}::date AND day <= ${last}::date`;
+    if (cells.length === 0) return;
+    await tx`
+      INSERT INTO usage.iu_portal_cost (iu_key, day, label, "row", cost_usd, fetched_at)
+      SELECT ${iuKey}, day, label, "row", cost_usd, ${new Date(fetchedAt).toISOString()}::timestamptz
+      FROM jsonb_to_recordset(${JSON.stringify(cells)}::text::jsonb) AS j(day date, label text, "row" integer, cost_usd numeric)
+      ON CONFLICT (iu_key, day, label, "row") DO UPDATE SET cost_usd = EXCLUDED.cost_usd, fetched_at = EXCLUDED.fetched_at`;
+  });
+  return cells.length;
 }
 
 /** Monthly totals, minus the first period: a "3 Months" window starts mid-month. */
-function storeMonthly(db: Database, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): void {
-  const upsert = db.prepare(
-    `INSERT INTO iu_portal_total (iu_key, month, total_usd, fetched_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (iu_key, month) DO UPDATE SET total_usd = excluded.total_usd, fetched_at = excluded.fetched_at`,
-  );
-  db.transaction(() => {
-    for (const month of doc.periods.slice(1)) {
-      const total = doc.rows.reduce((sum, r) => sum + (r.cells[month] ?? 0), 0);
-      upsert.run(iuKey, month, Math.round(total * 100) / 100, fetchedAt);
-    }
-  })();
+async function storeMonthly(sql: SQL, iuKey: IuKey, doc: PortalDoc, fetchedAt: number): Promise<void> {
+  const totals = doc.periods.slice(1).map((month) => ({
+    month,
+    total_usd: Math.round(doc.rows.reduce((sum, r) => sum + (r.cells[month] ?? 0), 0) * 100) / 100,
+  }));
+  if (totals.length === 0) return;
+  await sql`
+    INSERT INTO usage.iu_portal_total (iu_key, month, total_usd, fetched_at)
+    SELECT ${iuKey}, month, total_usd, ${new Date(fetchedAt).toISOString()}::timestamptz
+    FROM jsonb_to_recordset(${JSON.stringify(totals)}::text::jsonb) AS j(month text, total_usd numeric)
+    ON CONFLICT (iu_key, month) DO UPDATE SET total_usd = EXCLUDED.total_usd, fetched_at = EXCLUDED.fetched_at`;
 }
 
 export interface CollectPortalOptions {
@@ -233,19 +238,19 @@ interface KeyOutcome {
  * number of daily cells written (0 when throttled, unreachable or failed). Never throws.
  * A signed-out session or an unreachable MacBook is the same for every key, so it ends the pass.
  */
-export async function collectPortal(db: Database, opts: CollectPortalOptions = {}): Promise<number> {
+export async function collectPortal(sql: SQL, opts: CollectPortalOptions = {}): Promise<number> {
   let cells = 0;
   for (const def of opts.keys ?? IU_KEYS) {
-    const out = await collectPortalKey(db, def, opts);
+    const out = await collectPortalKey(sql, def, opts);
     cells += out.cells;
     if (out.code === SESSION_EXPIRED || out.code === UNREACHABLE) break;
   }
   return cells;
 }
 
-async function collectPortalKey(db: Database, def: IuKeyDef, opts: CollectPortalOptions): Promise<KeyOutcome> {
+async function collectPortalKey(sql: SQL, def: IuKeyDef, opts: CollectPortalOptions): Promise<KeyOutcome> {
   const now = opts.now ?? Date.now();
-  const state = readPortalState(db, def.id);
+  const state = await readPortalState(sql, def.id);
   const sinceOk = state.lastOk === null ? Infinity : now - state.lastOk;
   const sinceAttempt = state.lastAttempt === null ? Infinity : now - state.lastAttempt;
   // An expired session needs a human, and a scrape that keeps failing launches a browser each
@@ -256,26 +261,26 @@ async function collectPortalKey(db: Database, def: IuKeyDef, opts: CollectPortal
   if (!opts.force && (sinceOk < REFRESH_MS || backoff)) return { cells: 0, code: null };
   if (iumacDisabled()) return { cells: 0, code: null };
 
-  const fail = (reason: string, code: number): KeyOutcome => {
+  const fail = async (reason: string, code: number): Promise<KeyOutcome> => {
     log.warn(`iu-portal[${def.id}]: ${reason}`);
-    writePortalState(db, def.id, { ...state, lastAttempt: now, lastCode: code }, "error", reason);
+    await writePortalState(sql, def.id, { ...state, lastAttempt: now, lastCode: code }, "error", reason);
     return { cells: 0, code };
   };
 
   try {
     const res = await (opts.fetch ?? sshFetcher)(def);
-    if (res.code === SESSION_EXPIRED) return fail("session expired — run make iu-portal-login", res.code);
-    if (res.code === UNREACHABLE) return fail("iumac unreachable (MacBook asleep or offline)", res.code);
-    if (res.code !== 0) return fail(`scrape exited ${res.code}: ${res.stderr.trim().split("\n").at(-1) ?? ""}`, res.code);
+    if (res.code === SESSION_EXPIRED) return await fail("session expired — run make iu-portal-login", res.code);
+    if (res.code === UNREACHABLE) return await fail("iumac unreachable (MacBook asleep or offline)", res.code);
+    if (res.code !== 0) return await fail(`scrape exited ${res.code}: ${res.stderr.trim().split("\n").at(-1) ?? ""}`, res.code);
 
     const docs = parseDocs(res.stdout);
     const daily = docs.find((d) => d.granularity === "daily");
-    if (!daily) return fail("scrape returned no daily report", res.code);
-    const written = storeDaily(db, def.id, daily, now);
-    for (const d of docs) if (d.granularity === "monthly") storeMonthly(db, def.id, d, now);
-    resolvePortalModels(db);
-    writePortalState(
-      db,
+    if (!daily) return await fail("scrape returned no daily report", res.code);
+    const written = await storeDaily(sql, def.id, daily, now);
+    for (const d of docs) if (d.granularity === "monthly") await storeMonthly(sql, def.id, d, now);
+    await resolvePortalModels(sql);
+    await writePortalState(
+      sql,
       def.id,
       { lastOk: now, lastAttempt: now, lastCode: 0, lastDay: daily.periods.at(-1) ?? null },
       "ok",
@@ -290,6 +295,6 @@ async function collectPortalKey(db: Database, def: IuKeyDef, opts: CollectPortal
     }
     return { cells: written, code: 0 };
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err), 1);
+    return await fail(err instanceof Error ? err.message : String(err), 1);
   }
 }

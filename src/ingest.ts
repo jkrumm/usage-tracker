@@ -1,15 +1,16 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { collectPicks } from "./collectors/account-picks.ts";
 import { collectQuota } from "./collectors/claude-quota.ts";
 import { collectPortal, type PortalFetcher } from "./collectors/iu-portal.ts";
-import { loadCursor, saveState, upsertRecords } from "./db.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
-import { useSessionEnvStore } from "./models.ts";
+import { markSessionEnvsPersisted, pendingSessionEnvs, useStoredSessionEnvs } from "./models.ts";
+import { upsertSessionEnv } from "./pg/session-env.ts";
+import { loadCursor, loadSessionEnvTable, saveState } from "./pg/state.ts";
+import { upsertRecords } from "./pg/writer.ts";
 import { unpricedByModel, type UnpricedModel } from "./report.ts";
 import { syncIumac } from "./remote.ts";
 import type { SyncResult } from "./remote.ts";
-import { sync } from "./sync.ts";
 import type { Collector } from "./types.ts";
 
 export interface SourceResult {
@@ -22,12 +23,10 @@ export interface SourceResult {
 
 export interface IngestSummary {
   results: SourceResult[];
-  /** Rows pushed to Argo at the end of the run (0 when sync is disabled or failed). */
-  synced: number;
   /** Rows priced at nothing (cost_source = 'none'), by model — an unknown
    * model id is otherwise indistinguishable from a genuinely free one. */
   unpriced: UnpricedModel[];
-  /** New quota_sample / account_pick rows this run. */
+  /** New quota_samples / account_picks rows this run. */
   quota: number;
   picks: number;
   /** IU portal cost cells written this run (0 when throttled, unreachable or failed). */
@@ -51,11 +50,12 @@ export interface IngestOptions {
 }
 
 /**
- * Run every available collector. Each is isolated: an unavailable source is
- * skipped, and a thrown error is caught and recorded so one broken source never
- * aborts the others.
+ * Run every available collector into Postgres. Each is isolated: an unavailable
+ * source is skipped, and a thrown error is caught and recorded so one broken
+ * source never aborts the others. Cursors and run bookkeeping live in
+ * usage.collector_state.
  */
-export async function runIngest(db: Database, opts: IngestOptions = {}): Promise<IngestSummary> {
+export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<IngestSummary> {
   const registry = opts.collectors ?? allCollectors;
   const targets = opts.only ? registry.filter((c) => c.source === opts.only) : registry;
 
@@ -63,52 +63,45 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
     throw new Error(`unknown source "${opts.only}"`);
   }
 
-  // Persist session_env lines in the DB so long-lived sessions keep their lane
-  // and base_url after the hook's log files are pruned. Lazy: nothing is read
-  // until the first lookup, which lands after claude-code has synced the mirror.
-  useSessionEnvStore(db);
+  // The stored session_env lines are the baseline of the hook-log lookups, so a
+  // long-lived session keeps its lane and base_url after the log files are
+  // pruned. The log scan itself stays lazy: nothing is read until the first
+  // lookup, which lands after claude-code has synced the iumac mirror.
+  useStoredSessionEnvs(await loadSessionEnvTable(sql));
 
   const iumacSync = once(opts.syncIumac ?? (() => syncIumac(log)));
   const results: SourceResult[] = [];
   for (const c of targets) {
-    results.push(await runOne(db, c, opts, iumacSync));
+    results.push(await runOne(sql, c, opts, iumacSync));
   }
 
   let quota = 0;
   let picks = 0;
   if (opts.accounts ?? (!opts.only && !opts.collectors)) {
     try {
-      quota = await collectQuota(db);
+      quota = await collectQuota(sql);
     } catch (err) {
       log.error(`claude-quota: ${err instanceof Error ? err.message : String(err)}`);
     }
     try {
-      picks = await collectPicks(db, { full: opts.full });
+      picks = await collectPicks(sql, { full: opts.full });
     } catch (err) {
       log.error(`account-picks: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  let synced = 0;
-  try {
-    const { pushed, batches } = await sync(db);
-    synced = pushed;
-    if (pushed > 0) {
-      log.info(`sync: pushed ${pushed} records in ${batches} batch${batches === 1 ? "" : "es"}`);
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`sync: ${msg}`);
-  }
-
-  // After the Argo push: a slow or hung portal scrape must never starve the usage sync.
+  // Last: a slow or hung portal scrape must never starve the record collectors.
   let portal = 0;
   if (opts.portal ?? (!opts.only && !opts.collectors)) {
-    portal = await collectPortal(db, { fetch: opts.portalFetch });
+    try {
+      portal = await collectPortal(sql, { fetch: opts.portalFetch });
+    } catch (err) {
+      log.error(`iu-portal: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
-  const unpriced = unpricedByModel(db);
-  return { results, synced, unpriced, quota, picks, portal };
+  const unpriced = await unpricedByModel(sql);
+  return { results, unpriced, quota, picks, portal };
 }
 
 /**
@@ -116,12 +109,12 @@ export async function runIngest(db: Database, opts: IngestOptions = {}): Promise
  * summary, not the liveness signal: the heartbeat reads the log's mtime, which
  * the per-source lines above already move. Fixed shape, one token per source:
  *
- *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … quota=+1 picks=+3 portal=+0 sync=12 unpriced=0
+ *   run 2026-09-07T15:07:39.146Z status=ok claude-code=+12/40 hermes=+0/2413 … quota=+1 picks=+3 portal=+0 unpriced=0
  *
  * `+new/seen` mirrors the per-source lines above it; a skipped or errored
  * source shows its status instead of counts. `unpriced` is the total row count
  * across every model with `cost_source = 'none'` (whole table, not just this
- * run) — a nonzero value means some model id silently costs $0; `make sources`
+ * run) — a nonzero value means some model id has no price; `make sources`
  * has the per-model breakdown.
  */
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
@@ -130,7 +123,7 @@ export function formatRunSummary(summary: IngestSummary, now = new Date()): stri
     r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
   );
   const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0);
-  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} portal=+${summary.portal} sync=${summary.synced} unpriced=${unpricedTotal}`;
+  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} portal=+${summary.portal} unpriced=${unpricedTotal}`;
 }
 
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
@@ -138,8 +131,21 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   return () => (pending ??= fn());
 }
 
+/**
+ * Write the hook-log session_env lines that are new or changed into
+ * usage.session_env. Runs after a collector and BEFORE the writer, so the
+ * writer's billing / account lookups (read from the table) see the lines of the
+ * batch it is about to write.
+ */
+async function persistSessionEnv(sql: SQL): Promise<void> {
+  const changes = pendingSessionEnvs();
+  if (changes.length === 0) return;
+  await upsertSessionEnv(sql, changes);
+  markSessionEnvsPersisted(changes);
+}
+
 async function runOne(
-  db: Database,
+  sql: SQL,
   c: Collector,
   opts: IngestOptions,
   syncIumac: () => Promise<SyncResult>,
@@ -150,26 +156,24 @@ async function runOne(
 
   try {
     const result = await c.collect({
-      cursor: opts.full ? null : loadCursor(db, c.source),
+      cursor: opts.full ? null : await loadCursor(sql, c.source),
       full: opts.full ?? false,
       log,
       syncIumac,
     });
-    const { processed, newRows } = upsertRecords(db, c.source, result.records, {
+    await persistSessionEnv(sql);
+    const { processed, newRows } = await upsertRecords(sql, c.source, result.records, {
       defaultWorkspace: c.workspace ?? null,
     });
 
     const status = result.note && result.records.length === 0 ? "skipped" : "ok";
-    saveState(db, c.source, { result, status, processed });
+    await saveState(sql, c.source, { cursor: result.cursor, status, note: result.note });
     return { source: c.source, status, processed, newRows, note: result.note };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error(`${c.source}: ${msg}`);
-    saveState(db, c.source, {
-      result: { records: [], cursor: loadCursor(db, c.source), note: msg },
-      status: "error",
-      processed: 0,
-    });
+    // The stored cursor stays: the next run retries from the same watermark.
+    await saveState(sql, c.source, { status: "error", note: msg });
     return { source: c.source, status: "error", processed: 0, newRows: 0, note: msg };
   }
 }

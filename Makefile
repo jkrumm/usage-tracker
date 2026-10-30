@@ -1,4 +1,4 @@
-.PHONY: help install pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -31,21 +31,15 @@ backfill: ## Full re-scan of every source (ignores watermarks)
 ingest-iumac: ## Force-refresh the iumac mirror and run claude-code ingest only
 	bun run src/cli.ts ingest --source claude-code
 
-stats: ## Token + cost report (override: make stats BY=model SINCE=7)
+stats: ## Token + cost report (override: make stats BY=model SINCE=7; BY is source|model|billing|day|machine|lane|account|iu_key|repo)
 	bun run src/cli.ts stats $(if $(BY),--by $(BY)) $(if $(SINCE),--since $(SINCE))
 
-sync: ## Push unsynced rows to the Argo API
-	bun run src/cli.ts sync
-
-reprice: ## Re-cost stored rows against the current pricing table (DRYRUN=1, MODEL=<norm>)
+reprice: ## (moved to Postgres in the next step; exits 2)
 	bun run src/cli.ts reprice $(if $(MODEL),--model $(MODEL)) $(if $(DRYRUN),--dry-run)
-
-relane: ## Backfill claude-code sub_tool from transcript entrypoints (DRYRUN=1)
-	bun run src/cli.ts relane $(if $(DRYRUN),--dry-run)
 
 IU_PORTAL_DIR := .local/share/iu-portal/tool
 
-budget: ## IU cap per key (rolling 30 days): portal cost vs limit, drop-off, portal vs tracked (KEY=<id>, MODEL=<norm> explains one model per day)
+budget: ## (moved to Postgres in the next step; exits 2)
 	bun run src/cli.ts budget $(if $(KEY),--key $(KEY)) $(if $(MODEL),--explain $(MODEL))
 
 iu-portal: ## Fetch the IU portal cost report now (via iumac, ignores the 4 h throttle)
@@ -59,10 +53,13 @@ iu-portal-setup: ## Sync tools/iu-portal to iumac and install its dependencies
 iu-portal-login: ## Re-run the IU portal sign-in headed on the MacBook (approve the dialog there)
 	~/SourceRoot/dotfiles/scripts/ask-human.sh ask 'Sign in to the IU cost portal (Chrome opens on this Mac; finish Entra/Okta within 5 minutes)' --wait 330 --cmd 'cd ~/$(IU_PORTAL_DIR) && /opt/homebrew/bin/bun scrape.ts --login'
 
+quota: ## Claude account 5h/7d quota series + picker decisions (DAYS=7)
+	bun run src/cli.ts quota $(if $(DAYS),--days $(DAYS))
+
 sources: ## Per-collector status
 	bun run src/cli.ts sources
 
-billing-audit: ## Per-session claude-code billing check vs. the live session_env log
+billing-audit: ## Per-session claude-code billing check vs. the live hook log
 	bun run src/cli.ts billing-audit $(if $(SINCE),--since $(SINCE)) $(if $(SESSION),--session $(SESSION))
 
 typecheck: ## Type-check with tsc

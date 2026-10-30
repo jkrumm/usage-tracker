@@ -1,5 +1,10 @@
-// SQLite DDL. Applied idempotently on every open (db.ts), so adding a column
-// here means writing a guarded ALTER in db.ts's migrate step — not editing rows.
+import { Database } from "bun:sqlite";
+import type { PortalState } from "./collectors/iu-portal.ts";
+
+// TEMPORARY. `budget.ts` and `reprice.ts` still read the retired SQLite staging schema; the step that ports them to
+// Postgres deletes them together with this file. It holds the minimum they and their tests need: the table DDL they
+// query, a scratch-database opener (tests only: the pipeline no longer opens any SQLite file) and the portal-state
+// reader that used to live in collectors/iu-portal.ts. Nothing in the live pipeline imports it.
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS usage_record (
@@ -44,7 +49,6 @@ CREATE INDEX IF NOT EXISTS idx_usage_billing ON usage_record (billing);
 -- idx_usage_sub_tool is created in db.ts migrate() so it lands after the
 -- guarded ALTER on existing DBs (column doesn't exist on pre-migration tables).
 
--- One row per collector: its watermark and last-run bookkeeping.
 CREATE TABLE IF NOT EXISTS collector_state (
   source         TEXT PRIMARY KEY,
   cursor         TEXT,
@@ -52,48 +56,6 @@ CREATE TABLE IF NOT EXISTS collector_state (
   last_status    TEXT,             -- 'ok' | 'skipped' | 'error'
   last_note      TEXT,
   records_total  INTEGER NOT NULL DEFAULT 0
-);
-
--- claude-code session_env lines (base_url + USAGE_LANE per sessionId), persisted
--- because the hook's log files are pruned after 3 days while herdr sessions run
--- for longer. Filled from the logs by models.ts; the log entry wins on conflict.
-CREATE TABLE IF NOT EXISTS session_env (
-  session   TEXT PRIMARY KEY,
-  base_url  TEXT,
-  lane      TEXT,
-  account   TEXT,                 -- Claude Max account id from the hook; NULL on pre-account lines
-  seen_at   TEXT NOT NULL
-);
-
--- Claude Max account quota history, from "claude-account usage --json".
--- sampled_at = observation time (now - cache age), so an unchanged cached
--- sample re-read on the next run collapses into the same row.
-CREATE TABLE IF NOT EXISTS quota_sample (
-  account             TEXT    NOT NULL,
-  sampled_at          INTEGER NOT NULL,            -- epoch ms
-  machine             TEXT    NOT NULL,
-  five_hour_pct       INTEGER,
-  seven_day_pct       INTEGER,
-  five_hour_resets_at INTEGER,                     -- epoch s
-  seven_day_resets_at INTEGER,                     -- epoch s
-  auth_ok             INTEGER,
-  exhausted_until     INTEGER,                     -- epoch s
-  source              TEXT,
-  synced              INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (account, sampled_at, machine)
-);
-
--- The dotfiles account picker's decisions, from picks.jsonl.
-CREATE TABLE IF NOT EXISTS account_pick (
-  ts       INTEGER NOT NULL,                       -- epoch ms
-  lane     TEXT    NOT NULL,
-  picked   TEXT    NOT NULL,
-  reason   TEXT    NOT NULL,
-  stale    INTEGER NOT NULL DEFAULT 0,
-  snapshot TEXT,                                   -- JSON: per-account {s,w} at pick time
-  machine  TEXT    NOT NULL,
-  synced   INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (ts, lane, machine)
 );
 
 -- IU's own cost report (the self-service portal), scraped from the MacBook. The
@@ -121,3 +83,24 @@ CREATE TABLE IF NOT EXISTS iu_portal_total (
   PRIMARY KEY (iu_key, month)
 );
 `;
+
+/** A scratch SQLite database with the legacy tables. */
+export function openLegacyDb(path = ":memory:"): Database {
+  const db = new Database(path, { create: true });
+  db.exec(SCHEMA);
+  return db;
+}
+
+const EMPTY_STATE: PortalState = { lastOk: null, lastAttempt: null, lastCode: null, lastDay: null };
+
+/** The portal scrape state of one IU key from the legacy collector_state table. */
+export function readPortalState(db: Database, iuKey: string): PortalState {
+  const source = iuKey === "personal" ? "iu-portal" : `iu-portal:${iuKey}`;
+  const raw = db.query<{ cursor: string | null }, [string]>("SELECT cursor FROM collector_state WHERE source = ?").get(source)?.cursor;
+  if (!raw) return EMPTY_STATE;
+  try {
+    return { ...EMPTY_STATE, ...(JSON.parse(raw) as Partial<PortalState>) };
+  } catch {
+    return EMPTY_STATE;
+  }
+}

@@ -1,8 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { log } from "./log.ts";
 import { iumacLogsDir } from "./remote.ts";
 import type { Billing } from "./types.ts";
 
@@ -13,9 +11,9 @@ import type { Billing } from "./types.ts";
 // this one scan feeds both billing classification and sub_tool attribution.
 // Loaded lazily and cached for the life of the process (ingest is a
 // short-lived one-shot run). The log files are pruned after 3 days, but herdr
-// panes run for longer — so when ingest registers the DB as a store
-// (useSessionEnvStore), every line seen is persisted in `session_env` and the
-// cache is built from the table merged with the live logs.
+// panes run for longer — so ingest primes the cache with the stored
+// `usage.session_env` lines (useStoredSessionEnvs), merges the live logs on
+// top, and persists what changed (pendingSessionEnvs) before the writer runs.
 /** Claude Max account id. Unrelated to `billing`: account "iu" is a Max account, billing "iu" is IU-paid API spend. */
 export type Account = string;
 
@@ -43,18 +41,49 @@ interface SessionEnv {
   account: Account | null;
 }
 let sessionEnvs: Map<string, SessionEnv> | null = null;
-let sessionEnvStore: Database | null = null;
+/** The lines already in usage.session_env: the baseline the logs are merged onto. */
+let storedEnvs = new Map<string, SessionEnv>();
+/** Sessions whose merged line differs from the stored one: what ingest still has to write. */
+let changedSessions = new Set<string>();
 
 /**
- * Register the DB that persists session_env lines across log pruning. Drops the
- * cache so the next lookup loads (and persists) against this store — still
- * lazy, which matters: the claude-code collector rsyncs the iumac mirror logs
- * at the top of collect(), and the load has to happen after that. With no store
- * registered the logs are the only source, exactly as before.
+ * Prime the lookups with the stored session_env lines. Drops the cache so the
+ * next lookup merges the logs onto them — still lazy, which matters: the
+ * claude-code collector rsyncs the iumac mirror logs at the top of collect(),
+ * and the log scan has to happen after that. Without a call the logs are the
+ * only source.
  */
-export function useSessionEnvStore(db: Database | null): void {
-  sessionEnvStore = db;
+export function useStoredSessionEnvs(
+  rows: Iterable<{ session: string; base_url: string | null; lane: string | null; account: string | null }>,
+): void {
+  storedEnvs = new Map();
+  for (const r of rows) storedEnvs.set(r.session, { base_url: r.base_url, lane: r.lane, account: parseAccount(r.account) });
   sessionEnvs = null;
+  changedSessions = new Set();
+}
+
+/** A session_env line that is new or changed against the stored table (the log entry is the latest SessionStart). */
+export interface SessionEnvChange {
+  session: string;
+  base_url: string | null;
+  lane: string | null;
+  account: Account | null;
+}
+
+/** Lines the logs added or changed since the stored baseline; loads the logs if no lookup did yet. */
+export function pendingSessionEnvs(): SessionEnvChange[] {
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
+  const out: SessionEnvChange[] = [];
+  for (const session of changedSessions) {
+    const env = sessionEnvs.get(session);
+    if (env) out.push({ session, ...env });
+  }
+  return out;
+}
+
+/** Call after the pending lines are written to usage.session_env; they are then the stored baseline. */
+export function markSessionEnvsPersisted(changes: Iterable<{ session: string }>): void {
+  for (const c of changes) changedSessions.delete(c.session);
 }
 
 /**
@@ -74,7 +103,8 @@ function localSessionLogDir(): string {
  */
 export function resetSessionBaseUrlsCacheForTest(): void {
   sessionEnvs = null;
-  sessionEnvStore = null;
+  storedEnvs = new Map();
+  changedSessions = new Set();
 }
 
 // iumac sessions never wrote into this machine's log dir, so a MacBook
@@ -93,54 +123,20 @@ function sessionLogDirs(): string[] {
 
 function loadSessionEnvs(): Map<string, SessionEnv> {
   const logged = loadLoggedSessionEnvs();
-  if (!sessionEnvStore) return logged;
-  const db = sessionEnvStore;
-
-  const map = new Map<string, SessionEnv>();
-  try {
-    for (const row of db
-      .query<{ session: string; base_url: string | null; lane: string | null; account: string | null }, []>(
-        "SELECT session, base_url, lane, account FROM session_env",
-      )
-      .all()) {
-      map.set(row.session, {
-        base_url: row.base_url,
-        lane: row.lane,
-        account: parseAccount(row.account),
-      });
-    }
+  const map = new Map(storedEnvs);
+  changedSessions = new Set();
+  for (const [session, env] of logged) {
     // A log entry wins over the stored row for the same session: the latest
-    // SessionStart is the truth (a resume can change base_url or lane).
-    const upsert = db.prepare(
-      `INSERT INTO session_env (session, base_url, lane, account, seen_at)
-       VALUES ($session, $base_url, $lane, $account, $seen_at)
-       ON CONFLICT (session) DO UPDATE SET
-         base_url=excluded.base_url, lane=excluded.lane,
-         account=coalesce(excluded.account, session_env.account), seen_at=excluded.seen_at`,
-    );
-    // A later line without `account` (a hook that predates the field) must not
-    // erase a stored one: carry the stored account forward into the merge.
-    for (const [session, env] of logged) {
-      env.account ??= map.get(session)?.account ?? null;
+    // SessionStart is the truth (a resume can change base_url or lane). A line
+    // without `account` (a hook that predates the field) must not erase a
+    // stored one: carry it forward.
+    const stored = storedEnvs.get(session);
+    env.account ??= stored?.account ?? null;
+    map.set(session, env);
+    if (!stored || stored.base_url !== env.base_url || stored.lane !== env.lane || stored.account !== env.account) {
+      changedSessions.add(session);
     }
-    const seenAt = new Date().toISOString();
-    db.transaction(() => {
-      for (const [session, env] of logged) {
-        upsert.run({
-          $session: session,
-          $base_url: env.base_url,
-          $lane: env.lane,
-          $account: env.account,
-          $seen_at: seenAt,
-        });
-      }
-    })();
-  } catch (err) {
-    // never fail classification on a store error, but make it visible: a
-    // silent failure here regresses every long-lived session to log-only data
-    log.warn(`session_env store unavailable, using logs only: ${err instanceof Error ? err.message : String(err)}`);
   }
-  for (const [session, env] of logged) map.set(session, env);
   return map;
 }
 
@@ -464,7 +460,7 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * Claude id defaults to "max" — precision isn't critical here, only not being
  * obviously wrong.
  *
- * `lookupBaseUrl` replaces the SQLite/log-backed session_env lookup; the Postgres
+ * `lookupBaseUrl` replaces the log-backed session_env lookup; the Postgres
  * writer (src/pg/writer.ts) passes one over `usage.session_env`.
  *
  * The id check runs first and wins outright: Max can never serve a

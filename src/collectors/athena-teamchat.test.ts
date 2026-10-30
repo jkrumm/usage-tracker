@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb, upsertRecords } from "../db.ts";
+import { migratedDb } from "../pg/fixture.ts";
+import { describePg } from "../pg/testing.ts";
+import { upsertRecords } from "../pg/writer.ts";
 import type { Logger } from "../types.ts";
 import { athenaTeamchatCollector, toRecord, type AthenaRow } from "./athena-teamchat.ts";
 
@@ -110,25 +112,20 @@ describe("athena-teamchat collector", () => {
     }
   });
 
-  describe("into the table", () => {
-    let dir: string;
-    beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), "usage-tracker-athena-"));
-    });
-    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  describePg("into the table (Postgres)", () => {
+    const pg = migratedDb();
 
-    test("rows are billing=iu on the team key with their own cost, and a re-read changes nothing", () => {
-      const db = openDb(join(dir, "usage.db"));
+    test("rows are billing=api_key on the team key with their own cost, and a re-read changes nothing", async () => {
+      const db = await pg.reset();
       const records = [row(), row({ kind: "llm", id: 7, tool: "llm:readiness", cache_read: 0, cost: 0.0004 })].map(toRecord);
-      expect(upsertRecords(db, "athena-teamchat", records, { defaultWorkspace: "work" }).newRows).toBe(2);
-      expect(upsertRecords(db, "athena-teamchat", records, { defaultWorkspace: "work" }).newRows).toBe(0);
-      expect(
-        db.query("SELECT billing, iu_key, cost_source, round(cost_usd, 4) AS cost FROM usage_record ORDER BY source_id").all(),
-      ).toEqual([
-        { billing: "iu", iu_key: "athena-team", cost_source: "reported", cost: 0.0004 },
-        { billing: "iu", iu_key: "athena-team", cost_source: "reported", cost: 0.0123 },
+      expect((await upsertRecords(db, "athena-teamchat", records, { defaultWorkspace: "work" })).newRows).toBe(2);
+      expect((await upsertRecords(db, "athena-teamchat", records, { defaultWorkspace: "work" })).newRows).toBe(0);
+      expect([
+        ...(await db`SELECT billing, api_key, cost_source, round(cost_usd, 4)::float8 AS cost FROM usage.records ORDER BY source_id`),
+      ]).toEqual([
+        { billing: "api_key", api_key: "athena-team", cost_source: "reported", cost: 0.0004 },
+        { billing: "api_key", api_key: "athena-team", cost_source: "reported", cost: 0.0123 },
       ]);
-      db.close();
     });
   });
 });

@@ -1,11 +1,13 @@
-import type { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { SQL } from "bun";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb } from "../db.ts";
 import { iuKeyDef } from "../iu-keys.ts";
 import { runIngest } from "../ingest.ts";
+import { migratedDb } from "../pg/fixture.ts";
+import { describePg } from "../pg/testing.ts";
+import { upsertRecords } from "../pg/writer.ts";
 import { staleSources } from "../report.ts";
 import { collectPortal, iuPortalFreshness, iuPortalFreshnessAll, readPortalState, type PortalFetch } from "./iu-portal.ts";
 
@@ -32,45 +34,58 @@ const monthly = {
 };
 const ok = (...docs: object[]): PortalFetch => ({ code: 0, stdout: docs.map((d) => JSON.stringify(d)).join("\n"), stderr: "" });
 
+const pg = migratedDb();
 let dir: string;
-let db: Database;
+let db: SQL;
 let prevRoot: string | undefined;
 const latestFile = () => join(dir, "iu-portal", "latest.json");
 
-beforeEach(() => {
+beforeEach(async () => {
+  db = await pg.reset();
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-portal-"));
   prevRoot = process.env.IU_PORTAL_ROOT;
   process.env.IU_PORTAL_ROOT = join(dir, "iu-portal");
-  db = openDb(join(dir, "usage.db"));
-  db.run(
-    `INSERT INTO usage_record (source, source_id, grain, ts, model, model_norm, billing, cost_usd, ingested_at)
-     VALUES ('s', '1', 'message', '2026-10-26T01:00:00Z', 'claude-haiku-5-5-eu', 'claude-haiku-5-5', 'iu', 1, 'x')`,
-  );
+  // one IU-billed record: the portal labels are matched against the models we track
+  await upsertRecords(db, "opencode", [
+    {
+      sourceId: "1",
+      grain: "message",
+      ts: "2026-10-26T01:00:00Z",
+      model: "claude-haiku-5-5-eu",
+      project: null,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+    },
+  ]);
 });
 afterEach(() => {
   if (prevRoot === undefined) delete process.env.IU_PORTAL_ROOT;
   else process.env.IU_PORTAL_ROOT = prevRoot;
-  db.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
-const cost = () =>
-  db.query("SELECT day, label, row, model, cost_usd FROM iu_portal_cost ORDER BY day, row").all();
+const cost = async () =>
+  (await db`SELECT day::text AS day, label, "row", model, cost_usd::float8 AS cost_usd FROM usage.iu_portal_cost ORDER BY day, "row"`).map(
+    (r: Record<string, unknown>) => ({ ...r }),
+  );
 
-describe("collectPortal", () => {
+describePg("collectPortal (Postgres)", () => {
   test("stores non-zero cells, maps labels onto model_norm, keeps unmatched ones NULL", async () => {
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok(daily, monthly) })).toBe(3);
-    expect(cost()).toEqual([
+    expect(await cost()).toEqual([
       { day: "2026-10-25", label: "Claude Haiku 5 5 Eu", row: 1, model: "claude-haiku-5-5", cost_usd: 3 },
       { day: "2026-10-26", label: "Claude Haiku 5 5 Eu", row: 1, model: "claude-haiku-5-5", cost_usd: 2 },
       { day: "2026-10-26", label: "Mystery Model", row: 2, model: null, cost_usd: 2 },
     ]);
     // the first monthly period is a partial window and is dropped
-    expect(db.query("SELECT month, total_usd FROM iu_portal_total ORDER BY month").all()).toEqual([
+    expect([...(await db`SELECT month, total_usd::float8 AS total_usd FROM usage.iu_portal_total ORDER BY month`)]).toEqual([
       { month: "2026-09", total_usd: 100 },
       { month: "2026-10", total_usd: 5 },
     ]);
-    expect(readPortalState(db)).toMatchObject({ lastOk: NOW, lastCode: 0, lastDay: "2026-10-26" });
+    expect(await readPortalState(db)).toMatchObject({ lastOk: NOW, lastCode: 0, lastDay: "2026-10-26" });
   });
 
   test("writes the schema-1 latest.json on success (dir created) and leaves it on failure", async () => {
@@ -103,7 +118,7 @@ describe("collectPortal", () => {
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok(daily) });
     const next = { ...daily, rows: [{ ...daily.rows[0]!, cells: { "2026-10-25": 3, "2026-10-26": 4 } }] };
     await collectPortal(db, { keys: PERSONAL, now: NOW + 5 * H, fetch: async () => ok(next) });
-    expect(cost().map((r) => (r as { cost_usd: number }).cost_usd)).toEqual([3, 4]);
+    expect((await cost()).map((r: Record<string, unknown>) => r.cost_usd)).toEqual([3, 4]);
   });
 
   test("throttled to one fetch per 4 h", async () => {
@@ -122,8 +137,8 @@ describe("collectPortal", () => {
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW + 5 * H, fetch: down })).toBe(0);
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW + 5 * H + 900_000, fetch: down })).toBe(0);
     expect(calls).toBe(2);
-    expect(cost()).toHaveLength(3);
-    expect(readPortalState(db).lastOk).toBe(NOW);
+    expect(await cost()).toHaveLength(3);
+    expect((await readPortalState(db)).lastOk).toBe(NOW);
   });
 
   test("an expired session backs off for 4 h instead of retrying every run", async () => {
@@ -134,7 +149,7 @@ describe("collectPortal", () => {
     expect(calls).toBe(1);
     await collectPortal(db, { keys: PERSONAL, now: NOW + 4 * H, fetch: expired });
     expect(calls).toBe(2);
-    expect(db.query("SELECT last_status, last_note FROM collector_state WHERE source = 'iu-portal'").get()).toEqual({
+    expect((await db`SELECT last_status, last_note FROM usage.collector_state WHERE source = 'iu-portal'`)[0]).toEqual({
       last_status: "error",
       last_note: "session expired — run make iu-portal-login",
     });
@@ -152,11 +167,11 @@ describe("collectPortal", () => {
 
   test("garbage output is a failure, not an exception, and writes nothing", async () => {
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok({ granularity: "daily" }) })).toBe(0);
-    expect(cost()).toEqual([]);
+    expect(await cost()).toEqual([]);
   });
 });
 
-describe("collectPortal per IU key", () => {
+describePg("collectPortal per IU key (Postgres)", () => {
   const seenKeys: string[] = [];
   const fetchBy = (docs: Record<string, object>, code = 0) => async (def: { id: string }): Promise<PortalFetch> => {
     seenKeys.push(def.id);
@@ -171,14 +186,14 @@ describe("collectPortal per IU key", () => {
     const n = await collectPortal(db, { now: NOW, fetch: fetchBy({ personal: daily, "athena-team": teamDaily }) });
     expect(n).toBe(4);
     expect(seenKeys).toEqual(["personal", "athena-team"]);
-    expect(
-      db.query("SELECT iu_key, sum(cost_usd) AS usd FROM iu_portal_cost GROUP BY iu_key ORDER BY iu_key").all(),
-    ).toEqual([
+    expect([
+      ...(await db`SELECT iu_key, sum(cost_usd)::float8 AS usd FROM usage.iu_portal_cost GROUP BY iu_key ORDER BY iu_key`),
+    ]).toEqual([
       { iu_key: "athena-team", usd: 40 },
       { iu_key: "personal", usd: 7 },
     ]);
-    expect(readPortalState(db, "athena-team").lastOk).toBe(NOW);
-    expect(readPortalState(db, "personal").lastOk).toBe(NOW);
+    expect((await readPortalState(db, "athena-team")).lastOk).toBe(NOW);
+    expect((await readPortalState(db, "personal")).lastOk).toBe(NOW);
   });
 
   test("only the personal report becomes latest.json", async () => {
@@ -190,7 +205,7 @@ describe("collectPortal per IU key", () => {
   test("a team-key refetch replaces only the team key's days", async () => {
     await collectPortal(db, { now: NOW, fetch: fetchBy({ personal: daily, "athena-team": teamDaily }) });
     await collectPortal(db, { now: NOW + 5 * H, fetch: fetchBy({ personal: daily, "athena-team": { ...teamDaily, rows: [] } }) });
-    expect(db.query("SELECT iu_key, count(*) AS n FROM iu_portal_cost GROUP BY iu_key").all()).toEqual([
+    expect([...(await db`SELECT iu_key, count(*)::int AS n FROM usage.iu_portal_cost GROUP BY iu_key`)]).toEqual([
       { iu_key: "personal", n: 3 },
     ]);
   });
@@ -204,34 +219,36 @@ describe("collectPortal per IU key", () => {
     const fetch = async (def: { id: string }): Promise<PortalFetch> =>
       def.id === "personal" ? ok(daily) : { code: 1, stdout: "", stderr: "key unresolvable" };
     expect(await collectPortal(db, { now: NOW, fetch })).toBe(3);
-    expect(readPortalState(db, "personal").lastCode).toBe(0);
-    expect(readPortalState(db, "athena-team")).toMatchObject({ lastOk: null, lastCode: 1 });
+    expect((await readPortalState(db, "personal")).lastCode).toBe(0);
+    expect(await readPortalState(db, "athena-team")).toMatchObject({ lastOk: null, lastCode: 1 });
   });
 });
 
-describe("iuPortalFreshnessAll", () => {
+describePg("iuPortalFreshnessAll (Postgres)", () => {
   test("a secondary key that was never tried is not stale; one that keeps failing is", async () => {
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok(daily) });
-    expect(staleSources(db, iuPortalFreshnessAll, new Date(NOW + H))).toEqual([]);
+    expect(await staleSources(db, iuPortalFreshnessAll, new Date(NOW + H))).toEqual([]);
     await collectPortal(db, { now: NOW, fetch: async (def) => (def.id === "personal" ? ok(daily) : { code: 1, stdout: "", stderr: "x" }) });
-    expect(staleSources(db, iuPortalFreshnessAll, new Date(NOW + H)).map((s) => s.source)).toEqual(["iu-portal:athena-team"]);
+    expect((await staleSources(db, iuPortalFreshnessAll, new Date(NOW + H))).map((s) => s.source)).toEqual(["iu-portal:athena-team"]);
   });
 });
 
-describe("iuPortalFreshness", () => {
+describePg("iuPortalFreshness (Postgres)", () => {
   test("health flags a portal that has not succeeded for 48 h, and one that never did", async () => {
     const at = new Date(NOW + 60 * H);
-    expect(staleSources(db, [iuPortalFreshness], at).map((s) => s.source)).toEqual(["iu-portal"]);
+    expect((await staleSources(db, [iuPortalFreshness], at)).map((s) => s.source)).toEqual(["iu-portal"]);
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok(daily) });
-    expect(staleSources(db, [iuPortalFreshness], new Date(NOW + 47 * H))).toEqual([]);
-    expect(staleSources(db, [iuPortalFreshness], at).map((s) => s.source)).toEqual(["iu-portal"]);
+    expect(await staleSources(db, [iuPortalFreshness], new Date(NOW + 47 * H))).toEqual([]);
+    expect((await staleSources(db, [iuPortalFreshness], at)).map((s) => s.source)).toEqual(["iu-portal"]);
   });
 });
 
+describePg("ingest (Postgres)", () => {
 test("a failing portal fetch never fails the ingest run", async () => {
   const down = async () => ({ code: 255, stdout: "", stderr: "" });
   const summary = await runIngest(db, { collectors: [], accounts: false, portal: true, portalFetch: down });
   expect(summary.portal).toBe(0);
   const live = await runIngest(db, { collectors: [], accounts: false, portal: true, portalFetch: async () => ok(daily) });
   expect(live.portal).toBe(6); // 3 cells for each of the two IU keys
+});
 });

@@ -1,9 +1,10 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDb } from "../db.ts";
+import { migratedDb } from "../pg/fixture.ts";
+import { describePg } from "../pg/testing.ts";
 import { collectQuota, formatQuotaReport, parseAccountUsage } from "./claude-quota.ts";
 
 process.env.USAGE_MACHINE = "Test Machine (Override)";
@@ -16,7 +17,8 @@ const acct = (over: Record<string, unknown>) => ({
 });
 
 let dir: string;
-let db: Database;
+const pg = migratedDb();
+let db: SQL;
 let savedBin: string | undefined;
 
 /** Fake claude-account: prints `body` and exits with `code`. */
@@ -28,34 +30,46 @@ function fakeCli(body: unknown, code = 0): void {
   process.env.USAGE_CLAUDE_ACCOUNT_BIN = bin;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   savedBin = process.env.USAGE_CLAUDE_ACCOUNT_BIN;
   dir = mkdtempSync(join(tmpdir(), "usage-tracker-quota-"));
-  db = openDb(join(dir, "usage.db"));
+  db = await pg.reset();
 });
 
 afterEach(() => {
-  db.close();
   if (savedBin === undefined) delete process.env.USAGE_CLAUDE_ACCOUNT_BIN;
   else process.env.USAGE_CLAUDE_ACCOUNT_BIN = savedBin;
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("collectQuota", () => {
+describePg("collectQuota (Postgres)", () => {
   test("dedupes an unchanged cached sample; sampled_at = now - min age", async () => {
     fakeCli({ accounts: [acct({})] });
     expect(await collectQuota(db, 1_000_000)).toBe(1);
     // same cache, ages grown by the elapsed 60 s -> same observation time
     fakeCli({ accounts: [acct({ five_hour_age_s: 139, seven_day_age_s: 150 })] });
     expect(await collectQuota(db, 1_060_000)).toBe(0);
-    const row = db.query<{ sampled_at: number; n: number }, []>("SELECT sampled_at, count(*) n FROM quota_sample").get()!;
+    const [row] = await db`SELECT (extract(epoch FROM sampled_at) * 1000)::float8 AS sampled_at, count(*) OVER ()::int AS n FROM usage.quota_samples`;
     expect(row).toEqual({ sampled_at: 1_000_000 - 79_000, n: 1 });
   });
 
   test("skips disabled accounts and accounts with both windows null", async () => {
     fakeCli({ accounts: [acct({ id: "a1", enabled: false }), acct({ id: "a2", five_hour: null, seven_day: null }), acct({ id: "me", seven_day: null })] });
     expect(await collectQuota(db, 5_000_000)).toBe(1);
-    expect(db.query("SELECT account FROM quota_sample").all()).toEqual([{ account: "me" }]);
+    expect([...(await db`SELECT account FROM usage.quota_samples`)]).toEqual([{ account: "me" }]);
+  });
+
+  test("stores the windows, resets, auth and source; out-of-range values are clamped, bad epochs NULL", async () => {
+    fakeCli({ accounts: [acct({ id: "me", five_hour: 104, seven_day: 0, exhausted_until: 1792867900, auth_ok: false, seven_day_resets_at: 1e18 })] });
+    expect(await collectQuota(db, 1_000_000)).toBe(1);
+    const [row] = await db`
+      SELECT five_hour_pct, seven_day_pct, extract(epoch FROM five_hour_resets_at)::int AS five_reset, seven_day_resets_at,
+             auth_ok, extract(epoch FROM exhausted_until)::int AS exhausted, source, machine
+      FROM usage.quota_samples`;
+    expect(row).toEqual({
+      five_hour_pct: 100, seven_day_pct: 0, five_reset: 1792867800, seven_day_resets_at: null,
+      auth_ok: false, exhausted: 1792867900, source: "statusline", machine: "Test Machine (Override)",
+    });
   });
 
   test("a missing CLI is a silent skip", async () => {
@@ -71,7 +85,7 @@ describe("collectQuota", () => {
   test("a malformed entry is skipped, the others are kept", async () => {
     fakeCli({ accounts: [acct({ id: "iu", five_hour: "lots" }), null, acct({ id: "me" }), acct({ id: "x", five_hour_age_s: -5 })] });
     expect(await collectQuota(db, 5_000_000)).toBe(1);
-    expect(db.query("SELECT account FROM quota_sample").all()).toEqual([{ account: "me" }]);
+    expect([...(await db`SELECT account FROM usage.quota_samples`)]).toEqual([{ account: "me" }]);
   });
 
   test("non-JSON output stores nothing", async () => {
@@ -90,15 +104,13 @@ describe("parseAccountUsage", () => {
   });
 });
 
-describe("formatQuotaReport", () => {
+describePg("formatQuotaReport (Postgres)", () => {
   test("summarises series and picks", async () => {
     fakeCli({ accounts: [acct({})] });
     await collectQuota(db);
-    db.exec(
-      `INSERT INTO account_pick (ts, lane, picked, reason, stale, snapshot, machine)
-       VALUES (${Date.now()}, 'wave', 'me', 'home', 0, '{}', 'm')`,
-    );
-    const out = formatQuotaReport(db);
+    await db`INSERT INTO usage.account_picks (ts, lane, picked, reason, stale, snapshot, machine)
+             VALUES (now(), 'wave', 'me', 'home', false, '{}', 'm')`;
+    const out = await formatQuotaReport(db);
     expect(out).toContain("5h min/max/last=10/10/10%");
     expect(out).toMatch(/wave\s+me\s+home\s+1/);
   });

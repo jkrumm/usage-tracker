@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { SCHEMA } from "./schema.ts";
+import { SCHEMA } from "./legacy-sqlite.ts";
 import { reprice } from "./reprice.ts";
 
 function seed(costUsd: number | null, costSource: string, model = "gpt-5.6-luna"): Database {

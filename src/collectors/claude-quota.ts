@@ -1,13 +1,13 @@
-import type { Database } from "bun:sqlite";
+import type { SQL } from "bun";
 import { homedir } from "node:os";
 import { currentMachine } from "../machine.ts";
 import { log } from "../log.ts";
 
 // `claude-account usage --json` (dotfiles picker, cache-only, ~100 ms) reports
-// the 5h/weekly quota of every Claude Max account. Not a usage_record source:
-// it is a time series per account, stored in quota_sample and synced to Argo
-// separately. The binary only exists on the mini (and the MacBook mirror), so
-// a missing binary is a silent skip.
+// the 5h/weekly quota of every Claude Max account. Not a records source:
+// it is a time series per account, stored in usage.quota_samples. The binary
+// only exists on the mini (and the MacBook mirror), so a missing binary is a
+// silent skip.
 
 const TIMEOUT_MS = 5_000;
 const SCRUBBED_ENV = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"];
@@ -103,82 +103,88 @@ async function readUsage(): Promise<AccountUsage[] | null> {
   }
 }
 
+const clampPct = (v: number | null): number | null => (v == null ? null : Math.min(100, Math.max(0, Math.round(v))));
+
+/** ISO timestamp of an epoch, or null when it is not a representable date. */
+function iso(epoch: number | null, unit: "s" | "ms"): string | null {
+  if (epoch == null) return null;
+  const d = new Date(unit === "s" ? epoch * 1000 : epoch);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 /**
  * Store one quota sample per enabled account that knows at least one window.
  * Returns the number of new rows. sampled_at = now - min(window ages), so a
- * cached reading that did not change since the last run dedupes (INSERT OR IGNORE).
+ * cached reading that did not change since the last run dedupes (ON CONFLICT DO NOTHING).
+ * Percentages are clamped to the column's 0-100 range; an unrepresentable epoch is stored as NULL.
  */
-export async function collectQuota(db: Database, now = Date.now()): Promise<number> {
+export async function collectQuota(sql: SQL, now = Date.now()): Promise<number> {
   const accounts = await readUsage();
   if (!accounts) return 0;
 
   const machine = currentMachine();
-  const stmt = db.prepare(
-    `INSERT OR IGNORE INTO quota_sample
-       (account, sampled_at, machine, five_hour_pct, seven_day_pct, five_hour_resets_at,
-        seven_day_resets_at, auth_ok, exhausted_until, source)
-     VALUES ($account, $sampled_at, $machine, $five, $seven, $five_reset, $seven_reset, $auth_ok, $exhausted, $source)`,
-  );
-  let added = 0;
-  db.transaction(() => {
-    for (const a of accounts) {
-      if (!a.enabled) continue;
-      if (a.five_hour == null && a.seven_day == null) continue;
-      const ages = [a.five_hour_age_s, a.seven_day_age_s].filter((x): x is number => typeof x === "number");
-      const age = ages.length > 0 ? Math.min(...ages) : 0;
-      added += stmt.run({
-        $account: a.id,
-        $sampled_at: now - Math.round(age * 1000),
-        $machine: machine,
-        $five: a.five_hour,
-        $seven: a.seven_day,
-        $five_reset: a.five_hour_resets_at,
-        $seven_reset: a.seven_day_resets_at,
-        $auth_ok: a.auth_ok == null ? null : a.auth_ok ? 1 : 0,
-        $exhausted: a.exhausted_until,
-        $source: a.source,
-      }).changes;
-    }
-  })();
-  return added;
+  const rows: Array<Record<string, unknown>> = [];
+  for (const a of accounts) {
+    if (!a.enabled) continue;
+    if (a.five_hour == null && a.seven_day == null) continue;
+    const ages = [a.five_hour_age_s, a.seven_day_age_s].filter((x): x is number => typeof x === "number");
+    const age = ages.length > 0 ? Math.min(...ages) : 0;
+    const sampledAt = iso(now - Math.round(age * 1000), "ms");
+    if (!sampledAt) continue;
+    rows.push({
+      account: a.id,
+      sampled_at: sampledAt,
+      machine,
+      five_hour_pct: clampPct(a.five_hour),
+      seven_day_pct: clampPct(a.seven_day),
+      five_hour_resets_at: iso(a.five_hour_resets_at, "s"),
+      seven_day_resets_at: iso(a.seven_day_resets_at, "s"),
+      auth_ok: a.auth_ok,
+      exhausted_until: iso(a.exhausted_until, "s"),
+      source: a.source,
+    });
+  }
+  if (rows.length === 0) return 0;
+  const inserted = await sql`
+    INSERT INTO usage.quota_samples
+      (account, sampled_at, machine, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at, auth_ok,
+       exhausted_until, source)
+    SELECT account, sampled_at, machine, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at, auth_ok,
+           exhausted_until, source
+    FROM jsonb_to_recordset(${JSON.stringify(rows)}::text::jsonb) AS j(
+      account text, sampled_at timestamptz, machine text, five_hour_pct integer, seven_day_pct integer,
+      five_hour_resets_at timestamptz, seven_day_resets_at timestamptz, auth_ok boolean, exhausted_until timestamptz,
+      source text)
+    ORDER BY account, sampled_at
+    ON CONFLICT (account, sampled_at, machine) DO NOTHING
+    RETURNING 1`;
+  return inserted.length;
 }
 
 /** Per-account 5h/7d series summary plus pick counts, for the last `days` days. */
-export function formatQuotaReport(db: Database, days = 7, now = Date.now()): string {
-  const since = now - days * 86_400_000;
+export async function formatQuotaReport(sql: SQL, days = 7, now = Date.now()): Promise<string> {
+  const since = new Date(now - days * 86_400_000).toISOString();
   const lines: string[] = [`quota — last ${days}d`];
 
-  const series = db
-    .query<
-      { account: string; n: number; f_min: number | null; f_max: number | null; s_min: number | null; s_max: number | null },
-      [number]
-    >(
-      `SELECT account, count(*) n, min(five_hour_pct) f_min, max(five_hour_pct) f_max,
-              min(seven_day_pct) s_min, max(seven_day_pct) s_max
-       FROM quota_sample WHERE sampled_at >= ? GROUP BY account ORDER BY account`,
-    )
-    .all(since);
-  const last = db.query<{ five_hour_pct: number | null; seven_day_pct: number | null }, [string, number]>(
-    `SELECT five_hour_pct, seven_day_pct FROM quota_sample WHERE account = ? AND sampled_at >= ?
-     ORDER BY sampled_at DESC LIMIT 1`,
-  );
+  const series = await sql`
+    SELECT account, count(*)::int n, min(five_hour_pct) f_min, max(five_hour_pct) f_max,
+           min(seven_day_pct) s_min, max(seven_day_pct) s_max,
+           (array_agg(five_hour_pct ORDER BY sampled_at DESC))[1] f_last,
+           (array_agg(seven_day_pct ORDER BY sampled_at DESC))[1] s_last
+    FROM usage.quota_samples WHERE sampled_at >= ${since}::timestamptz GROUP BY account ORDER BY account`;
   const fmt = (v: number | null) => (v == null ? "-" : String(v));
   if (series.length === 0) lines.push("no quota samples");
   for (const a of series) {
-    const l = last.get(a.account, since);
     lines.push(
-      `${a.account.padEnd(6)} samples=${a.n}  5h min/max/last=${fmt(a.f_min)}/${fmt(a.f_max)}/${fmt(l?.five_hour_pct ?? null)}%  7d min/max/last=${fmt(a.s_min)}/${fmt(a.s_max)}/${fmt(l?.seven_day_pct ?? null)}%`,
+      `${String(a.account).padEnd(6)} samples=${a.n}  5h min/max/last=${fmt(a.f_min)}/${fmt(a.f_max)}/${fmt(a.f_last)}%  7d min/max/last=${fmt(a.s_min)}/${fmt(a.s_max)}/${fmt(a.s_last)}%`,
     );
   }
 
-  const picks = db
-    .query<{ lane: string; picked: string; reason: string; n: number }, [number]>(
-      `SELECT lane, picked, reason, count(*) n FROM account_pick WHERE ts >= ?
-       GROUP BY lane, picked, reason ORDER BY lane, picked, n DESC`,
-    )
-    .all(since);
+  const picks = await sql`
+    SELECT lane, picked, reason, count(*)::int n FROM usage.account_picks WHERE ts >= ${since}::timestamptz
+    GROUP BY lane, picked, reason ORDER BY lane, picked, n DESC`;
   lines.push("", "picks (lane × picked × reason)");
   if (picks.length === 0) lines.push("no picks");
-  for (const p of picks) lines.push(`${p.lane.padEnd(18)} ${p.picked.padEnd(6)} ${p.reason.padEnd(14)} ${p.n}`);
+  for (const p of picks) lines.push(`${String(p.lane).padEnd(18)} ${String(p.picked).padEnd(6)} ${String(p.reason).padEnd(14)} ${p.n}`);
   return lines.join("\n");
 }

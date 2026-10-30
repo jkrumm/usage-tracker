@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { addDays, WINDOW_DAYS } from "../tools/iu-portal/latest.ts";
-import { readPortalState } from "./collectors/iu-portal.ts";
+import { readPortalState } from "./legacy-sqlite.ts";
 import { DEFAULT_IU_KEY, iuKeyDef, type IuKey } from "./iu-keys.ts";
 
 // The IU employee cap is a ROLLING 30-day window (today plus the 29 days before),

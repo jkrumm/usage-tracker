@@ -1,7 +1,7 @@
 {
   "name": "usage-tracker",
   "version": "0.1.0",
-  "description": "Local SQLite token/cost telemetry across Claude Code, Hermes, Feuer and agent-gateway",
+  "description": "Token/cost telemetry across every AI tool, ingested into the Postgres usage schema",
   "private": true,
   "type": "module",
   "module": "src/cli.ts",
@@ -13,7 +13,6 @@
     "stats": "bun run src/cli.ts stats",
     "sources": "bun run src/cli.ts sources",
     "billing-audit": "bun run src/cli.ts billing-audit",
-    "sync": "bun run src/cli.ts sync",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
