@@ -2,8 +2,9 @@
 
 Target of the usage pipeline (software-factory decisions SF8, U1-U5): schema `usage` in the `shared` database on the
 mini, owned by the role `usage`. Wave 1 created the schema and the price machinery. Wave 2 step 1 added the write path
-(`src/pg/writer.ts`, `src/pg/session-env.ts`, [Write path](#write-path)); **nothing calls it yet**: `ingest`, `sync` and the
-collectors still feed SQLite and Argo until the next step switches them.
+(`src/pg/writer.ts`, `src/pg/session-env.ts`, [Write path](#write-path)); step 2 switched `ingest` and the collectors to
+it: cursors and run state live in `collector_state`, the hook-log lines in `session_env`, the quota series, picker
+decisions and IU portal report in their tables. The SQLite staging file and the Argo push are gone.
 
 - **Migrations** live in `migrations/pg/NNNN_name.sql` (plain SQL, forward-only, objects schema-qualified). `make pg-migrate`
   (`bun run src/cli.ts pg-migrate`) applies pending files one transaction each under `pg_advisory_lock`, records them in
@@ -27,7 +28,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `prices` | effective-dated catalog prices per model key | `UNIQUE (model_key, valid_from)` |
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
-| `collector_state` | per-collector cursor and last-run bookkeeping (mirrors SQLite) | `source` |
+| `collector_state` | per-collector cursor and last-run bookkeeping (also `account-picks`, `iu-portal[:<key>]`) | `source` |
 | `session_env` | the claude-code hook's `base_url` / `lane` / `account` per session id | `session` |
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
 | `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
@@ -125,9 +126,10 @@ has the semantics of `db.upsertRecords`, into `records`:
   `writer.ts`). For such a row the column `reasoning_tokens` is written as 0 and the count is kept in `raw.reasoningTokensUnbilled`,
   so `compute_cost` bills the reasoning share only from the cutoff on. Rows from the cutoff on keep their count.
 - **session_env.** The batch's `raw.sessionId`s are looked up in `usage.session_env` (`readSessionEnv`, one query per chunk) and
-  passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the SQLite/log-backed lookup) and `resolveAccount`.
+  passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the hook-log lookup) and `resolveAccount`.
   `upsertSessionEnv` writes the table: the newest line wins for `base_url` and `lane`, a missing account never erases a stored
-  one. The hook-log parsing that fills it is still `models.ts`'s SQLite store; porting it is a later step.
+  one. The hook-log parsing that fills it is `models.ts` (`useStoredSessionEnvs`, `pendingSessionEnvs`); `ingest` writes the lines
+the logs added or changed with `upsertSessionEnv` after a collector runs and before its batch is written.
 
 ### Sessions
 

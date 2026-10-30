@@ -1,61 +1,55 @@
 # usage-tracker
 
-Local SQLite telemetry for token consumption and cost across every AI tool I
-run. One normalized table (`usage_record`), one pricing model, one CLI.
-Collectors are dumb: they emit tokens and ids only. Model normalization, billing
-classification and pricing live centrally, so a new source never re-implements
-them. The SQLite DB is the staging layer; every `ingest` run also syncs
-unsynced rows to the Argo API, which is where the dashboard lives.
+Token and cost telemetry for every AI tool I run, ingested into the Postgres `usage` schema (database `shared` on
+the mini, role `usage`). One normalized `usage.records` table, effective-dated prices in SQL, one CLI. Collectors are
+dumb: they emit tokens and ids only. Model normalization, billing classification, lanes, sessions and pricing live
+centrally in the writer (`src/pg/writer.ts`, `usage.compute_cost`), so a new source never re-implements them. A
+LaunchAgent runs `ingest` every 900 s; the dashboard and APIs read the same schema. There is no staging store and no
+push step.
 
 ## Layout
 
-- `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
-  `stats`, `quota`, `budget [--key]`, `iu-portal`, `sources`, `health`, `billing-audit`, `pg-migrate`,
-  `prices-sync`, `prices-seed-history`.
-- `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
-  registered in `src/collectors/index.ts`.
-- `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
-  on `(source, source_id)`; `session_env` table persists the hook's per-session
-  `base_url`/`lane` lines past log pruning.
-- `src/collectors/iu-portal.ts`, `src/budget.ts`, `tools/iu-portal/` — IU's own cost report (the
-  cap) scraped from the MacBook, and `budget`, which compares it with our estimate. See the
-  "IU portal cost" gotcha.
-- `src/collectors/claude-quota.ts`, `src/collectors/account-picks.ts` — not `usage_record`
-  sources: the Claude Max account quota series and the dotfiles picker's decisions
-  (see the `quota_sample` / `account_pick` gotcha).
-- `src/argo.ts` (`argoConfig`, `postJson`) is the one HTTP path to Argo; `src/sync.ts` pushes
-  `usage_record`, `src/sync-account.ts` the two account tables, `src/sync-portal.ts` the IU portal report (`POST /usage/iu-portal`).
-- `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and
-  `resolveIuKey`, the one place that decides which key an IU row was billed to. See the "IU keys" gotcha.
+- `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `sources`, `health`, `billing-audit`,
+  `pg-migrate`, `prices-sync`, `prices-seed-history`, `pricing-drift`; `budget` and `reprice` print that they moved
+  and exit 2 (below).
+- `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
+  bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
+  source's row count), records through `upsertRecords`. Also drives the quota / picks / portal passes.
+- `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s; registered in `src/collectors/index.ts`.
+- `src/pg/` — `connect.ts`, `migrate.ts`, `cli.ts` (the Postgres commands); `writer.ts` (`upsertRecords`: records,
+  sessions, cost via SQL), `sessions.ts`, `session-env.ts`, `state.ts`; `testing.ts` + `fixture.ts` (scratch-database
+  harness). Migrations: `migrations/pg/NNNN_name.sql`, `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
+- `src/models.ts` — model normalization, `classifyBilling`, `resolveAccount`, the hook-log `session_env` lookups
+  (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
+- `src/lane.ts` (`laneFor`), `src/repo.ts` (`normalizeRepo`) — the pure lane and repo mappings the writer calls.
+- `src/report.ts` — `stats`, `sources`, `health` staleness, `unpricedByModel`, `billing-audit` over the `usage` schema.
+- `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and `resolveIuKey`,
+  the one place that decides which key an IU row was billed to. See the "IU keys" gotcha.
+- `src/collectors/iu-portal.ts`, `tools/iu-portal/` — IU's own cost report (the cap) scraped from the MacBook into
+  `usage.iu_portal_cost` / `iu_portal_total`. See the "IU portal cost" gotcha.
+- `src/collectors/claude-quota.ts`, `src/collectors/account-picks.ts` — not `records` sources: the Claude Max account
+  quota series and the dotfiles picker's decisions (`usage.quota_samples` / `usage.account_picks`).
 - `src/collectors/athena-teamchat.ts` — Athena Teamchat's own spend from its Postgres (the team key's).
-- `src/pricing.ts`, `src/models.ts` — rates, model normalization, billing
-  classification, session_env lookup and the transcript-entrypoint lane map.
-- `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
-  `src/report.ts` — pipeline, backfills (`reprice`, `relane`) and reporting.
+- `src/prices/` (`normalize.ts`, `cost.ts`, `sync.ts`, `history.ts`, `aliases.ts`, `store.ts`) — the effective-dated
+  `usage.prices` table synced daily from LiteLLM (OpenRouter fallback) and the cost resolution that mirrors SQL
+  `usage.compute_cost`: `make prices-sync`, `make prices-seed-history` (one-off), `make install-prices-agent` (daily
+  04:20, `com.jkrumm.usage-tracker-prices`, separate from the ingest agent).
+- **Kept for the next step, stale:** `src/budget.ts`, `src/reprice.ts`, `src/pricing.ts`, `src/pricing-drift.ts` (and
+  tests) and `src/legacy-sqlite.ts` (the SQLite DDL and portal-state reader `budget`/`reprice` and their tests still
+  need). They are the retired SQLite pricing/budget path; the next step ports or deletes them with the file.
+- `scripts/repo-report.ts` — reports `normalizeRepo` over the archived SQLite data (read-only).
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
-- `migrations/pg/NNNN_name.sql`, `src/pg/` (`connect.ts`, `migrate.ts`, `cli.ts`) — the Postgres `usage` schema (v2) and its
-  forward-only migration runner: `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
-- `src/pg/writer.ts` (`upsertRecords`), `src/pg/sessions.ts` (`sessionKey`, `aggregateSessions`), `src/pg/session-env.ts`
-  (`upsertSessionEnv`, `readSessionEnv`) — Wave 2 step 1: the Postgres write path for `usage.records` and `usage.sessions`,
-  additive. **Nothing calls it yet**: `ingest`, `sync`, `pricing.ts` and the collectors are still the SQLite pipeline until the next step
-  rewires them.
-- `src/prices/` (`normalize.ts`, `cost.ts`, `sync.ts`, `history.ts`, `aliases.ts`, `store.ts`) — the effective-dated `usage.prices`
-  table synced daily from LiteLLM (OpenRouter fallback) and the cost resolution that mirrors SQL `usage.compute_cost`:
-  `make prices-sync`, `make prices-seed-history` (one-off), `make install-prices-agent` (daily 04:20,
-  `com.jkrumm.usage-tracker-prices`, separate from the ingest agent). `src/lane.ts` (`laneFor`) and `src/repo.ts`
-  (`normalizeRepo`) are the pure lane and repo mappings the Wave 2 writers call. `scripts/repo-report.ts` reports
-  `normalizeRepo` over the SQLite data (read-only).
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
 ## Validate
 
 `make check` runs `make typecheck` (`bun run tsc --noEmit`) and then
 `bun test` (Bun's runner; `*.test.ts` colocated in `src/`). There is no
-separate linter. The targets are side-effect free — SQLite tests open scratch DBs
-under `mkdtemp`, the Postgres suites (`src/pg`, `src/prices`) create and drop a
-`usage_test_<random>` database as the admin role. `make check`/`make test` inject
+separate linter. The targets are side-effect free — every pipeline suite (ingest, collectors, report, health, writer,
+prices) creates and drops a `usage_test_<random>` database as the admin role; the few SQLite tests left read scratch
+files under `mkdtemp` (the sources' own stores, `budget`/`reprice`). `make check`/`make test` inject
 `USAGE_TEST_PG_URL` from `.env.test.tpl` through `secrets-run`; without it (no secrets-run)
-those suites skip with the reason in their name. No test touches the network.
+those suites skip with the reason in their name (a green run with skips proves nothing: check the count). No test touches the network.
 The Postgres suites use the admin role (`jkrumm`, superuser) on the shared mini server because they must `CREATE`/`DROP`
 scratch databases; nothing else needs it. Scratch names are strictly `usage_test_<12 hex>` and `src/pg/testing.ts`
 (`assertScratchName`) refuses to create or drop any other name. `ARGS` (`make test ARGS=src/prices`) reaches the shell as an
@@ -70,8 +64,9 @@ bootout/bootstrap/kickstart it. The agent runs
 `bun run src/cli.ts ingest` every 900s under `jobrun` (dotfiles; `--timeout 600`,
 state in `~/.local/state/jobs/`, graded by `jobs-grade`). Re-running the installer is idempotent,
 so deploying a merged default branch is just `make deploy`. There is no CI and
-no rollback path: revert the offending commit and `make deploy` again. The Argo
-bearer is resolved at spawn via `secrets-run read` and is never written to disk.
+no rollback path: revert the offending commit and `make deploy` again. The plist holds no secret: the Postgres URL
+is built at spawn by `usagePgUrl()` (role `usage`, password via `secrets-run read`, never `op`; `USAGE_PG_URL`
+overrides). Schema changes ship as a new `migrations/pg` file and `make pg-migrate` before the deploy.
 `make install-prices-agent` installs the separate daily `prices-sync` agent (`launchd/install-prices-agent.sh`; it never
 reloads the ingest agent, and `prices-sync` resolves the Postgres password itself at spawn).
 
@@ -83,63 +78,68 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - OTel `service.name`: none — the repo emits no OTel.
 - `make verify` exits non-zero unless `launchctl print` sees
   `com.jkrumm.usage-tracker`, `~/Library/Logs/usage-tracker.log` is younger
-  than 1800s, and `health` finds no stale source.
+  than 1800s, and `health` finds no stale source (`max(ts)` per source in `usage.records`, plus the IU portal's
+  last success). `make health`, `make sources`, `make stats BY=<dim>`, `make quota` read the same schema.
 - Logs live in `~/Library/Logs/usage-tracker.{log,err}`; `make logs` tails the
   last 50 lines.
 
 ## Gotchas
 
-- **The Postgres `usage` schema (v2) is not wired to the pipeline yet** (Wave 1 built it, Wave 2 step 1 added the write path
-  `src/pg/writer.ts`, still uncalled; software-factory decisions SF8, U1-U5). `docs/usage-schema.md` is the contract: `records` keyed `(source, source_id)` with machine as an
-  attribute, five token kinds, `sessions` with the CHECKed lane vocabulary, `quota_samples`/`account_picks`, and
-  effective-dated `prices`. Migrations are forward-only and owned here (`make pg-migrate`, `USAGE_PG_URL` or the `usage` role's
-  password via `secrets-run`, never `op`); never edit an applied file, add a new one. `usage.compute_cost` (SQL) and
-  `src/prices/cost.ts` must agree: change both and the shared fixtures in `src/prices/cost.test.ts` together. An unpriced
-  model is NULL / `cost_source='none'`, never 0; `prices-sync` exits 1 on a vanished or zeroed catalog price and keeps the
-  previous row. `src/pricing.ts` stays the SQLite pricing path until Wave 2 deletes it; its IU-specific knowledge is listed in
-  `docs/usage-schema.md` for the move to overrides.
-  **The writer prices nothing**: `upsertRecords` passes tokens and the reported cost to `usage.compute_cost`. Its two IU rules,
-  `IGNORE_REPORTED_COST` (sonar) and `REASONING_FREE_BEFORE` (terra: reasoning zeroed in the column, the count kept in
-  `raw.reasoningTokensUnbilled`), are duplicated from `pricing.ts` on purpose and pinned equal by a test in `src/pg/sessions.test.ts`
-  that goes with `pricing.ts`. Sessions: id from `sessionKey` (never invented), lane = earliest non-subagent record, no parent links
-  until a collector sets `raw.parentSessionId`; billing/account lookups read `usage.session_env`, not the SQLite store.
-- **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped;
-  agent-workflows posts its own rows to Argo (`source='agent-workflows'`), so no collector reads them.
-  Removed: `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`,
-  `audio-gateway-vps` (and earlier `research-gateway`). **Historical rows stay** in SQLite and Argo — never
-  delete, rewrite or reprice them. What still reads that history: `relane` and `claude-code`/`opencode`/`litellm`
-  re-ingest (`ingest --full` upserts overwrite `sub_tool`) use the `agent-gateway:*` lanes and the
-  `agent-gateway-sessions.jsonl` attribution log (`models.ts`), `reprice` skips their vendor-`reported` costs,
-  and `classifyBilling` keeps its `agent-gateway-sessions` branch. Reconcile a past day:
-  `sqlite3 ~/.local/share/usage-tracker/usage.db "select source,sub_tool,count(*),round(sum(cost_usd),2) from usage_record where ts like 'YYYY-MM-DD%' and source like 'agent-gateway%' group by 1,2"`.
-  Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
-- **IU keys: spend is split per key, each key has its own $500 rolling cap.** `usage_record.iu_key`
-  (`personal` | `athena-team`, set only for `billing='iu'` rows, NULL otherwise) is derived in
-  `db.upsertRecords` via `resolveIuKey` (`src/iu-keys.ts`): the row's own `raw.iuKey` label (validated
-  against the registry, an unknown id never becomes a key) → the source's fixed key (`athena-teamchat` →
-  `athena-team`) → `personal` (every historical row). Never in a collector except by `raw.iuKey`. A key's
-  identity is a *label*: nothing in a model call says which key paid, so a producer that can use either key
-  (agent-workflows host, OpenCode) must stamp `iuKey`/`iu_key` from non-secret host config; never log, hash or
-  send key material. `stats --by iu_key`. The portal is asked once per registered key with that key typed into
-  the form (`collectPortal` loops `IU_KEYS`; state `iu-portal` for personal, `iu-portal:<id>` otherwise; a
-  signed-out session or unreachable MacBook ends the pass); only the personal report writes `latest.json`
-  (non-personal scrapes pass `--no-latest`, so redeploy the iumac tool with `make iu-portal-setup` before
-  a new key's first scrape). `iu_portal_cost` / `iu_portal_total` carry `iu_key` in the PK (migration
-  `user_version` 3 rebuilds them and backfills `personal`). `make budget [KEY=<id>] [MODEL=<norm>]` reports
-  each key against its own cap; a key whose portal figure exceeds what its collectors track is spend by a
-  producer we do not see (the team key's 2026-10-22..25 build-phase use predates the Athena Postgres rows).
-  `make health` goes stale per key (`iu-portal:athena-team`, once tried). Argo gets `iu_key` on `/usage/records`
-  rows and `iuKey` on `/usage/iu-portal` rows; a missing field means `personal` on its side. **Non-personal rows
-  are held back (stay queued) until `USAGE_SYNC_IU_KEYS=1`** — an Argo without per-key storage would file them
-  as personal and its portal upsert would overwrite the personal cells; the installer sets the flag in the LaunchAgent env
-  (Argo has stored per-key since 2026-10-28). Adding a key = one entry in
-  `IU_KEYS` (the secret ref must be in the mini's secrets cache, `dotfiles-private/headless.iu.refs` for
-  careerpartner refs).
+- **The `usage` schema is the contract** (`docs/usage-schema.md`; software-factory decisions SF8, U1-U5). `records` keyed
+  `(source, source_id)` with machine as an attribute, five token kinds, `sessions` with the CHECKed lane vocabulary,
+  `quota_samples`/`account_picks`, effective-dated `prices`, `collector_state`, `session_env`, `iu_portal_*`. Migrations are
+  forward-only and owned here (`make pg-migrate`, `USAGE_PG_URL` or the `usage` role's password via `secrets-run`,
+  never `op`); never edit an applied file, add a new one. `usage.compute_cost` (SQL) and `src/prices/cost.ts` must
+  agree: change both and the shared fixtures in `src/prices/cost.test.ts` together. An unpriced model is NULL /
+  `cost_source='none'`, never 0; `prices-sync` exits 1 on a vanished or zeroed catalog price and keeps the previous row.
+  **The writer prices nothing**: `upsertRecords` passes tokens and the reported cost to `usage.compute_cost`. Its two IU
+  rules, `IGNORE_REPORTED_COST` (sonar) and `REASONING_FREE_BEFORE` (terra), live in `writer.ts`; the copies in
+  `pricing.ts` go with that file. Sessions: id from `sessionKey` (never invented), lane = earliest non-subagent record.
+- **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`); `account` is set
+  only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
+  column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
+- **Collector failures never abort a run.** A throwing collector is recorded as `error` in `usage.collector_state`
+  (cursor kept, so the next run retries from the same watermark) and the rest continue; a collector with only a note and
+  no records is `skipped`. `--full` hands the collector a null cursor; `--source` limits the run (and skips the
+  quota / picks / portal passes, as does an injected collector set). A Postgres failure inside a pass is logged, not fatal
+  to the other passes.
+- **The upsert is idempotent on `(source, source_id)`** and fires only when a content column differs, so `ingested_at`
+  moves on real change only even though hermes/feuer re-read their whole tables every run.
+- **claude-code lane precedence** (`stampLane`, `lane` on the record is `laneFor(subTool)`): the session's `USAGE_LANE`
+  (from its session_env line), then agent-gateway's time-window fallback — only when no session_env line exists *and* the
+  transcript `entrypoint` is `sdk-cli` or absent, since agent-gateway workers are always `claude -p` — then the entrypoint
+  lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`). Don't loosen the guard: it stops pruned
+  long-lived herdr sessions from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
+  `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; there is no backfill command.
+- **session_env** (`usage.session_env`: `base_url`, `lane`, `account` per hook session id) outlives the hook's 3-day log
+  retention. `ingest` primes `models.ts` with the table, merges the logs on first lookup and writes new or changed
+  lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `billing-audit` compares
+  the stored billing with the live log only.
+- **`account` is a dimension, not a billing class.** `records.account` (`iu`|`me`|`me2`; account `iu` ≠ billing `api_key`)
+  is set only for `max` rows — the source's own `raw.account`, else session_env's `account`, else `iu` (all historical
+  lines predate it; legacy `a`/`b` map to `iu`/`me` via `parseAccount`). Derived in the writer via `resolveAccount`
+  (models.ts, the only place that validates the account), never in a collector; a collector must put the session id in
+  `raw.sessionId` for the lookup. A NULL Max row is a collector bug and stays visible.
+- **IU keys: spend is split per key, each key has its own $500 rolling cap.** `records.api_key` (`personal` |
+  `athena-team`, set only for `billing='api_key'` rows) is derived in the writer via `resolveIuKey` (`src/iu-keys.ts`): the
+  row's own `raw.iuKey` label (validated against the registry, an unknown id never becomes a key) → the source's fixed
+  key (`athena-teamchat` → `athena-team`) → `personal` (every historical row). Never in a collector except by
+  `raw.iuKey`. A key's identity is a *label*: nothing in a model call says which key paid, so a producer that can use
+  either key (agent-workflows host, OpenCode) must stamp `iuKey`/`iu_key` from non-secret host config; never log, hash or
+  send key material. `stats --by iu_key`. The portal is asked once per registered key with that key typed into the form
+  (`collectPortal` loops `IU_KEYS`; state `iu-portal` for personal, `iu-portal:<id>` otherwise; a signed-out session or
+  unreachable MacBook ends the pass); only the personal report writes `latest.json` (non-personal scrapes pass
+  `--no-latest`, so redeploy the iumac tool with `make iu-portal-setup` before a new key's first scrape).
+  `usage.iu_portal_cost` / `iu_portal_total` carry `iu_key` in the key. A key whose portal figure exceeds what its
+  collectors track is spend by a producer we do not see (the team key's 2026-10-22..25 build-phase use predates the
+  Athena Postgres rows). `make health` goes stale per key (`iu-portal:athena-team`, once tried). Adding a key = one entry
+  in `IU_KEYS` (the secret ref must be in the mini's secrets cache, `dotfiles-private/headless.iu.refs` for careerpartner
+  refs).
 - **`athena-teamchat` reads the Athena Teamchat Postgres** (`athena` schema, Unix socket
   `~/.local/state/athena/pgsock`, role `athena_app` via the owner's ident map; override `ATHENA_PG_SOCKET_DIR`,
   `ATHENA_PSQL`). `turns` (chat/analysis turns incl. the OpenCode sandbox: tokens + OpenCode's own cost),
   `llm_calls` (host-side calls, cost = tokens × configured prices), `title_calls`; source ids `turn:`/`llm:`/
-  `title:<id>`, `sub_tool` `chat-turn:<kind>`/`llm:<caller>`/`title`, model NULL (not stored per call), cost
+  `title:<id>`, `subTool` `chat-turn:<kind>`/`llm:<caller>`/`title`, model NULL (not stored per call), cost
   authoritative. Re-reads three days behind the newest row because turns mutate until ended. No text is
   read, only counts. `block_results`/`quality_reports`/`artifact_audits` cost columns are cents and
   ignored. The relay is the only holder of the team key, so the whole source is the team key's.
@@ -149,98 +149,47 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   tracked** (Athena orchestrator, 2026-10-28): the evals' direct extractor/judge calls (`chat/evals/run.py`,
   `golden_run.py`, same `LLM_RELAY_KEY`; cost only in `chat/evals/reports/<date>-*.json`), `epx web ask`
   (`WEB_ASK_API_KEY`; call log without cost in the broker audit `external=1`), the relay's docker logs (no
-  tokens), and whatever agent-workflows' `w4-iu-key` run sends. `make budget KEY=athena-team` shows that
-  remainder as the portal-vs-tracked gap.
-- **IU portal cost is the truth; `usage_record.cost_usd` is an estimate.** The employee cap is a
-  ROLLING 30-day window (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`),
-  measured by IU's self-service portal. `make budget` reports rolling30, headroom, "can spend
-  today", the next-7-day drop-off, the 7-day burn, and portal vs `billing='iu'` tracked cost per day
-  and model (flag: |tracked − portal| > max($1, 20% of portal)). It compares, never replaces: a
-  flagged row means our rate card, a missing collector or IU is wrong. `make budget MODEL=<norm>`
-  (`budget --explain`) prints one model per day: calls, tokens, portal vs tracked USD per million
-  tokens and tracked cost by source — quiet days where our rate equals the portal's prove the rate
-  card, so a large gap on a busy day is calls no collector sees. Reconciled so far: `sonar` (vendor
-  cost ignored, token-priced), `gpt-5.6-terra` (IU billed no reasoning tokens before 2026-10-16
-  08:55Z, `reasoningFreeBefore`). Portal days are the
-  portal's calendar (UTC assumed); tracked days are `substr(ts, 1, 10)`, so day-edge noise is
-  expected. **Depends on iumac:** the scrape runs on the MacBook (`ssh iumac`, IU-managed
-  Chrome, profile `~/.local/share/iu-portal/profile`, tooling in `~/.local/share/iu-portal/tool`,
-  installed by `make iu-portal-setup`). `ingest` fetches at most every 4 h; a sleeping MacBook
-  skips quietly, and `health` goes stale after 48 h. **Login runbook:** when the log says
-  `session expired`, run `make iu-portal-login` (a dialog appears on the MacBook, sign in via
-  Entra/Okta within 5 min), then `make iu-portal`. The API key is piped through stdin from
-  `secrets-run`, never written. Each successful scrape also writes `latest.json` on iumac (the
-  Tinycast contract, schema 1; `tools/iu-portal/latest.ts`), and each successful ingest
-  writes the same document (same `buildLatest`) to the mini's
-  `~/.local/share/iu-portal/latest.json` for agent-gateway's OCR budget gate
-  (`rolling30_usd` ≥ $400 means no OCR reviews). Same contract, two machines: an expired
-  session or failed scrape leaves the file untouched, so a consumer judges freshness by
-  `fetched_at`. Mechanics: `docs/collectors.md`.
-  **Argo sync:** `syncPortal` (inside `sync`, every 15 min) pushes `iu_portal_cost` / `iu_portal_total` to Argo's
-  `POST /usage/iu-portal` when a fetch landed since the watermark (`collector_state` key `argo_portal_fetched_at`,
-  advanced only after every batch returned ok). Each push resends the last 35 days (the window shifts and the
-  portal settles days), first run sends everything; Argo upserts, so a replay is a no-op. A 404/405 (Argo not
-  deployed yet) leaves the watermark alone. Argo computes the cap from this, not from `usage_record`.
-- **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or
-  `null` for legacy/dormant — enforced by `health.test.ts`). `bun run src/cli.ts health`
-  (`make health`) and `ingest` exit 1 when an available source's newest row is older
-  than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so
-  the dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
-
-- **`account` is a dimension, not a billing class.** `usage_record.account` (`iu`|`me`; account `iu` ≠ billing `iu`)
-  is set only for `billing='max'` rows — the source's own `raw.account` (agent-gateway session lines carry one; collectors pass it through opaque), else session_env's `account`, else `iu` (all historical lines predate it; legacy `a`/`b` map to
-  `iu`/`me` via `parseAccount`); `billing='iu'`/other rows are NULL. Derived in
-  `db.upsertRecords` via `resolveAccount` (models.ts, the only place that validates the account), never in a
-  collector; a collector must put the session id in `raw.sessionId` for the session_env lookup
-  (agent-gateway-sessions does). The one-off migration
-  (`PRAGMA user_version` 2, never data-gated: a later NULL Max row is a collector bug and stays NULL for
-  `claude-accounts-verify`) backfills old `max` rows to `iu` and renames stored `a`/`b` to `iu`/`me` in
-  `usage_record` and `session_env` (without touching `synced_at`). The post-push `synced_at` mark is
-  conditional on the pushed `account` + `ingested_at`, so a row rewritten mid-push stays queued. After Argo
-  stores `account` (W2 of dotfiles `docs/claude-accounts.md`), run
-  `bun run src/cli.ts resync-account` once to push it for all `max` rows.
-- **`quota_sample` / `account_pick`** (dotfiles `docs/claude-accounts.md`), filled on every
-  `ingest` (skipped with `--source` or an injected collector set; run summary shows
-  `quota=+N picks=+N`). `quota_sample` PK `(account, sampled_at ms, machine)`: one row per
-  enabled account with at least one known window, from `claude-account usage --json`
-  (cache-only, 5 s timeout, token env scrubbed; missing binary = silent skip,
-  `USAGE_CLAUDE_ACCOUNT_BIN`). `sampled_at = now − min(window ages)`, so an unchanged cached
-  sample dedupes via `INSERT OR IGNORE`. `account_pick` PK `(ts ms, lane, machine)`: one row
-  per line of `~/.local/share/claude-accounts/picks.jsonl` (`USAGE_ACCOUNT_PICKS`), read by
-  byte offset kept in `collector_state` under `account-picks`; offset resets when the file
-  shrinks, malformed lines are skipped. `picked` is an opaque string — an account id or the
-  `spill` sentinel; `snapshot` is the per-account `{s,w}` JSON. Legacy ids `a`/`b` are mapped to `iu`/`me` at ingest (in `picked` and snapshot keys); `spill` is kept. Tables are plain
-  `CREATE IF NOT EXISTS` (no `user_version` bump needed). `bun run src/cli.ts quota [--days 7]`
-  prints the series and lane × picked × reason counts.
-- **Argo endpoints for them** (`sync.ts`, batches ≤1000, `synced=1` on 2xx):
-  `POST /usage/quota-samples` `{samples:[{account, sampledAt, machine, fiveHourPct, sevenDayPct,
-  fiveHourResetsAt, sevenDayResetsAt, authOk, exhaustedUntil, source}]}` and
-  `POST /usage/account-picks` `{picks:[{ts, lane, picked, reason, stale, snapshot, machine}]}`
-  (ISO timestamps, nullable resets). A 404/405 leaves rows unsynced, logs once per run at info,
-  and never fails the run or the `usage_record` sync (`sync()` wraps the account push in a
-  try/catch and always returns the usage result); other failures log an error and retry next run.
-  A row whose conversion throws (e.g. an out-of-range epoch) is quarantined: `synced=-1`, row id
-  logged at warn, never re-selected.
-- Never compute cost in a collector. `db.upsertRecords` derives `model_norm`,
-  `billing` and `cost_usd` centrally.
-- The upsert is idempotent on `(source, source_id)`, and its UPDATE only fires
-  when a column actually differs. That keeps `ingested_at` moving on real
-  change only, which is what keeps the Argo sync a delta despite hermes/feuer
-  re-reading their whole tables every run.
-- claude-code `sub_tool` precedence: the session's `USAGE_LANE` (from
-  `session_env`), then agent-gateway's time-window fallback — only when no
-  `session_env` line exists *and* the transcript `entrypoint` is `sdk-cli` or
-  absent, since agent-gateway workers are always `claude -p` — then the entrypoint
-  lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` →
-  `desktop`). Don't loosen the guard: it stops pruned long-lived herdr sessions
-  from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
-  `interactive`, never null (the upsert would erase a lane).
-- `make relane` (`DRYRUN=1` first) backfills those lanes on stored rows and
-  clears `synced_at` so the next sync re-pushes them.
-- One broken collector must never abort the others. Failures are recorded as
-  `error`/`skipped` in `collector_state` and the rest of the run continues.
-- Claude Code resumes by byte offset per file and only advances past complete
-  lines; re-scanning is a `--full` backfill.
-- The LaunchAgent logs to `~/Library/Logs`, never `/tmp` (macOS sweeps it), and
-  must never re-bake the Argo token into the plist. Keep the secrets design: no
-  plaintext secret on disk — injected at spawn, never at install.
+  tokens), and whatever agent-workflows' `w4-iu-key` run sends. The portal-vs-tracked gap is that remainder.
+- **IU portal cost is the truth; `records.cost_usd` is an estimate.** The employee cap is a ROLLING 30-day window
+  (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`), measured by IU's self-service portal.
+  Reconciled so far: `sonar` (vendor cost ignored, token-priced), `gpt-5.6-terra` (IU billed no reasoning tokens before
+  2026-10-16 08:55Z). Portal days are the portal's calendar (UTC assumed). `make budget` (rolling30, headroom, portal vs
+  tracked per day and model) is **not ported yet** and exits 2. **Depends on iumac:** the scrape runs on the MacBook
+  (`ssh iumac`, IU-managed Chrome, profile `~/.local/share/iu-portal/profile`, tooling in
+  `~/.local/share/iu-portal/tool`, installed by `make iu-portal-setup`). `ingest` fetches at most every 4 h; a sleeping
+  MacBook skips quietly, and `health` goes stale after 48 h. **Login runbook:** when the log says `session expired`, run
+  `make iu-portal-login` (a dialog appears on the MacBook, sign in via Entra/Okta within 5 min), then `make iu-portal`.
+  The API key is piped through stdin from `secrets-run`, never written. Each successful scrape also writes `latest.json`
+  on iumac (the Tinycast contract, schema 1; `tools/iu-portal/latest.ts`), and each successful ingest writes the same
+  document (same `buildLatest`) to the mini's `~/.local/share/iu-portal/latest.json` for agent-gateway's OCR budget gate
+  (`rolling30_usd` ≥ $400 means no OCR reviews). Same contract, two machines: an expired session or failed scrape leaves
+  the file untouched, so a consumer judges freshness by `fetched_at`. Mechanics: `docs/collectors.md`.
+- **`usage.quota_samples` / `usage.account_picks`** (dotfiles `docs/claude-accounts.md`), filled on every `ingest` (skipped
+  with `--source` or an injected collector set; run summary shows `quota=+N picks=+N`). `quota_samples` PK
+  `(account, sampled_at, machine)`: one row per enabled account with at least one known window, from
+  `claude-account usage --json` (cache-only, 5 s timeout, token env scrubbed; missing binary = silent skip,
+  `USAGE_CLAUDE_ACCOUNT_BIN`). `sampled_at = now − min(window ages)`, so an unchanged cached sample dedupes via
+  `ON CONFLICT DO NOTHING`; percentages are clamped to the column's 0-100. `account_picks` PK `(ts, lane, machine)`: one
+  row per line of `~/.local/share/claude-accounts/picks.jsonl` (`USAGE_ACCOUNT_PICKS`), read by byte offset kept in
+  `collector_state` under `account-picks` (advanced in the same transaction as the rows; resets when the file shrinks,
+  malformed lines are skipped). `picked` is an opaque string — an account id or the `spill` sentinel; `snapshot` is the
+  per-account `{s,w}` JSON. Legacy ids `a`/`b` are mapped to `iu`/`me` at ingest (in `picked` and snapshot keys); `spill`
+  is kept. `bun run src/cli.ts quota [--days 7]` (`make quota`) prints the series and lane × picked × reason counts.
+- **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or `null` for legacy/dormant — enforced
+  by `health.test.ts`). `make health` and `ingest` exit 1 when an available source's newest row (`max(ts)` in
+  `usage.records`) is older than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so the
+  dev-host heartbeat. A collector reporting `ok` on a moved store used to hide this.
+- **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped; agent-workflows
+  posts its own rows (`source='agent-workflows'`), so no collector reads them. Removed: `agent-gateway-opencode`,
+  `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`, `audio-gateway-vps` (and earlier `research-gateway`).
+  **Historical rows stay** — never delete, rewrite or reprice them. What still reads that history: claude-code / opencode /
+  litellm re-ingest uses the `agent-gateway:*` lanes and the `agent-gateway-sessions.jsonl` attribution log
+  (`models.ts`), `reprice` skips their vendor-`reported` costs, and `classifyBilling` keeps its `agent-gateway-sessions`
+  branch. Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
+- **The SQLite file `~/.local/share/usage-tracker/usage.db` is an archive**, the source of the one-off backfill. Nothing in
+  the pipeline opens it; never delete or modify it. Collectors still read their sources' own stores (Hermes, Feuer,
+  OpenCode, modelpick, the Athena archive) with `bun:sqlite` / `sqlite3`, read-only.
+- Claude Code resumes by byte offset per file (the cursor is a JSON map in `collector_state`) and only advances past
+  complete lines; re-scanning is a `--full` backfill.
+- The LaunchAgent logs to `~/Library/Logs`, never `/tmp` (macOS sweeps it). Keep the secrets design: no plaintext secret on
+  disk — the Postgres password is resolved at spawn, never at install.

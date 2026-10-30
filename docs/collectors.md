@@ -1,7 +1,8 @@
 # usage-tracker — collector internals and gotchas
 
-*Moved out of the README to keep that file onboarding-only. Source-specific*
-*mechanics, retired-source history and the sharp edges each collector hit.*
+*Source-specific mechanics, retired-source history and the sharp edges each collector hit. Every collector*
+*emits `UsageRecord`s; `ingest` writes them through `src/pg/writer.ts` into the Postgres `usage` schema*
+*(`docs/usage-schema.md`) and keeps each collector's cursor in `usage.collector_state`.*
 
 ## Source-specific notes
 
@@ -26,39 +27,28 @@ Haiku inside a `ca` session), sharing that session's `sessionId`.
 `classifyBilling()` (`src/models.ts`) resolves this with the real signal:
 `dotfiles/hooks/notify.ts` logs `{ event: "session_env", session, base_url }`
 once per `SessionStart` to `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3
-days), and `getSessionBaseUrl()` joins a record's `sessionId` against that log —
-a non-empty `base_url` means `iu`, empty means `max`. herdr panes outlive the
-3-day retention, so `runIngest` registers the DB as a store
-(`useSessionEnvStore`): the first lookup upserts every log line into the
-`session_env` table (`session`, `base_url`, `lane`, `account`, `seen_at`) and builds the
-cache from table rows merged with the log entries, a log entry winning for the
-same session (a resume's latest SessionStart is the truth). The load stays lazy
-so it lands after the iumac log mirror is synced. A stored row with a NULL lane
-still counts as "line exists". When there is no line anywhere (never logged, or
-pruned before this table existed) the id decides the only way it can: Max serves
-nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `iu` and a
-bare Claude id defaults to `max`.
+days) and the writer joins a record's `sessionId` against it — a non-empty
+`base_url` means `billing = 'api_key'` (IU-paid), empty means `max`.
 
-**Account (Max iu/me).** The same line carries `account` (`iu` | `me`, the registry
-id resolved from `CLAUDE_CONFIG_DIR`; absent on the oldest lines, `a`/`b` before
-the rename — `parseAccount()` maps those to `iu`/`me` everywhere an id is read).
-`usage_record.account` is derived centrally by `classifyAccount()` next to
-`classifyBilling`: a `max` row takes its session's logged account, then an
-`account` the source carried in `raw` (agent-gateway session lines may), else
-`iu`; `billing='iu'` and every other non-Max row is NULL. `billing` is unchanged — account
-is a separate dimension. Both accounts share one `projects/` and `logs/` dir, so
-no collector root changed. The migration backfills existing `max` rows to `iu`
-and renames stored `a`/`b` to `iu`/`me` (`usage_record` and `session_env`)
-in the same transaction as the column (a half-migrated DB with NULL-account `max`
-rows is repaired on the next open), and leaves `synced_at` alone (re-pushing ~600k rows
-while Argo drops the field would be wasted). Once Argo stores `account`, run
-`bun run src/cli.ts resync-account` once: it clears `synced_at` on every
-`billing='max'` row so the next sync delivers the value.
-A later line without `account` never erases a stored one; `relane` re-derives it
-when it flips a row's billing. `stats --by account` and `billing-audit`
-show the split. Argo's ingest schema ignores unknown fields, so `account` is
-already in the sync payload; Argo has to store it (follow-up in the Argo repo,
-W2 of dotfiles `docs/claude-accounts.md`).
+The join runs through `usage.session_env` (`session`, `base_url`, `lane`, `account`, `seen_at`), because herdr
+panes outlive the 3-day retention. `runIngest` primes `models.ts` with the whole table
+(`useStoredSessionEnvs`); the first lookup (`getSessionLane` in the claude-code / opencode collectors) scans the
+local and mirrored log dirs and merges them on top, a log entry winning for the same session (a resume's latest
+SessionStart is the truth). The scan stays lazy so it lands after the iumac log mirror is synced. After each
+collector and BEFORE its batch is written, `ingest` upserts the lines the logs added or changed
+(`pendingSessionEnvs` → `upsertSessionEnv`), so the writer's billing / account lookups, which read the table,
+see them; unchanged lines are not rewritten. A stored row with a NULL lane still counts as "line exists". When
+there is no line anywhere (never logged, or pruned before it was stored) the id decides the only way it can: Max
+serves nothing but bare `claude-*` ids, so a non-Anthropic or `-eu` id is `api_key` and a bare Claude id defaults
+to `max`.
+
+**Account (Max iu/me/me2).** The same line carries `account` (the registry id resolved from `CLAUDE_CONFIG_DIR`;
+absent on the oldest lines, `a`/`b` before the rename — `parseAccount()` maps those to `iu`/`me` everywhere an id
+is read). `records.account` is derived by `resolveAccount()` next to `classifyBilling`, in the writer: a `max` row
+takes the `account` its source carried in `raw`, then its session's logged account, else `iu`; `api_key` and every
+other non-Max row is NULL. A later line without `account` never erases a stored one (`upsertSessionEnv`).
+`billing` is unchanged — account is a separate dimension. Both accounts share one `projects/` and `logs/` dir.
+`stats --by account` and `billing-audit` show the split.
 
 `<synthetic>`, the zero-token model id of an API-error row, is the exception to
 the id rule: it is not a served id, so it follows the session `base_url` and
@@ -79,12 +69,12 @@ across all projects before this was added — backfilled by the next `ingest`
 run automatically, no `--full` needed since those files had never been seen).
 
 Run `billing-audit` (`make billing-audit`) to verify this end to end: it
-groups `usage_record` by session, lists every distinct model and billing value
+groups the claude-code `records` by session, lists every distinct model and billing value
 seen in that session (more than one distinct `billing` per session should
 never happen — flagged as `MULTI-BILLING`), and cross-checks the stored
-`billing` against a live re-read of the `session_env` log, flagging
+`billing` against a live re-read of the hook log, flagging
 `MISMATCH` when they disagree (only meaningful while the log is still inside
-its 3-day retention window; it reads the live log, not the `session_env` table).
+its 3-day retention window; it reads the live log, not the `usage.session_env` table).
 
 ### MacBook (iumac) mirror
 
@@ -92,7 +82,7 @@ The `claude-code` collector walks two roots, not one: this machine's own
 `~/.claude/projects`, and a local rsync mirror of the owner's MacBook
 (`~/.claude/projects` + `~/.claude/logs` over the `iumac` ssh alias). It's
 still a single collector and a single `source = "claude-code"` — a second
-collector sharing that name would collide on its `collector_state` cursor row,
+collector sharing that name would collide on its `usage.collector_state` cursor row,
 and the cursor is a `Record<absolutePath, offset>` anyway, so mirrored files
 are simply new keys in the same map. Rows are told apart by the `machine`
 column instead (see "Machine attribution" below); every other report
@@ -114,21 +104,19 @@ Everything host-specific lives in `src/remote.ts`:
   `USAGE_IUMAC_MACHINE` env > a label cached at `<mirror>/machine` from a
   previous probe > a fresh `system_profiler`-over-ssh probe (cached to disk on
   success) > the literal `"iumac"` if the probe fails. Local rows leave
-  `machine` unset so `upsertRecords` stamps the local host as usual.
+  `machine` unset so the writer stamps the local host as usual.
 - **Graceful degradation**: a dead or asleep MacBook never blocks or errors
   the collector. `syncIumac()` never throws; a failed sync is logged as a
   warning and the run still ingests whatever the local root has. The run is
   only reported `skipped` (with the sync failure as its note) when *neither*
   root produced a single record — if local records came in, the run is `ok`
   and the failure only reaches the log.
-- **Trust boundary**: this is the first source of cross-host data in the
-  pipeline — every prior row originated on this machine, but a mirrored row's
-  transcript fields and `machine` label were produced on iumac and reached the
-  DB over ssh/rsync into a mirror this tracker treats as trusted input. Those
-  rows sync onward to Argo like any other row. Accepted as part of
-  consolidating both machines' usage into one view, not treated as a problem.
+- **Trust boundary**: a mirrored row's transcript fields and `machine` label
+  were produced on iumac and reached the database over ssh/rsync into a mirror
+  this tracker treats as trusted input. Accepted as part of consolidating both
+  machines' usage into one view, not treated as a problem.
 - **Historical billing caveat**: `classifyBilling()` (see above) now scans the
-  mirrored `<mirror>/logs` alongside the local `session_env` log, so
+  mirrored `<mirror>/logs` alongside the local hook log, so
   going-forward MacBook sessions classify correctly. A first backfill will
   still classify most of the MacBook's *historical* sessions as `max` by
   default — `hooks/notify.ts` prunes `session_env` lines after 3 days, so
@@ -161,7 +149,7 @@ by the turn count.
 **OpenAI nests where Anthropic adds.** `cached_input_tokens` and
 `cache_write_input_tokens` are subsets *of* `input_tokens`, and
 `reasoning_output_tokens` a subset of `output_tokens`. This table's contract is
-additive (`pricing.ts` bills input + output + cacheRead + cacheWrite +
+additive (`usage.compute_cost` bills input + output + cacheRead + cacheWrite +
 reasoning), so the collector subtracts them back out. The five fields then sum
 to the vendor's own `total_tokens`, which is the invariant the tests pin.
 
@@ -184,10 +172,9 @@ codex-sessions leg is unrelated to claude-code's transcripts or billing
 classification, so folding its failure into that collector's report would
 misattribute it.
 
-`pricing.ts` does express OpenAI's long-context surcharge (`long` on a `Rate`,
-currently `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol` and `gpt-6-astra`) —
-2x input, 1.5x output once a single prompt's input + cacheRead + cacheWrite
-passes 272k. `computeCost` only evaluates it for `grain === 'message'`, though:
+The price catalog expresses OpenAI's long-context surcharge as a tier (`above_tokens`: 2x input, 1.5x output once a
+single prompt's input + cacheRead + cacheWrite passes 272k, on the `gpt-5.6-*` and `gpt-6-astra` models).
+`usage.compute_cost` only applies tiers for `grain = 'message'`, though:
 the threshold is a per-request concept, but hermes/feuer (and opencode's
 legacy session-grain fallback, see below) are session-grain, meaning their
 token counts are lifetime sums across every turn in the session, not one
@@ -219,18 +206,18 @@ re-read their table whole every run and reconcile by upsert, same as before
 the re-add — cheap given the small DB and the 15-min LaunchAgent tick, and
 tolerant of a message row updating in place mid-stream.
 
-`sub_tool` is `getSessionLane(session_id) || "interactive"`: an agent-gateway
+`subTool` is `getSessionLane(session_id) || "interactive"`: an agent-gateway
 dispatch writes a `session_env` line keyed by the `ses_…` id with its lane; no
 line means a manual `oc` run or an opencode wave pane, both interactive TUIs.
 The fallback must be a string, not null — the table is re-read whole every run,
 so a null would make the upsert erase an agent-gateway lane once its log line is
-pruned and not yet in the `session_env` table (only rows since 2026-10-06 still
+pruned and not yet in `usage.session_env` (only rows since 2026-10-06 still
 carry agent-gateway lanes).
 
 ### modelpick benchmark spend (`modelpick`)
 
 `~/SourceRoot/modelpick/modelpick.db` records real spend that otherwise never
-reaches Argo: its bench harness points `CLAUDE_CONFIG_DIR` at a scratch dir it
+reaches the usage database: its bench harness points `CLAUDE_CONFIG_DIR` at a scratch dir it
 wipes after every run, so no Claude Code transcript — or any other collector's
 source of truth — ever sees it (verified: $37.50 across 370 runs, 2026-08-31 →
 2026-09-04, invisible until this collector).
@@ -241,9 +228,8 @@ trap here, unlike Hermes/Feuer). One row is a full agent loop, so `grain` is
 `'session'`. `cache_creation_tokens` maps to `cacheWriteTokens` and
 `thinking_tokens` to `reasoningTokens`; `bench_run.cost_usd` — the harness's own
 figure — is carried through in `raw.bench_cost_usd` for comparison only,
-because collectors never price (see the module comment atop `pricing.ts`):
-tokens are passed through and `computeCost` derives cost like every other
-source. `capability_probe`, a separate table in the same DB, is deliberately
+because collectors never price: tokens are passed through and
+`usage.compute_cost` derives cost like every other source. `capability_probe`, a separate table in the same DB, is deliberately
 never read — it has no token columns at all, so its spend can't be
 reconstructed. Watermarked on `bench_run.id` (autoincrement, monotonic), since
 unlike Hermes/Feuer/OpenCode's small mutable tables, a finished benchmark
@@ -286,7 +272,7 @@ claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
 ingest and never flips claude-code's own `ok`/`note` (its own
 `SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
 
-### IU portal cost (`iu-portal`, not a `usage_record` source)
+### IU portal cost (`iu-portal`, not a `records` source)
 
 IU's own cost report is the only number that counts against the employee cap,
 and no API carries it (the gateway answers 501 on every usage/spend path). It is
@@ -304,16 +290,17 @@ the key is read from stdin and never touches disk.
   whose cell sum is off the "Total Cost" card by more than a cent, which is how
   a half-rendered or stale chart is told from a current one. Never wait for
   `networkidle` (Blazor long-polls).
-- **Storage.** `iu_portal_cost(day, label, row)`: non-zero cells only, the daily
-  report replaces its whole window (a vanished cell is deleted, today's value
-  grows). Two ids can share a label, hence `row`. `model` is our `model_norm`
-  when the label's alphanumerics match an IU-billed model id; NULL = spend we do
-  not track. `iu_portal_total(month)` is the monthly run, reconciliation only
+- **Storage.** `usage.iu_portal_cost(iu_key, day, label, row)`: non-zero cells only, the daily
+  report replaces its whole window in one transaction (a vanished cell is deleted, today's value
+  grows). Two ids can share a label, hence `row`. `model` is our normalized `records.model`
+  when the label's alphanumerics match an IU-billed (`billing = 'api_key'`) model id; NULL = spend we do
+  not track. `usage.iu_portal_total(iu_key, month)` is the monthly run, reconciliation only
   (its first period is a partial window and is dropped).
-- **Cadence.** One fetch per 4 h inside `ingest` (state JSON in `collector_state`
-  under `iu-portal`). Unreachable MacBook (ssh 255): skipped quietly, retried
+- **Cadence.** One fetch per 4 h per key inside `ingest` (state JSON in `usage.collector_state`
+  under `iu-portal` / `iu-portal:<key>`). Unreachable MacBook (ssh 255): skipped quietly, retried
   next run. Expired session (exit 3): logged, backed off 4 h. Neither fails the
-  other collectors. `health` goes stale after 48 h without a successful fetch.
+  other collectors, and a Postgres error in the portal pass is logged, never fatal to the run. `health` goes stale after 48 h
+  without a successful fetch (the later of the state's last success and the newest `fetched_at` in the portal tables).
 - **Session expiry** is the one human step: `make iu-portal-login` pushes a
   dialog to the MacBook and runs the headed sign-in (waits up to 5 min).
 - **`latest.json`.** Every successful daily scrape also writes
@@ -330,7 +317,7 @@ the key is read from stdin and never touches disk.
 
 The `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway` and
 `audio-gateway-vps` collectors retired 2026-10-29 with the gateways (Wave 11); agent-workflows posts its
-own usage to Argo (`source='agent-workflows'`). Historical rows stay in the DB and in Argo; no code
+own usage to Argo (`source='agent-workflows'`). Historical rows stay in the database; no code
 deletes, rewrites or reprices them. What still touches that history is below.
 
 The `research-gateway` collector was removed 2026-10-29: research moved to agent-workflows
@@ -338,11 +325,11 @@ The `research-gateway` collector was removed 2026-10-29: research moved to agent
 from 2026-10-28 15:30Z, the VPS instance since 2026-09-25, and every local row is already in Argo
 (`docs/reconciliation/2026-10-29-agent-workflows.md`). The
 `research-gateway.jsonl` log is no longer read. Its `sonar` rows are still the reason for
-`IGNORE_REPORTED_COST` in `pricing.ts` (vendor cost ignored, token-priced).
+`IGNORE_REPORTED_COST` in `src/pg/writer.ts` (vendor cost ignored, token-priced).
 
 Kept because history still runs over it: the `agent-gateway:*` lanes and the
 `agent-gateway-sessions.jsonl` attribution log (`claude-code`/`opencode`/`litellm` re-ingest upserts
-`sub_tool`, so dropping the join would rewrite old rows; `relane` resolves the same lanes), the vendor-`reported`
+the lane, so dropping the join would rewrite old rows), the vendor-`reported`
 cost guard in `reprice`, and `classifyBilling`'s `agent-gateway-sessions` branch.
 
 ### LiteLLM bridge (retired)
@@ -367,7 +354,7 @@ recover that, agent-gateway's `runSession` appends one record per worker to
 `~/.local/share/usage-tracker/agent-gateway-sessions.jsonl` with
 `{ tool, project, tsStart, tsEnd, outcome, durationMs, turns }`. The litellm
 collector loads this on every run and tags rows whose `ts` falls inside a
-window with `sub_tool` and `project`. When concurrent windows overlap, the
+window with `subTool` and `project`. When concurrent windows overlap, the
 narrowest one wins (best-effort heuristic — small risk of misattribution under
 heavy parallel fan-out). Review's three internal phases are tagged separately
 as `review:router` / `review:angle` / `review:synthesis`.
@@ -396,24 +383,8 @@ entrypoint is `sdk-cli` or absent: agent-gateway workers are always `claude -p`,
 days-old herdr pane whose line was pruned got a random `agent-gateway:*` lane from
 whichever window its rows overlapped, and lost its `wave`/`fleet` lane.
 
-`make relane` (`relane` in `src/cli.ts`, logic in `src/relane.ts`; `DRYRUN=1`
-prints per old → new lane row counts and cost without writing) backfills
-history. It scans the transcripts of both roots (subagent files included) for
-`sessionId → entrypoint`, then per session: the *explicit lane* is the most
-frequent existing lane that is neither `interactive`/`headless`/`desktop` nor
-`agent-gateway:*` — an agent-gateway lane never propagates to other rows. A
-`cli`/`claude-desktop` session rewrites NULL and `agent-gateway:*` rows to its
-explicit lane, else the entrypoint lane; an `sdk-cli` session fills NULL rows
-(explicit lane, else `headless`) and leaves `agent-gateway:*` alone; a session whose
-transcript is gone gets NULL rows filled from its own explicit lane only —
-unless it mixes NULL and `agent-gateway:*` rows, which only a session outliving its
-pruned line produces (agent-gateway workers finish in minutes, these spanned ~23h on
-average), so it is resolved as `cli`. The same pass flips
-`<synthetic>` rows from `iu` to `max` when the session has a non-synthetic `max`
-row. Changed rows get `synced_at = NULL` (like `reprice`) and run in one
-transaction; only `source = 'claude-code'` is touched.
-
-Group by it with `make stats BY=sub_tool`.
+Group by it with `make stats BY=lane`. `records.lane` is the CHECKed vocabulary `laneFor()` (`src/lane.ts`) derives
+from the collector's `subTool` at write time; there is no lane backfill step.
 
 ### Bridge error rate
 
@@ -431,9 +402,8 @@ dilute token/cost totals; the error rate surfaces in `make sources` as `err%`.
 
 ### Machine attribution
 
-The DB is local per machine; the eventual Argo sync merges several laptops' DBs
-into one view. So every row is tagged at ingest time with the host that produced
-it. For almost every collector the label is derived once per *batch* (run) from
+One shared database holds the usage of several machines, so every row is tagged
+at ingest time with the host that produced it (`machine` is an attribute, not part of the key). For almost every collector the label is derived once per *batch* (run) from
 `currentMachine()`: `USAGE_MACHINE` if set, else the macOS hardware model +
 chip via `system_profiler` (e.g. `Mac mini (M2 Pro)`), falling back to the
 hostname.
@@ -442,7 +412,7 @@ hostname.
 (this machine + the iumac mirror, see "MacBook (iumac) mirror" above), the
 label is set *per record* instead — `UsageRecord.machine` on the record wins
 over the batch-derived `currentMachine()` when present (`upsertRecords` in
-`db.ts` does `r.machine ?? batchMachine`), so mirrored rows carry the MacBook's
+`src/pg/writer.ts` does `r.machine ?? batchMachine`), so mirrored rows carry the MacBook's
 label and local rows still fall through to the batch machine. Group by it with
 `make stats BY=machine`.
 
