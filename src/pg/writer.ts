@@ -34,7 +34,29 @@ export interface WriteOptions {
   defaultWorkspace?: Workspace | null;
   /** Stamped as `ingested_at` of inserted and changed rows; default the database's now(). */
   now?: Date;
+  /**
+   * Insert-if-absent: a record whose (source, source_id) exists is left untouched (ON CONFLICT DO NOTHING), and so is an
+   * existing session row. For a backfill that must never overwrite what the source's own writer stored. `newRows` then
+   * counts the inserted rows; the rest of `processed` was skipped.
+   */
+  insertOnly?: boolean;
 }
+
+/**
+ * Values decided upstream (the historical backfill: rows were classified when the session_env logs still existed).
+ * The writer takes them verbatim instead of re-running classifyBilling / resolveAccount / resolveIuKey, and still applies
+ * the column rules: `account` only on `max` rows, `apiKey` only on `iu` rows. `machine: null` stores NULL instead of the
+ * writer host's machine; `undefined` keeps the default.
+ */
+export interface Preclassified {
+  billing: Billing;
+  account: string | null;
+  iuKey: string | null;
+  machine?: string | null;
+}
+
+/** A record the writer accepts; `preclassified` is optional and absent on every live collector path. */
+export type WriterRecord = UsageRecord & { preclassified?: Preclassified };
 
 export interface WriteSummary {
   processed: number;
@@ -64,7 +86,7 @@ interface Row {
   billing: string;
   account?: string;
   api_key?: string;
-  machine?: string;
+  machine?: string | null;
   outcome: string;
   lane: string;
   lane_detail?: object;
@@ -85,18 +107,20 @@ interface Row {
 /** One record to its usage.records row (undefined fields are NULL: they are dropped from the JSON payload). */
 function toRow(
   source: string,
-  r: UsageRecord,
+  r: WriterRecord,
   opts: WriteOptions,
-  machine: string,
+  machine: string | null,
   env: ReturnType<typeof sessionEnvLookups>,
 ): { row: Row; session: SessionInput | null } {
   const norm = normalizeModel(r.model);
   const model = norm ? baseModel(norm) : null;
   const rawSessionId = str(r.raw?.sessionId);
-  const classified = classifyBilling(source, r.model, rawSessionId, str(r.raw?.backend), env.baseUrl);
+  const pre = r.preclassified;
+  const classified = pre ? pre.billing : classifyBilling(source, r.model, rawSessionId, str(r.raw?.backend), env.baseUrl);
   const billing = mapBilling(classified);
-  const account = resolveAccount({ billing: classified, raw: r.raw }, env.account);
-  const apiKey = classified === "iu" ? resolveIuKey({ source, billing: classified, raw: r.raw }) : null;
+  const account = pre ? (classified === "max" ? pre.account : null) : resolveAccount({ billing: classified, raw: r.raw }, env.account);
+  const apiKey = classified === "iu" ? (pre ? pre.iuKey : resolveIuKey({ source, billing: classified, raw: r.raw })) : null;
+  if (pre && pre.machine !== undefined) machine = pre.machine;
   const { lane, detail } = laneFor(r.subTool ?? null, source, r.raw);
 
   const cacheWrite = tokens(r.cacheWriteTokens);
@@ -135,7 +159,7 @@ function toRow(
     billing,
     account: account ?? undefined,
     api_key: apiKey ?? undefined,
-    machine,
+    machine: machine ?? undefined,
     outcome: r.outcome ?? "ok",
     lane,
     lane_detail: detail ?? undefined,
@@ -188,7 +212,7 @@ const excluded = CONTENT.map((c) => `EXCLUDED.${c}`).join(", ");
 const current = CONTENT.map((c) => `t.${c}`).join(", ");
 const assign = CONTENT.map((c) => `${c} = EXCLUDED.${c}`).join(", ");
 
-const RECORDS_SQL = `
+const recordsSql = (insertOnly: boolean): string => `
 WITH up AS (
   INSERT INTO usage.records AS t
     (source, source_id, ${CONTENT.join(", ")}, ingested_at)
@@ -207,8 +231,12 @@ WITH up AS (
   CROSS JOIN LATERAL usage.compute_cost(r.model, r.ts, r.input_tokens, r.output_tokens, r.cache_read_tokens,
          r.cache_write_5m_tokens, r.cache_write_1h_tokens, r.reasoning_tokens, r.grain, r.cost_reported_usd) AS c
   ORDER BY r.source_id
-  ON CONFLICT (source, source_id) DO UPDATE SET ${assign}, ingested_at = EXCLUDED.ingested_at
-  WHERE (${current}) IS DISTINCT FROM (${excluded})
+  ON CONFLICT (source, source_id) ${
+    insertOnly
+      ? "DO NOTHING"
+      : `DO UPDATE SET ${assign}, ingested_at = EXCLUDED.ingested_at
+  WHERE (${current}) IS DISTINCT FROM (${excluded})`
+  }
   RETURNING (xmax = 0) AS inserted
 )
 SELECT count(*) FILTER (WHERE inserted)::int AS inserted, count(*)::int AS written FROM up`;
@@ -222,7 +250,7 @@ const merge = (col: string): string =>
 // (a session first seen through its subagent requests alone): a subagent record never demotes an interactive session.
 const TAKE_LANE = `(EXCLUDED.lane <> 'subagent' AND (s.lane = 'subagent' OR ${EARLIER}))`;
 
-const SESSIONS_SQL = `
+const sessionsSql = (insertOnly: boolean): string => `
 INSERT INTO usage.sessions AS s
   (source, source_session_id, lane, lane_detail, account, billing, api_key, machine, model, effort, repo, issue_id, run_id,
    first_ts, last_ts)
@@ -232,7 +260,7 @@ FROM jsonb_to_recordset($1::text::jsonb) AS j(
        source_session_id text, lane text, lane_detail jsonb, account text, billing text, api_key text, machine text,
        model text, effort text, repo text, issue_id text, run_id text, first_ts timestamptz, last_ts timestamptz)
 ORDER BY j.source_session_id
-ON CONFLICT (source, source_session_id) DO UPDATE SET
+ON CONFLICT (source, source_session_id) ${insertOnly ? "DO NOTHING" : `DO UPDATE SET
   lane = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane ELSE s.lane END,
   lane_detail = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane_detail ELSE s.lane_detail END,
   account = ${merge("account")},
@@ -247,7 +275,11 @@ ON CONFLICT (source, source_session_id) DO UPDATE SET
   issue_id = ${merge("issue_id")},
   run_id = ${merge("run_id")},
   first_ts = least(s.first_ts, EXCLUDED.first_ts),
-  last_ts = greatest(s.last_ts, EXCLUDED.last_ts)`;
+  last_ts = greatest(s.last_ts, EXCLUDED.last_ts)`}`;
+const RECORDS_SQL = recordsSql(false);
+const SESSIONS_SQL = sessionsSql(false);
+const RECORDS_INSERT_ONLY_SQL = recordsSql(true);
+const SESSIONS_INSERT_ONLY_SQL = sessionsSql(true);
 
 // Parents resolve after the sessions exist (a parent can sit in the same batch); a link is never erased or invented.
 const PARENTS_SQL = `
@@ -273,10 +305,10 @@ WHERE c.source = $2::text AND c.source_session_id = j.source_session_id
 export async function upsertRecords(
   sql: SQL,
   source: string,
-  records: UsageRecord[],
+  records: WriterRecord[],
   opts: WriteOptions = {},
 ): Promise<WriteSummary> {
-  const bySourceId = new Map<string, UsageRecord>();
+  const bySourceId = new Map<string, WriterRecord>();
   for (const r of records) {
     if (Number.isNaN(Date.parse(r.ts))) {
       log.warn(`pg-writer: ${source}/${r.sourceId} skipped, ts ${JSON.stringify(r.ts)} is not a date`);
@@ -305,13 +337,13 @@ export async function upsertRecords(
 
     const inserted = await sql.begin(async (tx) => {
       if (sessions.length > 0) {
-        await tx.unsafe(SESSIONS_SQL, [payload(sessions.map((s) => ({ ...s, lane_detail: s.lane_detail ?? undefined }))), source]);
+        await tx.unsafe(opts.insertOnly ? SESSIONS_INSERT_ONLY_SQL : SESSIONS_SQL, [payload(sessions.map((s) => ({ ...s, lane_detail: s.lane_detail ?? undefined }))), source]);
         const linked = sessions.filter((s) => s.parent_key);
-        if (linked.length > 0) {
+        if (linked.length > 0 && !opts.insertOnly) {
           await tx.unsafe(PARENTS_SQL, [payload(linked.map((s) => ({ source_session_id: s.source_session_id, parent_key: s.parent_key }))), source]);
         }
       }
-      const [counts] = await tx.unsafe(RECORDS_SQL, [payload(rows), source, now]);
+      const [counts] = await tx.unsafe(opts.insertOnly ? RECORDS_INSERT_ONLY_SQL : RECORDS_SQL, [payload(rows), source, now]);
       return Number(counts.inserted);
     });
     newRows += inserted;

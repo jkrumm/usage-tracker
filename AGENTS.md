@@ -36,6 +36,10 @@ push step.
 - `src/budget.ts` — `make budget`: the IU cap report (rolling 30 days per key, portal vs tracked per day and model,
   `--explain <model>`) over `usage.iu_portal_cost` / `iu_portal_total` and `usage.records` (`billing='api_key'`).
 - `src/reprice.ts` — `make reprice`: one set-based `UPDATE usage.records ... FROM LATERAL usage.compute_cost(...)`.
+- `scripts/backfill-argo.ts` (`make backfill-argo`, `DRYRUN=1`), `scripts/backfill-proof.ts`, `src/backfill.ts` — the one-off, re-runnable
+  history backfill of Argo's `argo.usage_record` (dumped read-only over ssh into `~/.local/share/usage-tracker/backfill/`) and the SQLite
+  archive into `usage.records` / `usage.sessions`; it writes the proof `docs/backfill/<date>-argo-usage-record.md`.
+  `scripts/import-sqlite-state.ts` (`make import-sqlite-state`), `src/backfill-state.ts` — the archive's state tables into `usage.*`.
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
@@ -195,6 +199,11 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   litellm re-ingest uses the `agent-gateway:*` lanes and the `agent-gateway-sessions.jsonl` attribution log
   (`models.ts`), `reprice` skips their provider-reported costs (`cost_reported_usd`), and `classifyBilling` keeps its `agent-gateway-sessions`
   branch. Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
+- **The backfill is an upsert that competes with the live pipeline.** `backfill-argo` writes billing / account / IU key as stored
+  (`Preclassified` on the writer record), prices everything but `cost_source = 'reported'` rows in SQL, and rewrites a key's row when its
+  content differs, so it overwrites what ingest wrote for the same key. `--insert-only all` (or a source list; default `agent-workflows`,
+  whose own writer owns its rows) only adds what is missing: use it for any re-run once ingest runs. Both scripts are safe to repeat; the
+  state import never overwrites a cursor or a newer line.
 - **The SQLite file `~/.local/share/usage-tracker/usage.db` is an archive**, the source of the one-off backfill. Nothing in
   the pipeline opens it; never delete or modify it. Collectors still read their sources' own stores (Hermes, Feuer,
   OpenCode, modelpick, the Athena archive) with `bun:sqlite` / `sqlite3`, read-only.

@@ -1,4 +1,4 @@
-.PHONY: help install pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -70,6 +70,12 @@ test: ## Run the test suite (Postgres suites need secrets-run or USAGE_TEST_PG_U
 
 check: typecheck ## All local validation: type-check, then run the test suite
 	$(RUN_TESTS)
+
+backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive into usage.records (DRYRUN=1, REUSE=1 keeps the dump, NOPROOF=1, INSERT_ONLY=all|<sources>)
+	bun run scripts/backfill-argo.ts $(if $(DRYRUN),--dry-run) $(if $(REUSE),--reuse-dump) $(if $(NOPROOF),--no-proof) $(if $(INSERT_ONLY),--insert-only $(INSERT_ONLY))
+
+import-sqlite-state: ## One-off import of the SQLite archive's state tables (cursors, session_env, quota, picks, portal) into usage.*
+	bun run scripts/import-sqlite-state.ts
 
 pg-migrate: ## Apply migrations/pg to the usage schema (USAGE_PG_URL, default role usage on shared)
 	bun run src/cli.ts pg-migrate

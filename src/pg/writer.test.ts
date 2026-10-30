@@ -3,18 +3,18 @@ import { expect, test } from "bun:test";
 import { currentMachine } from "../machine.ts";
 import { syncPrices } from "../prices/sync.ts";
 import { fixtureDeps } from "../prices/testing.ts";
-import type { UsageRecord } from "../types.ts";
 import { migrate } from "./migrate.ts";
 import { readSessionEnv, upsertSessionEnv } from "./session-env.ts";
 import { describePg, scratchDb } from "./testing.ts";
-import { upsertRecords } from "./writer.ts";
+import { upsertRecords, type WriterRecord } from "./writer.ts";
 
 const T0 = new Date("2026-10-30T09:00:00Z");
 const T1 = new Date("2026-10-30T10:00:00Z");
 const T2 = new Date("2026-10-30T11:00:00Z");
+const T3 = new Date("2026-10-30T12:00:00Z");
 const WED_OFF = "2026-10-28T17:17:00Z";
 
-const rec = (sourceId: string, o: Partial<UsageRecord> = {}): UsageRecord => ({
+const rec = (sourceId: string, o: Partial<WriterRecord> = {}): WriterRecord => ({
   sourceId,
   grain: "message",
   ts: WED_OFF,
@@ -376,4 +376,54 @@ describePg("usage.records write path", () => {
     const again = await upsertRecords(sql, "claude-code", rows);
     expect(again.newRows).toBe(0);
   }, 60_000);
+  test("preclassified billing, account, IU key and machine are written as given, not re-derived", async () => {
+    const sql = await ready();
+    // Without it, a claude-code row on an unknown session classifies as Max; with it, the stored class wins.
+    await upsertRecords(sql, "claude-code", [
+      rec("pre_1", { raw: { sessionId: "pre-s1" }, preclassified: { billing: "iu", account: "me", iuKey: "athena-team", machine: null } }),
+      rec("pre_2", { raw: { sessionId: "pre-s2" }, preclassified: { billing: "max", account: "me2", iuKey: "personal" } }),
+      rec("pre_3", { raw: { sessionId: "pre-s3" }, preclassified: { billing: "anthropic-api", account: "iu", iuKey: "personal" } }),
+      rec("pre_4", { raw: { sessionId: "pre-s4" }, preclassified: { billing: "unknown", account: null, iuKey: null } }),
+      rec("pre_5", { raw: { sessionId: "pre-s5" } }),
+    ]);
+    // account only on max rows, api_key only on iu rows; machine null is stored as NULL, undefined keeps the host
+    expect(await one("claude-code", "pre_1")).toMatchObject({ billing: "api_key", account: null, api_key: "athena-team", machine: null });
+    expect(await one("claude-code", "pre_2")).toMatchObject({ billing: "max", account: "me2", api_key: null, machine: "mini" });
+    expect(await one("claude-code", "pre_3")).toMatchObject({ billing: "api_key", account: null, api_key: null });
+    expect(await one("claude-code", "pre_4")).toMatchObject({ billing: "unknown", account: null, api_key: null });
+    expect(await session("claude-code", "pre-s1")).toMatchObject({ billing: "api_key", api_key: "athena-team", machine: null });
+    expect(await session("claude-code", "pre-s2")).toMatchObject({ billing: "max", account: "me2" });
+    // the default path is untouched: a record without preclassified is classified by the writer as before
+    expect((await one("claude-code", "pre_5")).billing).toBe("max");
+  });
+
+  test("insertOnly leaves an existing record and its session alone, inserts the rest, and a re-run inserts nothing", async () => {
+    const sql = await ready();
+    const native = rec("ins_1", { inputTokens: 10, raw: { sessionId: "ins-s", effort: "high" }, machine: "native-host" });
+    await upsertRecords(sql, "agent-workflows", [native], { now: T0 });
+    const stored = await one("agent-workflows", "ins_1");
+    const storedSession = await session("agent-workflows", "ins-s");
+
+    const backfill = [
+      rec("ins_1", { inputTokens: 999, raw: { sessionId: "ins-s" }, machine: "argo-host", ts: "2026-10-01T00:00:00Z" }),
+      rec("ins_2", { inputTokens: 5, raw: { sessionId: "ins-s" }, ts: "2026-10-01T00:00:00Z" }),
+      rec("ins_3", { inputTokens: 6, raw: { sessionId: "ins-new" }, ts: "2026-10-01T00:00:00Z" }),
+    ];
+    expect(await upsertRecords(sql, "agent-workflows", backfill, { now: T1, insertOnly: true })).toEqual({ processed: 3, newRows: 2 });
+
+    // untouched: record content, ingested_at and the session's attributes and span
+    const after = await one("agent-workflows", "ins_1");
+    expect(after.input_tokens).toBe(stored.input_tokens);
+    expect(after.machine).toBe("native-host");
+    expect(after.ingested_at).toEqual(T0);
+    expect(await session("agent-workflows", "ins-s")).toEqual(storedSession);
+    // inserted: the absent record joins the existing session, the new one brings its own session
+    expect((await one("agent-workflows", "ins_2")).source_session_id).toBe("ins-s");
+    expect((await one("agent-workflows", "ins_3")).source_session_id).toBe("ins-new");
+    expect((await one("agent-workflows", "ins_2")).ingested_at).toEqual(T1);
+
+    expect(await upsertRecords(sql, "agent-workflows", backfill, { now: T3, insertOnly: true })).toEqual({ processed: 3, newRows: 0 });
+    const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${T3.toISOString()}::timestamptz`;
+    expect(n).toBe(0);
+  });
 });

@@ -127,6 +127,11 @@ has the semantics of `db.upsertRecords`, into `records`:
 - **`reasoningFreeBefore`.** IU billed no `gpt-5.6-terra` reasoning tokens before 2026-10-16T08:55Z (`REASONING_FREE_BEFORE` in
   `writer.ts`). For such a row the column `reasoning_tokens` is written as 0 and the count is kept in `raw.reasoningTokensUnbilled`,
   so `compute_cost` bills the reasoning share only from the cutoff on. Rows from the cutoff on keep their count.
+- **Pre-classified input and insert-only (the history backfill).** A record may carry `preclassified: {billing, account, iuKey, machine?}`
+  (`WriterRecord`, `src/pg/writer.ts`): the writer takes them verbatim instead of calling `classifyBilling` / `resolveAccount` /
+  `resolveIuKey` (account still Max rows only, key still `iu` rows only; `machine: null` stores NULL). `WriteOptions.insertOnly` turns
+  both the records and the sessions statements into `ON CONFLICT DO NOTHING` (no parent-link updates either), for a source whose own
+  writer owns its rows. Neither is set on any live collector path. See `scripts/backfill-argo.ts`.
 - **session_env.** The batch's `raw.sessionId`s are looked up in `usage.session_env` (`readSessionEnv`, one query per chunk) and
   passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the hook-log lookup) and `resolveAccount`.
   `upsertSessionEnv` writes the table: the newest line wins for `base_url` and `lane`, a missing account never erases a stored
