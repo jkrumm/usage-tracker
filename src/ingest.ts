@@ -1,53 +1,53 @@
-import type { SQL } from "bun";
-import { collectPicks } from "./collectors/account-picks.ts";
-import { collectQuota } from "./collectors/claude-quota.ts";
-import { collectPortal, type PortalFetcher } from "./collectors/iu-portal.ts";
-import { collectors as allCollectors } from "./collectors/index.ts";
-import { log } from "./log.ts";
-import { markSessionEnvsPersisted, pendingSessionEnvs, useStoredSessionEnvs } from "./models.ts";
-import { upsertSessionEvents } from "./pg/events.ts";
-import { upsertSessionEnv } from "./pg/session-env.ts";
-import { loadCursor, loadSessionEnvTable, saveState } from "./pg/state.ts";
-import { upsertRecords } from "./pg/writer.ts";
-import { unpricedByModel, type UnpricedModel } from "./report.ts";
-import { syncIumac } from "./remote.ts";
-import type { SyncResult } from "./remote.ts";
-import type { Collector } from "./types.ts";
+import type { SQL } from 'bun'
+import { collectPicks } from './collectors/account-picks.ts'
+import { collectQuota } from './collectors/claude-quota.ts'
+import { collectPortal, type PortalFetcher } from './collectors/iu-portal.ts'
+import { collectors as allCollectors } from './collectors/index.ts'
+import { log } from './log.ts'
+import { markSessionEnvsPersisted, pendingSessionEnvs, useStoredSessionEnvs } from './models.ts'
+import { upsertSessionEvents } from './pg/events.ts'
+import { upsertSessionEnv } from './pg/session-env.ts'
+import { loadCursor, loadSessionEnvTable, saveState } from './pg/state.ts'
+import { upsertRecords } from './pg/writer.ts'
+import { unpricedByModel, type UnpricedModel } from './report.ts'
+import { syncIumac } from './remote.ts'
+import type { SyncResult } from './remote.ts'
+import type { Collector } from './types.ts'
 
 export interface SourceResult {
-  source: string;
-  status: "ok" | "skipped" | "error";
-  processed: number;
-  newRows: number;
-  note?: string;
+  source: string
+  status: 'ok' | 'skipped' | 'error'
+  processed: number
+  newRows: number
+  note?: string
 }
 
 export interface IngestSummary {
-  results: SourceResult[];
+  results: SourceResult[]
   /** Rows priced at nothing (cost_source = 'none'), by model — an unknown
    * model id is otherwise indistinguishable from a genuinely free one. */
-  unpriced: UnpricedModel[];
+  unpriced: UnpricedModel[]
   /** New quota_samples / account_picks rows this run. */
-  quota: number;
-  picks: number;
+  quota: number
+  picks: number
   /** IU portal cost cells written this run (0 when throttled, unreachable or failed). */
-  portal: number;
+  portal: number
 }
 
 export interface IngestOptions {
-  full?: boolean;
+  full?: boolean
   /** Limit the run to a single source. */
-  only?: string;
+  only?: string
   /** Replace the collector registry (tests). */
-  collectors?: Collector[];
+  collectors?: Collector[]
   /** Replace the iumac mirror sync (tests). */
-  syncIumac?: () => Promise<SyncResult>;
+  syncIumac?: () => Promise<SyncResult>
   /** Collect quota samples + picker decisions (default: on unless `only` or `collectors` narrows the run). */
-  accounts?: boolean;
+  accounts?: boolean
   /** Fetch the IU portal cost report (default: same condition as `accounts`). */
-  portal?: boolean;
+  portal?: boolean
   /** Replace the ssh scrape (tests). */
-  portalFetch?: PortalFetcher;
+  portalFetch?: PortalFetcher
 }
 
 /**
@@ -62,65 +62,65 @@ export interface IngestOptions {
  * improvement.
  */
 export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<IngestSummary> {
-  const registry = opts.collectors ?? allCollectors;
-  const targets = opts.only ? registry.filter((c) => c.source === opts.only) : registry;
+  const registry = opts.collectors ?? allCollectors
+  const targets = opts.only ? registry.filter((c) => c.source === opts.only) : registry
 
   if (opts.only && targets.length === 0) {
-    throw new Error(`unknown source "${opts.only}"`);
+    throw new Error(`unknown source "${opts.only}"`)
   }
 
   // The stored session_env lines are the baseline of the hook-log lookups, so a
   // long-lived session keeps its lane and base_url after the log files are
   // pruned. The log scan itself stays lazy: nothing is read until the first
   // lookup, which lands after claude-code has synced the iumac mirror.
-  useStoredSessionEnvs(await loadSessionEnvTable(sql));
+  useStoredSessionEnvs(await loadSessionEnvTable(sql))
 
-  const iumacSync = once(opts.syncIumac ?? (() => syncIumac(log)));
-  const results: SourceResult[] = [];
+  const iumacSync = once(opts.syncIumac ?? (() => syncIumac(log)))
+  const results: SourceResult[] = []
   for (const c of targets) {
-    results.push(await runOne(sql, c, opts, iumacSync));
+    results.push(await runOne(sql, c, opts, iumacSync))
   }
 
-  let quota = 0;
-  let picks = 0;
+  let quota = 0
+  let picks = 0
   if (opts.accounts ?? (!opts.only && !opts.collectors)) {
     try {
-      quota = await collectQuota(sql);
+      quota = await collectQuota(sql)
     } catch (err) {
-      log.error(`claude-quota: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`claude-quota: ${err instanceof Error ? err.message : String(err)}`)
     }
     try {
-      picks = await collectPicks(sql, { full: opts.full });
+      picks = await collectPicks(sql, { full: opts.full })
     } catch (err) {
-      log.error(`account-picks: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`account-picks: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
   // Last: a slow or hung portal scrape must never starve the record collectors.
-  let portal = 0;
+  let portal = 0
   if (opts.portal ?? (!opts.only && !opts.collectors)) {
     try {
-      portal = await collectPortal(sql, { fetch: opts.portalFetch });
+      portal = await collectPortal(sql, { fetch: opts.portalFetch })
     } catch (err) {
-      log.error(`iu-portal: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`iu-portal: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  let unpriced: UnpricedModel[] = [];
+  let unpriced: UnpricedModel[] = []
   try {
-    unpriced = await unpricedByModel(sql);
+    unpriced = await unpricedByModel(sql)
   } catch (err) {
-    log.error(`unpriced: ${err instanceof Error ? err.message : String(err)}`);
+    log.error(`unpriced: ${err instanceof Error ? err.message : String(err)}`)
   }
-  return { results, unpriced, quota, picks, portal };
+  return { results, unpriced, quota, picks, portal }
 }
 
 export interface EventBackfill {
   /** Distinct events the full scan emitted (a skill's call and size halves count once). */
-  seen: number;
+  seen: number
   /** Rows inserted or changed in usage.session_events. */
-  written: number;
-  byKind: Record<string, number>;
+  written: number
+  byKind: Record<string, number>
 }
 
 /**
@@ -130,15 +130,26 @@ export interface EventBackfill {
  * sync the iumac mirror itself (two rsyncs over one directory race, and the agent keeps the mirror within 15 minutes):
  * the MacBook's history is whatever the last sync left on disk.
  */
-export async function backfillEvents(sql: SQL, c: Collector, opts: { syncIumac?: () => Promise<SyncResult> } = {}): Promise<EventBackfill> {
-  const result = await c.collect({ cursor: null, full: true, log, syncIumac: opts.syncIumac ?? (async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })) });
-  const events = result.events ?? [];
-  const kinds = new Map<string, string>();
-  for (const e of events) kinds.set(e.eventId, e.kind);
-  const byKind: Record<string, number> = {};
-  for (const kind of kinds.values()) byKind[kind] = (byKind[kind] ?? 0) + 1;
-  const written = await upsertSessionEvents(sql, c.source, events);
-  return { seen: kinds.size, written, byKind };
+export async function backfillEvents(
+  sql: SQL,
+  c: Collector,
+  opts: { syncIumac?: () => Promise<SyncResult> } = {},
+): Promise<EventBackfill> {
+  const result = await c.collect({
+    cursor: null,
+    full: true,
+    log,
+    syncIumac:
+      opts.syncIumac ??
+      (async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })),
+  })
+  const events = result.events ?? []
+  const kinds = new Map<string, string>()
+  for (const e of events) kinds.set(e.eventId, e.kind)
+  const byKind: Record<string, number> = {}
+  for (const kind of kinds.values()) byKind[kind] = (byKind[kind] ?? 0) + 1
+  const written = await upsertSessionEvents(sql, c.source, events)
+  return { seen: kinds.size, written, byKind }
 }
 
 /**
@@ -155,17 +166,17 @@ export async function backfillEvents(sql: SQL, c: Collector, opts: { syncIumac?:
  * has the per-model breakdown.
  */
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
-  const status = summary.results.some((r) => r.status === "error") ? "error" : "ok";
+  const status = summary.results.some((r) => r.status === 'error') ? 'error' : 'ok'
   const perSource = summary.results.map((r) =>
-    r.status === "ok" ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
-  );
-  const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0);
-  return `run ${now.toISOString()} status=${status} ${perSource.join(" ")} quota=+${summary.quota} picks=+${summary.picks} portal=+${summary.portal} unpriced=${unpricedTotal}`;
+    r.status === 'ok' ? `${r.source}=+${r.newRows}/${r.processed}` : `${r.source}=${r.status}`,
+  )
+  const unpricedTotal = summary.unpriced.reduce((sum, m) => sum + m.rows, 0)
+  return `run ${now.toISOString()} status=${status} ${perSource.join(' ')} quota=+${summary.quota} picks=+${summary.picks} portal=+${summary.portal} unpriced=${unpricedTotal}`
 }
 
 function once<T>(fn: () => Promise<T>): () => Promise<T> {
-  let pending: Promise<T> | null = null;
-  return () => (pending ??= fn());
+  let pending: Promise<T> | null = null
+  return () => (pending ??= fn())
 }
 
 /**
@@ -175,10 +186,10 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
  * batch it is about to write.
  */
 async function persistSessionEnv(sql: SQL): Promise<void> {
-  const changes = pendingSessionEnvs();
-  if (changes.length === 0) return;
-  await upsertSessionEnv(sql, changes);
-  markSessionEnvsPersisted(changes);
+  const changes = pendingSessionEnvs()
+  if (changes.length === 0) return
+  await upsertSessionEnv(sql, changes)
+  markSessionEnvsPersisted(changes)
 }
 
 async function runOne(
@@ -188,7 +199,7 @@ async function runOne(
   syncIumac: () => Promise<SyncResult>,
 ): Promise<SourceResult> {
   if (!c.available()) {
-    return { source: c.source, status: "skipped", processed: 0, newRows: 0, note: "not present" };
+    return { source: c.source, status: 'skipped', processed: 0, newRows: 0, note: 'not present' }
   }
 
   try {
@@ -197,27 +208,29 @@ async function runOne(
       full: opts.full ?? false,
       log,
       syncIumac,
-    });
-    await persistSessionEnv(sql);
+    })
+    await persistSessionEnv(sql)
     const { processed, newRows } = await upsertRecords(sql, c.source, result.records, {
       defaultWorkspace: c.workspace ?? null,
-    });
+    })
     // After the records: an events failure is recorded like any other and the cursor stays, the records are idempotent.
-    await upsertSessionEvents(sql, c.source, result.events ?? []);
+    await upsertSessionEvents(sql, c.source, result.events ?? [])
 
-    const status = result.note && result.records.length === 0 ? "skipped" : "ok";
-    await saveState(sql, c.source, { cursor: result.cursor, status, note: result.note });
-    return { source: c.source, status, processed, newRows, note: result.note };
+    const status = result.note && result.records.length === 0 ? 'skipped' : 'ok'
+    await saveState(sql, c.source, { cursor: result.cursor, status, note: result.note })
+    return { source: c.source, status, processed, newRows, note: result.note }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error(`${c.source}: ${msg}`);
+    const msg = err instanceof Error ? err.message : String(err)
+    log.error(`${c.source}: ${msg}`)
     // The stored cursor stays: the next run retries from the same watermark. When Postgres itself is the failure the
     // bookkeeping write fails too; that must not escape and abort the collectors after this one.
     try {
-      await saveState(sql, c.source, { status: "error", note: msg });
+      await saveState(sql, c.source, { status: 'error', note: msg })
     } catch (stateErr) {
-      log.error(`${c.source}: could not record the error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
+      log.error(
+        `${c.source}: could not record the error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`,
+      )
     }
-    return { source: c.source, status: "error", processed: 0, newRows: 0, note: msg };
+    return { source: c.source, status: 'error', processed: 0, newRows: 0, note: msg }
   }
 }

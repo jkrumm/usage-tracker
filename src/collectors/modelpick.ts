@@ -1,8 +1,8 @@
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import { Database } from 'bun:sqlite'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import type { Collector, CollectContext, CollectResult, UsageRecord } from '../types.ts'
 
 // modelpick (~/SourceRoot/modelpick) benchmarks models against real APIs, but
 // its harness points CLAUDE_CONFIG_DIR at a scratch dir it wipes after every
@@ -27,45 +27,44 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 
 function dbPath(): string {
   return (
-    process.env.MODELPICK_DB?.trim() ||
-    join(homedir(), "SourceRoot", "modelpick", "modelpick.db")
-  );
+    process.env.MODELPICK_DB?.trim() || join(homedir(), 'SourceRoot', 'modelpick', 'modelpick.db')
+  )
 }
 
 interface BenchRunRow {
-  id: number;
-  suite_id: string;
-  model_id: string;
-  task_id: string;
-  attempt: number;
-  duration_ms: number | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_read_tokens: number | null;
-  cache_creation_tokens: number | null;
-  thinking_tokens: number | null;
-  cost_usd: number | null;
-  terminal_reason: string | null;
-  created_at: string; // sqlite CURRENT_TIMESTAMP: "YYYY-MM-DD HH:MM:SS", UTC
+  id: number
+  suite_id: string
+  model_id: string
+  task_id: string
+  attempt: number
+  duration_ms: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  cache_creation_tokens: number | null
+  thinking_tokens: number | null
+  cost_usd: number | null
+  terminal_reason: string | null
+  created_at: string // sqlite CURRENT_TIMESTAMP: "YYYY-MM-DD HH:MM:SS", UTC
 }
 
 export const modelpickCollector: Collector = {
-  source: "modelpick",
+  source: 'modelpick',
   staleAfterHours: null,
-  workspace: "private",
+  workspace: 'private',
 
   available() {
-    return existsSync(dbPath());
+    return existsSync(dbPath())
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const path = dbPath();
-    if (!existsSync(path)) return { records: [], cursor: ctx.cursor };
+    const path = dbPath()
+    if (!existsSync(path)) return { records: [], cursor: ctx.cursor }
 
-    const since = ctx.full ? 0 : Number.parseInt(ctx.cursor ?? "0", 10) || 0;
-    let db: Database | undefined;
+    const since = ctx.full ? 0 : Number.parseInt(ctx.cursor ?? '0', 10) || 0
+    let db: Database | undefined
     try {
-      db = new Database(path, { readonly: true });
+      db = new Database(path, { readonly: true })
       const rows = db
         .query<BenchRunRow, [number]>(
           `SELECT id, suite_id, model_id, task_id, attempt, duration_ms,
@@ -75,29 +74,27 @@ export const modelpickCollector: Collector = {
            WHERE id > ?
            ORDER BY id ASC`,
         )
-        .all(since);
+        .all(since)
 
-      const records = rows.map(toRecord);
-      const cursor = rows.length
-        ? String(Math.max(since, ...rows.map((r) => r.id)))
-        : String(since);
-      return { records, cursor };
+      const records = rows.map(toRecord)
+      const cursor = rows.length ? String(Math.max(since, ...rows.map((r) => r.id))) : String(since)
+      return { records, cursor }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` };
+      const msg = err instanceof Error ? err.message : String(err)
+      return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` }
     } finally {
-      db?.close();
+      db?.close()
     }
   },
-};
+}
 
 function toRecord(r: BenchRunRow): UsageRecord {
   return {
     sourceId: String(r.id),
-    grain: "session",
-    ts: new Date(`${r.created_at.replace(" ", "T")}Z`).toISOString(),
+    grain: 'session',
+    ts: new Date(`${r.created_at.replace(' ', 'T')}Z`).toISOString(),
     model: r.model_id,
-    project: "modelpick",
+    project: 'modelpick',
     subTool: r.suite_id,
     inputTokens: r.input_tokens ?? 0,
     outputTokens: r.output_tokens ?? 0,
@@ -116,5 +113,5 @@ function toRecord(r: BenchRunRow): UsageRecord {
       // other source.
       bench_cost_usd: r.cost_usd,
     },
-  };
+  }
 }

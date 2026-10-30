@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { resetSessionBaseUrlsCacheForTest, resetAgentGatewayWindowsCacheForTest } from "../models.ts";
-import { iumacLogsDir, iumacProjectsDir } from "../remote.ts";
-import type { Logger } from "../types.ts";
-import { claudeCodeCollector, setSyncOverrideForTest } from "./claude-code.ts";
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  resetSessionBaseUrlsCacheForTest,
+  resetAgentGatewayWindowsCacheForTest,
+} from '../models.ts'
+import { iumacLogsDir, iumacProjectsDir } from '../remote.ts'
+import type { Logger } from '../types.ts'
+import { claudeCodeCollector, setSyncOverrideForTest } from './claude-code.ts'
 
 // Integration coverage for the two-root walk: collectRoot() sharing one
 // Offsets map across hosts, per-record machine attribution, and the
@@ -14,778 +17,1044 @@ import { claudeCodeCollector, setSyncOverrideForTest } from "./claude-code.ts";
 // mirror. setSyncOverrideForTest lets the failure-path tests force syncIumac's
 // outcome without ever spawning ssh or rsync.
 
-const log: Logger = { info() {}, warn() {}, error() {} };
+const log: Logger = { info() {}, warn() {}, error() {} }
 
 function assistantLine(requestId: string): string {
   return `${JSON.stringify({
-    type: "assistant",
+    type: 'assistant',
     requestId,
-    sessionId: "session-1",
+    sessionId: 'session-1',
     timestamp: new Date().toISOString(),
     message: {
       id: `msg-${requestId}`,
-      model: "claude-sonnet-5",
+      model: 'claude-sonnet-5',
       usage: { input_tokens: 10, output_tokens: 5 },
     },
-  })}\n`;
+  })}\n`
 }
 
-describe("claude-code two-root collector", () => {
-  let localDir: string;
-  let remoteDir: string;
-  let localLogsDir: string;
+describe('claude-code two-root collector', () => {
+  let localDir: string
+  let remoteDir: string
+  let localLogsDir: string
 
   beforeEach(() => {
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-"));
-    remoteDir = mkdtempSync(join(tmpdir(), "usage-tracker-remote-"));
-    localLogsDir = mkdtempSync(join(tmpdir(), "usage-tracker-logs-"));
-    process.env.USAGE_CLAUDE_PROJECTS_DIR = localDir;
-    process.env.USAGE_REMOTE_DIR = remoteDir;
-    process.env.USAGE_IUMAC_MACHINE = "MacBook Pro (Test)";
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-'))
+    remoteDir = mkdtempSync(join(tmpdir(), 'usage-tracker-remote-'))
+    localLogsDir = mkdtempSync(join(tmpdir(), 'usage-tracker-logs-'))
+    process.env.USAGE_CLAUDE_PROJECTS_DIR = localDir
+    process.env.USAGE_REMOTE_DIR = remoteDir
+    process.env.USAGE_IUMAC_MACHINE = 'MacBook Pro (Test)'
     // getSessionLane() now runs on every parsed line — point it at an empty
     // tmp dir rather than the real ~/.claude/logs so these tests never read
     // this machine's actual session history.
-    process.env.USAGE_CLAUDE_LOGS_DIR = localLogsDir;
+    process.env.USAGE_CLAUDE_LOGS_DIR = localLogsDir
     // Same reasoning for the agent-gateway-attribution fallback getAgentGatewayLane()
     // now runs on every unattributed line — point it at a path that doesn't
     // exist so these tests never read this machine's real
     // agent-gateway-sessions.jsonl.
-    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = join(localLogsDir, "no-such-agent-gateway-sessions.jsonl");
-    resetSessionBaseUrlsCacheForTest();
-    resetAgentGatewayWindowsCacheForTest();
-  });
+    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = join(
+      localLogsDir,
+      'no-such-agent-gateway-sessions.jsonl',
+    )
+    resetSessionBaseUrlsCacheForTest()
+    resetAgentGatewayWindowsCacheForTest()
+  })
 
   afterEach(() => {
-    setSyncOverrideForTest(null);
-    delete process.env.USAGE_CLAUDE_PROJECTS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    delete process.env.USAGE_IUMAC_MACHINE;
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG;
-    rmSync(localDir, { recursive: true, force: true });
-    rmSync(remoteDir, { recursive: true, force: true });
-    rmSync(localLogsDir, { recursive: true, force: true });
-    resetSessionBaseUrlsCacheForTest();
-    resetAgentGatewayWindowsCacheForTest();
-  });
+    setSyncOverrideForTest(null)
+    delete process.env.USAGE_CLAUDE_PROJECTS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    delete process.env.USAGE_IUMAC_MACHINE
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG
+    rmSync(localDir, { recursive: true, force: true })
+    rmSync(remoteDir, { recursive: true, force: true })
+    rmSync(localLogsDir, { recursive: true, force: true })
+    resetSessionBaseUrlsCacheForTest()
+    resetAgentGatewayWindowsCacheForTest()
+  })
 
-  test("offsets for local and mirror files coexist without colliding; mirror carries machine, local leaves it null", async () => {
-    const localFile = join(localDir, "local-session.jsonl");
-    writeFileSync(localFile, assistantLine("local-req"));
+  test('offsets for local and mirror files coexist without colliding; mirror carries machine, local leaves it null', async () => {
+    const localFile = join(localDir, 'local-session.jsonl')
+    writeFileSync(localFile, assistantLine('local-req'))
 
-    const mirrorProjectsDir = iumacProjectsDir();
-    mkdirSync(mirrorProjectsDir, { recursive: true });
-    const mirrorFile = join(mirrorProjectsDir, "mirror-session.jsonl");
-    writeFileSync(mirrorFile, assistantLine("mirror-req"));
+    const mirrorProjectsDir = iumacProjectsDir()
+    mkdirSync(mirrorProjectsDir, { recursive: true })
+    const mirrorFile = join(mirrorProjectsDir, 'mirror-session.jsonl')
+    writeFileSync(mirrorFile, assistantLine('mirror-req'))
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const localRecord = result.records.find((r) => r.sourceId === "local-req");
-    const mirrorRecord = result.records.find((r) => r.sourceId === "mirror-req");
-    expect(localRecord?.machine).toBeNull();
-    expect(mirrorRecord?.machine).toBe("MacBook Pro (Test)");
+    const localRecord = result.records.find((r) => r.sourceId === 'local-req')
+    const mirrorRecord = result.records.find((r) => r.sourceId === 'mirror-req')
+    expect(localRecord?.machine).toBeNull()
+    expect(mirrorRecord?.machine).toBe('MacBook Pro (Test)')
 
-    const offsets = JSON.parse(result.cursor ?? "{}") as Record<string, number>;
-    expect(offsets[localFile]).toBeGreaterThan(0);
-    expect(offsets[mirrorFile]).toBeGreaterThan(0);
-    expect(offsets[localFile]).not.toBe(offsets[mirrorFile]);
-  });
+    const offsets = JSON.parse(result.cursor ?? '{}') as Record<string, number>
+    expect(offsets[localFile]).toBeGreaterThan(0)
+    expect(offsets[mirrorFile]).toBeGreaterThan(0)
+    expect(offsets[localFile]).not.toBe(offsets[mirrorFile])
+  })
 
-  describe("saved offset counts bytes", () => {
+  describe('saved offset counts bytes', () => {
     // A request whose text is multibyte: 3 bytes per "€", so characters < bytes.
     const multibyteLine = (requestId: string) =>
       `${JSON.stringify({
-        type: "assistant",
+        type: 'assistant',
         requestId,
-        sessionId: "session-1",
+        sessionId: 'session-1',
         timestamp: new Date().toISOString(),
-        message: { id: `msg-${requestId}`, model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: "text", text: "€".repeat(50) }] },
-      })}\n`;
-    const none = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
-    const offsetOf = (cursor: string | null | undefined, file: string) => (JSON.parse(cursor ?? "{}") as Record<string, number>)[file];
+        message: {
+          id: `msg-${requestId}`,
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 10, output_tokens: 5 },
+          content: [{ type: 'text', text: '€'.repeat(50) }],
+        },
+      })}\n`
+    const none = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })
+    const offsetOf = (cursor: string | null | undefined, file: string) =>
+      (JSON.parse(cursor ?? '{}') as Record<string, number>)[file]
 
-    test("the offset equals the file size in bytes, so the next poll re-reads nothing and a later line is read whole", async () => {
-      setSyncOverrideForTest(none);
-      const file = join(localDir, "multibyte.jsonl");
-      writeFileSync(file, multibyteLine("m1") + multibyteLine("m2"));
-      expect(Buffer.byteLength(multibyteLine("m1"))).toBeGreaterThan(multibyteLine("m1").length);
+    test('the offset equals the file size in bytes, so the next poll re-reads nothing and a later line is read whole', async () => {
+      setSyncOverrideForTest(none)
+      const file = join(localDir, 'multibyte.jsonl')
+      writeFileSync(file, multibyteLine('m1') + multibyteLine('m2'))
+      expect(Buffer.byteLength(multibyteLine('m1'))).toBeGreaterThan(multibyteLine('m1').length)
 
-      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      expect(first.records.map((r) => r.sourceId).sort()).toEqual(["m1", "m2"]);
-      expect(offsetOf(first.cursor, file)).toBe(statSync(file).size);
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(first.records.map((r) => r.sourceId).sort()).toEqual(['m1', 'm2'])
+      expect(offsetOf(first.cursor, file)).toBe(statSync(file).size)
 
-      const idle = await claudeCodeCollector.collect({ cursor: first.cursor ?? null, full: false, log });
-      expect(idle.records).toEqual([]);
+      const idle = await claudeCodeCollector.collect({
+        cursor: first.cursor ?? null,
+        full: false,
+        log,
+      })
+      expect(idle.records).toEqual([])
 
-      appendFileSync(file, multibyteLine("m3"));
-      const next = await claudeCodeCollector.collect({ cursor: first.cursor ?? null, full: false, log });
-      expect(next.records.map((r) => r.sourceId)).toEqual(["m3"]);
-      expect(offsetOf(next.cursor, file)).toBe(statSync(file).size);
-    });
+      appendFileSync(file, multibyteLine('m3'))
+      const next = await claudeCodeCollector.collect({
+        cursor: first.cursor ?? null,
+        full: false,
+        log,
+      })
+      expect(next.records.map((r) => r.sourceId)).toEqual(['m3'])
+      expect(offsetOf(next.cursor, file)).toBe(statSync(file).size)
+    })
 
-    test("a cursor saved by the old character-index code (short of the true offset) loses no line and moves to the exact offset", async () => {
-      setSyncOverrideForTest(none);
-      const file = join(localDir, "legacy.jsonl");
-      const l1 = multibyteLine("l1");
-      writeFileSync(file, l1);
+    test('a cursor saved by the old character-index code (short of the true offset) loses no line and moves to the exact offset', async () => {
+      setSyncOverrideForTest(none)
+      const file = join(localDir, 'legacy.jsonl')
+      const l1 = multibyteLine('l1')
+      writeFileSync(file, l1)
       // What the old code stored: from + character index of the last newline + 1 = the line's length in characters.
-      const legacy = JSON.stringify({ [file]: l1.length });
-      appendFileSync(file, multibyteLine("l2"));
+      const legacy = JSON.stringify({ [file]: l1.length })
+      appendFileSync(file, multibyteLine('l2'))
 
-      const result = await claudeCodeCollector.collect({ cursor: legacy, full: false, log });
-      expect(result.records.map((r) => r.sourceId)).toContain("l2");
-      expect(offsetOf(result.cursor, file)).toBe(statSync(file).size);
-    });
-  });
+      const result = await claudeCodeCollector.collect({ cursor: legacy, full: false, log })
+      expect(result.records.map((r) => r.sourceId)).toContain('l2')
+      expect(offsetOf(result.cursor, file)).toBe(statSync(file).size)
+    })
+  })
 
   test("a failed sync still reports the local root's records with the note surfaced", async () => {
-    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    writeFileSync(join(localDir, 'local-session.jsonl'), assistantLine('local-req'))
     setSyncOverrideForTest(async () => ({
       ok: false,
-      note: "iumac projects rsync exit 1",
+      note: 'iumac projects rsync exit 1',
       logsOk: false,
       codexOk: true,
       usageJsonlOk: true,
-    }));
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
     // Per ingest.ts:69, a note only demotes a run to `skipped` when records is
     // also empty — records.length > 0 here means the run reports `ok`. This
     // pins the exact behaviour that used to be wrong: the note used to be
     // swallowed whenever any local record came in.
-    expect(result.records.length).toBeGreaterThan(0);
-    expect(result.note).toBe("iumac projects rsync exit 1");
-  });
+    expect(result.records.length).toBeGreaterThan(0)
+    expect(result.note).toBe('iumac projects rsync exit 1')
+  })
 
-  test("advanceOffsets: false emits mirror records without advancing the mirror offset (no logs mirror at all)", async () => {
-    const mirrorProjectsDir = iumacProjectsDir();
-    mkdirSync(mirrorProjectsDir, { recursive: true });
-    const mirrorFile = join(mirrorProjectsDir, "mirror-session.jsonl");
-    writeFileSync(mirrorFile, assistantLine("mirror-req"));
+  test('advanceOffsets: false emits mirror records without advancing the mirror offset (no logs mirror at all)', async () => {
+    const mirrorProjectsDir = iumacProjectsDir()
+    mkdirSync(mirrorProjectsDir, { recursive: true })
+    const mirrorFile = join(mirrorProjectsDir, 'mirror-session.jsonl')
+    writeFileSync(mirrorFile, assistantLine('mirror-req'))
     // Deliberately no iumacLogsDir() at all — hasMirroredLogs() is false, so a
     // failed logs leg must withhold the mirror offset.
 
     setSyncOverrideForTest(async () => ({
       ok: false,
-      note: "iumac logs rsync exit 1",
+      note: 'iumac logs rsync exit 1',
       logsOk: false,
       codexOk: true,
       usageJsonlOk: true,
-    }));
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const mirrorRecord = result.records.find((r) => r.sourceId === "mirror-req");
-    expect(mirrorRecord).toBeDefined();
+    const mirrorRecord = result.records.find((r) => r.sourceId === 'mirror-req')
+    expect(mirrorRecord).toBeDefined()
 
-    const offsets = JSON.parse(result.cursor ?? "{}") as Record<string, number>;
-    expect(offsets[mirrorFile]).toBeUndefined();
-  });
+    const offsets = JSON.parse(result.cursor ?? '{}') as Record<string, number>
+    expect(offsets[mirrorFile]).toBeUndefined()
+  })
 
-  test("a failed logs leg with an existing logs mirror still advances offsets (bounded staleness)", async () => {
-    const mirrorProjectsDir = iumacProjectsDir();
-    mkdirSync(mirrorProjectsDir, { recursive: true });
-    const mirrorFile = join(mirrorProjectsDir, "mirror-session.jsonl");
-    writeFileSync(mirrorFile, assistantLine("mirror-req"));
+  test('a failed logs leg with an existing logs mirror still advances offsets (bounded staleness)', async () => {
+    const mirrorProjectsDir = iumacProjectsDir()
+    mkdirSync(mirrorProjectsDir, { recursive: true })
+    const mirrorFile = join(mirrorProjectsDir, 'mirror-session.jsonl')
+    writeFileSync(mirrorFile, assistantLine('mirror-req'))
 
-    const logsDir = iumacLogsDir();
-    mkdirSync(logsDir, { recursive: true });
+    const logsDir = iumacLogsDir()
+    mkdirSync(logsDir, { recursive: true })
     writeFileSync(
-      join(logsDir, "2026-08-06.jsonl"),
-      `${JSON.stringify({ event: "session_env", data: { session: "s", base_url: null } })}\n`,
-    );
+      join(logsDir, '2026-08-06.jsonl'),
+      `${JSON.stringify({ event: 'session_env', data: { session: 's', base_url: null } })}\n`,
+    )
 
     setSyncOverrideForTest(async () => ({
       ok: false,
-      note: "iumac projects rsync exit 1",
+      note: 'iumac projects rsync exit 1',
       logsOk: false,
       codexOk: true,
       usageJsonlOk: true,
-    }));
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const offsets = JSON.parse(result.cursor ?? "{}") as Record<string, number>;
-    expect(offsets[mirrorFile]).toBeGreaterThan(0);
-  });
+    const offsets = JSON.parse(result.cursor ?? '{}') as Record<string, number>
+    expect(offsets[mirrorFile]).toBeGreaterThan(0)
+  })
 
   test("a session_env line with a lane stamps sub_tool on that session's rows", async () => {
-    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+    writeFileSync(join(localDir, 'local-session.jsonl'), assistantLine('local-req'))
     writeFileSync(
-      join(localLogsDir, "2026-09-10.jsonl"),
+      join(localLogsDir, '2026-09-10.jsonl'),
       `${JSON.stringify({
-        event: "session_env",
-        data: { session: "session-1", base_url: null, lane: "agent-gateway:review" },
+        event: 'session_env',
+        data: { session: 'session-1', base_url: null, lane: 'agent-gateway:review' },
       })}\n`,
-    );
+    )
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "local-req");
-    expect(record?.subTool).toBe("agent-gateway:review");
-  });
+    const record = result.records.find((r) => r.sourceId === 'local-req')
+    expect(record?.subTool).toBe('agent-gateway:review')
+  })
 
-  test("a session_env line without a lane leaves sub_tool null", async () => {
-    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
+  test('a session_env line without a lane leaves sub_tool null', async () => {
+    writeFileSync(join(localDir, 'local-session.jsonl'), assistantLine('local-req'))
     writeFileSync(
-      join(localLogsDir, "2026-09-10.jsonl"),
-      `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: null } })}\n`,
-    );
+      join(localLogsDir, '2026-09-10.jsonl'),
+      `${JSON.stringify({ event: 'session_env', data: { session: 'session-1', base_url: null } })}\n`,
+    )
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "local-req");
-    expect(record?.subTool).toBeFalsy();
-  });
+    const record = result.records.find((r) => r.sourceId === 'local-req')
+    expect(record?.subTool).toBeFalsy()
+  })
 
-  test("no session_env line at all falls back to the agent-gateway-sessions.jsonl time-window join", async () => {
+  test('no session_env line at all falls back to the agent-gateway-sessions.jsonl time-window join', async () => {
     const line = `${JSON.stringify({
-      type: "assistant",
-      requestId: "worker-req",
-      sessionId: "session-1",
-      timestamp: "2026-09-24T18:22:30.000Z",
-      cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
+      type: 'assistant',
+      requestId: 'worker-req',
+      sessionId: 'session-1',
+      timestamp: '2026-09-24T18:22:30.000Z',
+      cwd: '/Users/jkrumm/SourceRoot/agent-gateway',
       message: {
-        id: "msg-worker-req",
-        model: "deepseek-flash",
+        id: 'msg-worker-req',
+        model: 'deepseek-flash',
         usage: { input_tokens: 10, output_tokens: 5 },
       },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), line);
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), line)
     // No session_env line for session-1 at all (pruned, or older than the
     // hook) — getSessionLane returns undefined, the only case the fallback
     // should engage for.
     writeFileSync(
       process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG!,
       `${JSON.stringify({
-        tool: "review:router",
-        project: "/Users/jkrumm/SourceRoot/agent-gateway",
-        tsStart: "2026-09-24T18:22:19.444Z",
-        tsEnd: "2026-09-24T18:22:35.797Z",
+        tool: 'review:router',
+        project: '/Users/jkrumm/SourceRoot/agent-gateway',
+        tsStart: '2026-09-24T18:22:19.444Z',
+        tsEnd: '2026-09-24T18:22:35.797Z',
       })}\n`,
-    );
+    )
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "worker-req");
-    expect(record?.subTool).toBe("agent-gateway:review");
-  });
+    const record = result.records.find((r) => r.sourceId === 'worker-req')
+    expect(record?.subTool).toBe('agent-gateway:review')
+  })
 
-  test("a session_env line without a lane does NOT fall back, even when an agent-gateway window matches", async () => {
+  test('a session_env line without a lane does NOT fall back, even when an agent-gateway window matches', async () => {
     // The bug this guards against: a manual `c`/`ca` session (session_env line
     // exists, no USAGE_LANE set) whose timestamp happens to fall inside an
     // unrelated, concurrent agent-gateway window must stay unattributed rather than
     // being mislabeled as that agent-gateway tool.
     const line = `${JSON.stringify({
-      type: "assistant",
-      requestId: "manual-req",
-      sessionId: "session-1",
-      timestamp: "2026-09-24T18:22:30.000Z",
-      cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
+      type: 'assistant',
+      requestId: 'manual-req',
+      sessionId: 'session-1',
+      timestamp: '2026-09-24T18:22:30.000Z',
+      cwd: '/Users/jkrumm/SourceRoot/agent-gateway',
       message: {
-        id: "msg-manual-req",
-        model: "claude-sonnet-5",
+        id: 'msg-manual-req',
+        model: 'claude-sonnet-5',
         usage: { input_tokens: 10, output_tokens: 5 },
       },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), line);
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), line)
     writeFileSync(
-      join(localLogsDir, "2026-09-10.jsonl"),
-      `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: "https://iu" } })}\n`,
-    );
+      join(localLogsDir, '2026-09-10.jsonl'),
+      `${JSON.stringify({ event: 'session_env', data: { session: 'session-1', base_url: 'https://iu' } })}\n`,
+    )
     writeFileSync(
       process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG!,
       `${JSON.stringify({
-        tool: "review:router",
-        project: "/Users/jkrumm/SourceRoot/agent-gateway",
-        tsStart: "2026-09-24T18:22:19.444Z",
-        tsEnd: "2026-09-24T18:22:35.797Z",
+        tool: 'review:router',
+        project: '/Users/jkrumm/SourceRoot/agent-gateway',
+        tsStart: '2026-09-24T18:22:19.444Z',
+        tsEnd: '2026-09-24T18:22:35.797Z',
       })}\n`,
-    );
+    )
 
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "manual-req");
-    expect(record?.subTool).toBeFalsy();
-  });
+    const record = result.records.find((r) => r.sourceId === 'manual-req')
+    expect(record?.subTool).toBeFalsy()
+  })
 
   // stampLane precedence: explicit session lane > agent-gateway window (only with no
   // session_env line at all and a sdk-cli/absent entrypoint) > entrypoint lane.
-  describe("stampLane precedence", () => {
-    const windowTs = "2026-09-24T18:22:30.000Z";
-    const syncOk = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
+  describe('stampLane precedence', () => {
+    const windowTs = '2026-09-24T18:22:30.000Z'
+    const syncOk = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })
 
     function writeTranscript(entrypoint: string | undefined): void {
       writeFileSync(
-        join(localDir, "local-session.jsonl"),
+        join(localDir, 'local-session.jsonl'),
         `${JSON.stringify({
-          type: "assistant",
-          requestId: "req",
-          sessionId: "session-1",
+          type: 'assistant',
+          requestId: 'req',
+          sessionId: 'session-1',
           timestamp: windowTs,
-          cwd: "/Users/jkrumm/SourceRoot/agent-gateway",
+          cwd: '/Users/jkrumm/SourceRoot/agent-gateway',
           ...(entrypoint ? { entrypoint } : {}),
-          message: { id: "msg", model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 } },
+          message: {
+            id: 'msg',
+            model: 'claude-sonnet-5',
+            usage: { input_tokens: 10, output_tokens: 5 },
+          },
         })}\n`,
-      );
+      )
     }
 
     function writeAgentGatewayWindow(): void {
       writeFileSync(
         process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG!,
         `${JSON.stringify({
-          tool: "review:router",
-          project: "/Users/jkrumm/SourceRoot/agent-gateway",
-          tsStart: "2026-09-24T18:22:19.444Z",
-          tsEnd: "2026-09-24T18:22:35.797Z",
+          tool: 'review:router',
+          project: '/Users/jkrumm/SourceRoot/agent-gateway',
+          tsStart: '2026-09-24T18:22:19.444Z',
+          tsEnd: '2026-09-24T18:22:35.797Z',
         })}\n`,
-      );
+      )
     }
 
     function writeEnvLine(data: Record<string, unknown>): void {
       writeFileSync(
-        join(localLogsDir, "2026-09-10.jsonl"),
-        `${JSON.stringify({ event: "session_env", data: { session: "session-1", base_url: null, ...data } })}\n`,
-      );
+        join(localLogsDir, '2026-09-10.jsonl'),
+        `${JSON.stringify({ event: 'session_env', data: { session: 'session-1', base_url: null, ...data } })}\n`,
+      )
     }
 
     async function collectSubTool(): Promise<string | null | undefined> {
-      setSyncOverrideForTest(syncOk);
-      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-      return result.records[0]?.subTool;
+      setSyncOverrideForTest(syncOk)
+      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
+      return result.records[0]?.subTool
     }
 
-    test("an explicit session lane beats the entrypoint, whatever it is", async () => {
-      writeTranscript("cli");
-      writeEnvLine({ lane: "wave" });
-      expect(await collectSubTool()).toBe("wave");
-    });
+    test('an explicit session lane beats the entrypoint, whatever it is', async () => {
+      writeTranscript('cli')
+      writeEnvLine({ lane: 'wave' })
+      expect(await collectSubTool()).toBe('wave')
+    })
 
-    test("a cli session without an env line is never agent-gateway-stamped, even inside a window", async () => {
-      writeTranscript("cli");
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBe("interactive");
-    });
+    test('a cli session without an env line is never agent-gateway-stamped, even inside a window', async () => {
+      writeTranscript('cli')
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBe('interactive')
+    })
 
-    test("a claude-desktop session without an env line is never agent-gateway-stamped either", async () => {
-      writeTranscript("claude-desktop");
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBe("desktop");
-    });
+    test('a claude-desktop session without an env line is never agent-gateway-stamped either', async () => {
+      writeTranscript('claude-desktop')
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBe('desktop')
+    })
 
-    test("an sdk-cli session without an env line takes the agent-gateway window", async () => {
-      writeTranscript("sdk-cli");
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBe("agent-gateway:review");
-    });
+    test('an sdk-cli session without an env line takes the agent-gateway window', async () => {
+      writeTranscript('sdk-cli')
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBe('agent-gateway:review')
+    })
 
-    test("an sdk-cli session without an env line and no window is headless", async () => {
-      writeTranscript("sdk-cli");
-      expect(await collectSubTool()).toBe("headless");
-    });
+    test('an sdk-cli session without an env line and no window is headless', async () => {
+      writeTranscript('sdk-cli')
+      expect(await collectSubTool()).toBe('headless')
+    })
 
-    test("a missing entrypoint without an env line still takes the agent-gateway window, else stays null", async () => {
-      writeTranscript(undefined);
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBe("agent-gateway:review");
+    test('a missing entrypoint without an env line still takes the agent-gateway window, else stays null', async () => {
+      writeTranscript(undefined)
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBe('agent-gateway:review')
 
-      resetAgentGatewayWindowsCacheForTest();
-      writeFileSync(process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG!, "");
-      expect(await collectSubTool()).toBeNull();
-    });
+      resetAgentGatewayWindowsCacheForTest()
+      writeFileSync(process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG!, '')
+      expect(await collectSubTool()).toBeNull()
+    })
 
-    test("an env line without a lane uses the entrypoint lane, never the window", async () => {
-      writeTranscript("cli");
-      writeEnvLine({ base_url: "https://iu" });
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBe("interactive");
-    });
+    test('an env line without a lane uses the entrypoint lane, never the window', async () => {
+      writeTranscript('cli')
+      writeEnvLine({ base_url: 'https://iu' })
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBe('interactive')
+    })
 
-    test("an env line without a lane and an unknown entrypoint stays null", async () => {
-      writeTranscript("vscode");
-      writeEnvLine({});
-      writeAgentGatewayWindow();
-      expect(await collectSubTool()).toBeNull();
-    });
+    test('an env line without a lane and an unknown entrypoint stays null', async () => {
+      writeTranscript('vscode')
+      writeEnvLine({})
+      writeAgentGatewayWindow()
+      expect(await collectSubTool()).toBeNull()
+    })
 
-    test("raw.entrypoint is recorded on success and API-error rows", async () => {
+    test('raw.entrypoint is recorded on success and API-error rows', async () => {
       const ok = {
-        type: "assistant",
-        requestId: "req-ok",
-        sessionId: "session-1",
+        type: 'assistant',
+        requestId: 'req-ok',
+        sessionId: 'session-1',
         timestamp: windowTs,
-        entrypoint: "cli",
-        message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 1, output_tokens: 1 } },
-      };
-      const err = {
-        type: "assistant",
-        uuid: "err-1",
-        sessionId: "session-1",
-        timestamp: windowTs,
-        entrypoint: "cli",
-        isApiErrorMessage: true,
-        message: { model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
-      };
-      writeFileSync(
-        join(localDir, "local-session.jsonl"),
-        `${JSON.stringify(ok)}\n${JSON.stringify(err)}\n`,
-      );
-      setSyncOverrideForTest(syncOk);
-      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-
-      expect(result.records).toHaveLength(2);
-      for (const r of result.records) {
-        expect(r.raw?.entrypoint).toBe("cli");
-        expect(r.subTool).toBe("interactive");
+        entrypoint: 'cli',
+        message: {
+          id: 'm',
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
       }
-    });
-  });
+      const err = {
+        type: 'assistant',
+        uuid: 'err-1',
+        sessionId: 'session-1',
+        timestamp: windowTs,
+        entrypoint: 'cli',
+        isApiErrorMessage: true,
+        message: { model: '<synthetic>', usage: { input_tokens: 0, output_tokens: 0 } },
+      }
+      writeFileSync(
+        join(localDir, 'local-session.jsonl'),
+        `${JSON.stringify(ok)}\n${JSON.stringify(err)}\n`,
+      )
+      setSyncOverrideForTest(syncOk)
+      const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-  describe("attribution: effort, factory role, subagents", () => {
-    const sync = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
+      expect(result.records).toHaveLength(2)
+      for (const r of result.records) {
+        expect(r.raw?.entrypoint).toBe('cli')
+        expect(r.subTool).toBe('interactive')
+      }
+    })
+  })
+
+  describe('attribution: effort, factory role, subagents', () => {
+    const sync = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })
     const line = (extra: Record<string, unknown>) =>
       `${JSON.stringify({
-        type: "assistant",
-        requestId: "req-1",
-        sessionId: "parent-1",
+        type: 'assistant',
+        requestId: 'req-1',
+        sessionId: 'parent-1',
         timestamp: new Date().toISOString(),
-        message: { id: "msg-1", model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 } },
+        message: {
+          id: 'msg-1',
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
         ...extra,
-      })}\n`;
+      })}\n`
 
-    test("effort comes off the assistant line, perTurnEffort is the fallback, absent stays absent", async () => {
+    test('effort comes off the assistant line, perTurnEffort is the fallback, absent stays absent', async () => {
       writeFileSync(
-        join(localDir, "s.jsonl"),
-        line({ requestId: "a", effort: "xhigh" }) + line({ requestId: "b", perTurnEffort: "low" }) + line({ requestId: "c" }),
-      );
-      setSyncOverrideForTest(sync);
-      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-      const effort = (id: string) => records.find((r) => r.sourceId === id)?.raw?.effort;
-      expect(effort("a")).toBe("xhigh");
-      expect(effort("b")).toBe("low");
-      expect(effort("c")).toBeUndefined();
-    });
+        join(localDir, 's.jsonl'),
+        line({ requestId: 'a', effort: 'xhigh' }) +
+          line({ requestId: 'b', perTurnEffort: 'low' }) +
+          line({ requestId: 'c' }),
+      )
+      setSyncOverrideForTest(sync)
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log })
+      const effort = (id: string) => records.find((r) => r.sourceId === id)?.raw?.effort
+      expect(effort('a')).toBe('xhigh')
+      expect(effort('b')).toBe('low')
+      expect(effort('c')).toBeUndefined()
+    })
 
     test("the session_env line's factory role and spawn key ride on every record of the session", async () => {
-      writeFileSync(join(localDir, "s.jsonl"), line({}));
+      writeFileSync(join(localDir, 's.jsonl'), line({}))
       writeFileSync(
-        join(localLogsDir, "2026-10-30.jsonl"),
-        `${JSON.stringify({ event: "session_env", data: { session: "parent-1", lane: "wave", factory_role: "lead", factory_session: "spawn-9" } })}\n`,
-      );
-      setSyncOverrideForTest(sync);
-      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-      expect(records[0]?.raw).toMatchObject({ factoryRole: "lead", factorySession: "spawn-9" });
-    });
+        join(localLogsDir, '2026-10-30.jsonl'),
+        `${JSON.stringify({ event: 'session_env', data: { session: 'parent-1', lane: 'wave', factory_role: 'lead', factory_session: 'spawn-9' } })}\n`,
+      )
+      setSyncOverrideForTest(sync)
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log })
+      expect(records[0]?.raw).toMatchObject({ factoryRole: 'lead', factorySession: 'spawn-9' })
+    })
 
-    test("a subagent line carries its type (attributionAgent), agent id and the parent session", async () => {
-      const dir = join(localDir, "proj", "parent-1", "subagents");
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "agent-abc.jsonl"), line({ isSidechain: true, agentId: "abc", attributionAgent: "verifier", effort: "medium" }));
-      setSyncOverrideForTest(sync);
-      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    test('a subagent line carries its type (attributionAgent), agent id and the parent session', async () => {
+      const dir = join(localDir, 'proj', 'parent-1', 'subagents')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(
+        join(dir, 'agent-abc.jsonl'),
+        line({ isSidechain: true, agentId: 'abc', attributionAgent: 'verifier', effort: 'medium' }),
+      )
+      setSyncOverrideForTest(sync)
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log })
       expect(records[0]?.raw).toMatchObject({
-        sessionId: "parent-1",
-        subagentType: "verifier",
-        agentId: "abc",
-        parentSessionId: "parent-1",
-        effort: "medium",
-      });
-    });
+        sessionId: 'parent-1',
+        subagentType: 'verifier',
+        agentId: 'abc',
+        parentSessionId: 'parent-1',
+        effort: 'medium',
+      })
+    })
 
-    test("a subagent line without attributionAgent takes the type from the sibling meta.json, else unknown", async () => {
-      const dir = join(localDir, "proj", "parent-1", "subagents");
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "agent-m.jsonl"), line({ requestId: "m", isSidechain: true, agentId: "m" }));
-      writeFileSync(join(dir, "agent-m.meta.json"), JSON.stringify({ agentType: "Explore" }));
-      writeFileSync(join(dir, "agent-n.jsonl"), line({ requestId: "n", isSidechain: true, agentId: "n" }));
-      setSyncOverrideForTest(sync);
-      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-      expect(records.find((r) => r.sourceId === "m")?.raw?.subagentType).toBe("Explore");
-      expect(records.find((r) => r.sourceId === "n")?.raw?.subagentType).toBe("unknown");
-    });
+    test('a subagent line without attributionAgent takes the type from the sibling meta.json, else unknown', async () => {
+      const dir = join(localDir, 'proj', 'parent-1', 'subagents')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(
+        join(dir, 'agent-m.jsonl'),
+        line({ requestId: 'm', isSidechain: true, agentId: 'm' }),
+      )
+      writeFileSync(join(dir, 'agent-m.meta.json'), JSON.stringify({ agentType: 'Explore' }))
+      writeFileSync(
+        join(dir, 'agent-n.jsonl'),
+        line({ requestId: 'n', isSidechain: true, agentId: 'n' }),
+      )
+      setSyncOverrideForTest(sync)
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log })
+      expect(records.find((r) => r.sourceId === 'm')?.raw?.subagentType).toBe('Explore')
+      expect(records.find((r) => r.sourceId === 'n')?.raw?.subagentType).toBe('unknown')
+    })
 
-    test("a main-transcript line has no subagent fields", async () => {
-      writeFileSync(join(localDir, "s.jsonl"), line({ isSidechain: false }));
-      setSyncOverrideForTest(sync);
-      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
-      expect(records[0]?.raw).not.toHaveProperty("subagentType");
-      expect(records[0]?.raw).not.toHaveProperty("agentId");
-    });
-  });
+    test('a main-transcript line has no subagent fields', async () => {
+      writeFileSync(join(localDir, 's.jsonl'), line({ isSidechain: false }))
+      setSyncOverrideForTest(sync)
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log })
+      expect(records[0]?.raw).not.toHaveProperty('subagentType')
+      expect(records[0]?.raw).not.toHaveProperty('agentId')
+    })
+  })
 
-  test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {
+  test('reads the provider-reported thinking token count off usage.output_tokens_details', async () => {
     const line = `${JSON.stringify({
-      type: "assistant",
-      requestId: "thinking-req",
-      sessionId: "session-1",
+      type: 'assistant',
+      requestId: 'thinking-req',
+      sessionId: 'session-1',
       timestamp: new Date().toISOString(),
       message: {
-        id: "msg-thinking-req",
-        model: "claude-sonnet-5",
+        id: 'msg-thinking-req',
+        model: 'claude-sonnet-5',
         usage: {
           input_tokens: 10,
           output_tokens: 500,
           output_tokens_details: { thinking_tokens: 187 },
         },
       },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), line);
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), line)
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "thinking-req");
-    expect(record?.reasoningTokens).toBe(187);
-  });
+    const record = result.records.find((r) => r.sourceId === 'thinking-req')
+    expect(record?.reasoningTokens).toBe(187)
+  })
 
-  test("a response with no thinking usage defaults reasoningTokens to 0", async () => {
-    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+  test('a response with no thinking usage defaults reasoningTokens to 0', async () => {
+    writeFileSync(join(localDir, 'local-session.jsonl'), assistantLine('local-req'))
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "local-req");
-    expect(record?.reasoningTokens).toBe(0);
-  });
+    const record = result.records.find((r) => r.sourceId === 'local-req')
+    expect(record?.reasoningTokens).toBe(0)
+  })
 
-  test("a local API-error line (isApiErrorMessage) becomes a zero-token error row", async () => {
+  test('a local API-error line (isApiErrorMessage) becomes a zero-token error row', async () => {
     const errorLine = `${JSON.stringify({
-      type: "assistant",
-      uuid: "err-uuid-1",
-      sessionId: "session-1",
+      type: 'assistant',
+      uuid: 'err-uuid-1',
+      sessionId: 'session-1',
       timestamp: new Date().toISOString(),
-      cwd: "/Users/j/proj",
-      error: "rate_limit",
+      cwd: '/Users/j/proj',
+      error: 'rate_limit',
       isApiErrorMessage: true,
       apiErrorStatus: 429,
       message: {
-        model: "<synthetic>",
+        model: '<synthetic>',
         usage: { input_tokens: 0, output_tokens: 0 },
       },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), errorLine);
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), errorLine)
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    expect(result.records).toHaveLength(1);
-    const record = result.records[0]!;
-    expect(record.sourceId).toBe("err-uuid-1");
-    expect(record.outcome).toBe("error");
-    expect(record.inputTokens).toBe(0);
-    expect(record.outputTokens).toBe(0);
-    expect(record.raw?.error).toBe("rate_limit");
-    expect(record.raw?.apiErrorStatus).toBe(429);
-  });
+    expect(result.records).toHaveLength(1)
+    const record = result.records[0]!
+    expect(record.sourceId).toBe('err-uuid-1')
+    expect(record.outcome).toBe('error')
+    expect(record.inputTokens).toBe(0)
+    expect(record.outputTokens).toBe(0)
+    expect(record.raw?.error).toBe('rate_limit')
+    expect(record.raw?.apiErrorStatus).toBe(429)
+  })
 
-  test("a synthetic line with no isApiErrorMessage is still dropped", async () => {
+  test('a synthetic line with no isApiErrorMessage is still dropped', async () => {
     const line = `${JSON.stringify({
-      type: "assistant",
-      uuid: "synthetic-uuid",
-      sessionId: "session-1",
+      type: 'assistant',
+      uuid: 'synthetic-uuid',
+      sessionId: 'session-1',
       timestamp: new Date().toISOString(),
-      message: { model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), line);
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      message: { model: '<synthetic>', usage: { input_tokens: 0, output_tokens: 0 } },
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), line)
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    expect(result.records).toHaveLength(0);
-  });
+    expect(result.records).toHaveLength(0)
+  })
 
   test("derives duration_ms from the gap to the parentUuid's timestamp", async () => {
-    const parentTs = "2026-09-10T10:00:00.000Z";
-    const childTs = "2026-09-10T10:00:03.500Z";
+    const parentTs = '2026-09-10T10:00:00.000Z'
+    const childTs = '2026-09-10T10:00:03.500Z'
     const parentLine = `${JSON.stringify({
-      type: "user",
-      uuid: "parent-uuid",
-      sessionId: "session-1",
+      type: 'user',
+      uuid: 'parent-uuid',
+      sessionId: 'session-1',
       timestamp: parentTs,
-    })}\n`;
+    })}\n`
     const childLine = `${JSON.stringify({
-      type: "assistant",
-      uuid: "child-uuid",
-      parentUuid: "parent-uuid",
-      requestId: "duration-req",
-      sessionId: "session-1",
+      type: 'assistant',
+      uuid: 'child-uuid',
+      parentUuid: 'parent-uuid',
+      requestId: 'duration-req',
+      sessionId: 'session-1',
       timestamp: childTs,
       message: {
-        id: "msg-duration-req",
-        model: "claude-sonnet-5",
+        id: 'msg-duration-req',
+        model: 'claude-sonnet-5',
         usage: { input_tokens: 10, output_tokens: 5 },
       },
-    })}\n`;
-    writeFileSync(join(localDir, "local-session.jsonl"), parentLine + childLine);
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    })}\n`
+    writeFileSync(join(localDir, 'local-session.jsonl'), parentLine + childLine)
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "duration-req");
-    expect(record?.durationMs).toBe(3500);
-  });
+    const record = result.records.find((r) => r.sourceId === 'duration-req')
+    expect(record?.durationMs).toBe(3500)
+  })
 
   test("duration_ms is null when the parentUuid isn't in the same read (e.g. a resumed offset)", async () => {
-    writeFileSync(join(localDir, "local-session.jsonl"), assistantLine("local-req"));
-    setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+    writeFileSync(join(localDir, 'local-session.jsonl'), assistantLine('local-req'))
+    setSyncOverrideForTest(async () => ({
+      ok: true,
+      logsOk: true,
+      codexOk: true,
+      usageJsonlOk: true,
+    }))
 
-    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+    const result = await claudeCodeCollector.collect({ cursor: null, full: true, log })
 
-    const record = result.records.find((r) => r.sourceId === "local-req");
-    expect(record?.durationMs).toBeNull();
-  });
+    const record = result.records.find((r) => r.sourceId === 'local-req')
+    expect(record?.durationMs).toBeNull()
+  })
 
-  describe("session events", () => {
-    const skillBody = (name: string) => `Base directory for this skill: /skills/${name}\n\nUse ${name} carefully.`;
-    const jsonl = (...lines: object[]) => lines.map((l) => `${JSON.stringify(l)}\n`).join("");
+  describe('session events', () => {
+    const skillBody = (name: string) =>
+      `Base directory for this skill: /skills/${name}\n\nUse ${name} carefully.`
+    const jsonl = (...lines: object[]) => lines.map((l) => `${JSON.stringify(l)}\n`).join('')
     const skillCall = (id: string, skill: string, ts: string, extra: object = {}) => ({
-      type: "assistant",
+      type: 'assistant',
       requestId: `req-${id}`,
-      sessionId: "sess-1",
+      sessionId: 'sess-1',
       timestamp: ts,
       message: {
         id: `msg-${id}`,
-        model: "claude-sonnet-5",
+        model: 'claude-sonnet-5',
         usage: { input_tokens: 1, output_tokens: 1 },
-        content: [{ type: "tool_use", id, name: "Skill", input: { skill, args: "free text that must never be stored" } }],
+        content: [
+          {
+            type: 'tool_use',
+            id,
+            name: 'Skill',
+            input: { skill, args: 'free text that must never be stored' },
+          },
+        ],
       },
       ...extra,
-    });
+    })
     const skillText = (id: string, content: unknown, ts: string, extra: object = {}) => ({
-      type: "user",
+      type: 'user',
       isMeta: true,
       sourceToolUseID: id,
-      sessionId: "sess-1",
+      sessionId: 'sess-1',
       timestamp: ts,
-      message: { role: "user", content },
+      message: { role: 'user', content },
       ...extra,
-    });
+    })
     const boundary = {
-      type: "system",
-      subtype: "compact_boundary",
-      uuid: "cb-1",
-      sessionId: "sess-1",
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid: 'cb-1',
+      sessionId: 'sess-1',
       isSidechain: false,
-      timestamp: "2026-10-30T10:05:00.000Z",
-      compactMetadata: { trigger: "auto", preTokens: 477695, postTokens: 20548, durationMs: 28093, extra: "ignored" },
-    };
+      timestamp: '2026-10-30T10:05:00.000Z',
+      compactMetadata: {
+        trigger: 'auto',
+        preTokens: 477695,
+        postTokens: 20548,
+        durationMs: 28093,
+        extra: 'ignored',
+      },
+    }
 
-    test("compactions, skill calls and their sizes are emitted; a size line in a later chunk and a subagent file included", async () => {
-      const main = join(localDir, "proj", "sess-1.jsonl");
-      mkdirSync(join(localDir, "proj", "sess-1", "subagents"), { recursive: true });
+    test('compactions, skill calls and their sizes are emitted; a size line in a later chunk and a subagent file included', async () => {
+      const main = join(localDir, 'proj', 'sess-1.jsonl')
+      mkdirSync(join(localDir, 'proj', 'sess-1', 'subagents'), { recursive: true })
       writeFileSync(
         main,
         jsonl(
-          JSON.parse(assistantLine("plain")),
-          skillCall("toolu_a", "alpha", "2026-10-30T10:00:00.000Z"),
-          skillText("toolu_a", [{ type: "text", text: skillBody("alpha") }], "2026-10-30T10:00:01.000Z"),
+          JSON.parse(assistantLine('plain')),
+          skillCall('toolu_a', 'alpha', '2026-10-30T10:00:00.000Z'),
+          skillText(
+            'toolu_a',
+            [{ type: 'text', text: skillBody('alpha') }],
+            '2026-10-30T10:00:01.000Z',
+          ),
           boundary,
-          skillCall("toolu_b", "beta", "2026-10-30T10:10:00.000Z"),
-          skillCall("toolu_c", "gamma", "2026-10-30T10:11:00.000Z"),
+          skillCall('toolu_b', 'beta', '2026-10-30T10:10:00.000Z'),
+          skillCall('toolu_c', 'gamma', '2026-10-30T10:11:00.000Z'),
         ),
-      );
+      )
       writeFileSync(
-        join(localDir, "proj", "sess-1", "subagents", "agent-ag1.jsonl"),
+        join(localDir, 'proj', 'sess-1', 'subagents', 'agent-ag1.jsonl'),
         jsonl(
-          skillCall("toolu_d", "delta", "2026-10-30T10:20:00.000Z", { isSidechain: true, agentId: "ag1" }),
-          skillText("toolu_d", skillBody("delta"), "2026-10-30T10:20:01.000Z", { isSidechain: true, agentId: "ag1" }),
+          skillCall('toolu_d', 'delta', '2026-10-30T10:20:00.000Z', {
+            isSidechain: true,
+            agentId: 'ag1',
+          }),
+          skillText('toolu_d', skillBody('delta'), '2026-10-30T10:20:01.000Z', {
+            isSidechain: true,
+            agentId: 'ag1',
+          }),
         ),
-      );
-      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      )
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
 
-      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      const byId = (events: typeof first.events) => [...(events ?? [])].sort((a, b) => (a.eventId + a.ts < b.eventId + b.ts ? -1 : 1));
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      const byId = (events: typeof first.events) =>
+        [...(events ?? [])].sort((a, b) => (a.eventId + a.ts < b.eventId + b.ts ? -1 : 1))
       expect(byId(first.events)).toEqual([
-        { eventId: "cb-1", sessionId: "sess-1", agentId: undefined, kind: "compaction", ts: "2026-10-30T10:05:00.000Z", detail: { trigger: "auto", preTokens: 477695, postTokens: 20548, durationMs: 28093 } },
-        { eventId: "toolu_a", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:00:00.000Z", name: "alpha" },
-        { eventId: "toolu_a", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:00:01.000Z", sizeChars: skillBody("alpha").length },
-        { eventId: "toolu_b", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:10:00.000Z", name: "beta" },
-        { eventId: "toolu_c", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:11:00.000Z", name: "gamma" },
-        { eventId: "toolu_d", sessionId: "sess-1", agentId: "ag1", kind: "skill", ts: "2026-10-30T10:20:00.000Z", name: "delta" },
-        { eventId: "toolu_d", sessionId: "sess-1", agentId: "ag1", kind: "skill", ts: "2026-10-30T10:20:01.000Z", sizeChars: skillBody("delta").length },
-      ]);
-      expect(JSON.stringify(first.events)).not.toContain("free text");
-      expect(JSON.stringify(first.events)).not.toContain("args");
+        {
+          eventId: 'cb-1',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'compaction',
+          ts: '2026-10-30T10:05:00.000Z',
+          detail: { trigger: 'auto', preTokens: 477695, postTokens: 20548, durationMs: 28093 },
+        },
+        {
+          eventId: 'toolu_a',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'skill',
+          ts: '2026-10-30T10:00:00.000Z',
+          name: 'alpha',
+        },
+        {
+          eventId: 'toolu_a',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'skill',
+          ts: '2026-10-30T10:00:01.000Z',
+          sizeChars: skillBody('alpha').length,
+        },
+        {
+          eventId: 'toolu_b',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'skill',
+          ts: '2026-10-30T10:10:00.000Z',
+          name: 'beta',
+        },
+        {
+          eventId: 'toolu_c',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'skill',
+          ts: '2026-10-30T10:11:00.000Z',
+          name: 'gamma',
+        },
+        {
+          eventId: 'toolu_d',
+          sessionId: 'sess-1',
+          agentId: 'ag1',
+          kind: 'skill',
+          ts: '2026-10-30T10:20:00.000Z',
+          name: 'delta',
+        },
+        {
+          eventId: 'toolu_d',
+          sessionId: 'sess-1',
+          agentId: 'ag1',
+          kind: 'skill',
+          ts: '2026-10-30T10:20:01.000Z',
+          sizeChars: skillBody('delta').length,
+        },
+      ])
+      expect(JSON.stringify(first.events)).not.toContain('free text')
+      expect(JSON.stringify(first.events)).not.toContain('args')
       // Records are untouched by events: only the plain assistant line and the skill-call lines carry usage.
-      expect(first.records.map((r) => r.sourceId).sort()).toEqual(["plain", "req-toolu_a", "req-toolu_b", "req-toolu_c", "req-toolu_d"]);
+      expect(first.records.map((r) => r.sourceId).sort()).toEqual([
+        'plain',
+        'req-toolu_a',
+        'req-toolu_b',
+        'req-toolu_c',
+        'req-toolu_d',
+      ])
 
       // beta's size line arrives in the next poll; only it is emitted, keyed by the same tool_use id.
-      appendFileSync(main, jsonl(skillText("toolu_b", [{ type: "text", text: "Base directory for this skill: /s/b\n\n" }, { type: "text", text: "second block" }], "2026-10-30T10:10:02.000Z")));
-      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log });
-      expect(second.events).toEqual([
-        { eventId: "toolu_b", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:10:02.000Z", sizeChars: "Base directory for this skill: /s/b\n\n".length + "second block".length },
-      ]);
-    });
-
-    test("a line with an invalid timestamp is no event; the valid events around it are still emitted", async () => {
-      writeFileSync(
-        join(localDir, "sess-3.jsonl"),
+      appendFileSync(
+        main,
         jsonl(
-          { ...boundary, uuid: "cb-bad", timestamp: "not a date" },
-          { ...boundary, uuid: "cb-year0", timestamp: "0000-01-01T00:00:00.000Z" },
-          { ...boundary, uuid: "cb-object", timestamp: { toString: null, valueOf: null } },
-          { ...boundary, uuid: "cb-ok" },
-          skillCall("toolu_t", "theta", "yesterday-ish"),
-          skillCall("toolu_ok", "iota", "2026-10-30T10:30:00.000Z"),
+          skillText(
+            'toolu_b',
+            [
+              { type: 'text', text: 'Base directory for this skill: /s/b\n\n' },
+              { type: 'text', text: 'second block' },
+            ],
+            '2026-10-30T10:10:02.000Z',
+          ),
         ),
-      );
-      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
-      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      expect(result.events?.map((e) => e.eventId)).toEqual(["cb-ok", "toolu_ok"]);
-    });
+      )
+      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log })
+      expect(second.events).toEqual([
+        {
+          eventId: 'toolu_b',
+          sessionId: 'sess-1',
+          agentId: undefined,
+          kind: 'skill',
+          ts: '2026-10-30T10:10:02.000Z',
+          sizeChars: 'Base directory for this skill: /s/b\n\n'.length + 'second block'.length,
+        },
+      ])
+    })
 
-    test("a Skill call is found whatever the JSON spacing", async () => {
-      const spaced = JSON.stringify(skillCall("toolu_sp", "kappa", "2026-10-30T10:40:00.000Z")).replace('"name":"Skill"', '"name": "Skill"');
-      expect(spaced).toContain('"name": "Skill"');
-      writeFileSync(join(localDir, "sess-4.jsonl"), `${spaced}\n`);
-      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
-      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      expect(result.events?.map((e) => [e.eventId, e.name])).toEqual([["toolu_sp", "kappa"]]);
-    });
-
-    test("a size line is emitted only when the message text itself is skill text", async () => {
+    test('a line with an invalid timestamp is no event; the valid events around it are still emitted', async () => {
       writeFileSync(
-        join(localDir, "sess-5.jsonl"),
+        join(localDir, 'sess-3.jsonl'),
+        jsonl(
+          { ...boundary, uuid: 'cb-bad', timestamp: 'not a date' },
+          { ...boundary, uuid: 'cb-year0', timestamp: '0000-01-01T00:00:00.000Z' },
+          { ...boundary, uuid: 'cb-object', timestamp: { toString: null, valueOf: null } },
+          { ...boundary, uuid: 'cb-ok' },
+          skillCall('toolu_t', 'theta', 'yesterday-ish'),
+          skillCall('toolu_ok', 'iota', '2026-10-30T10:30:00.000Z'),
+        ),
+      )
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(result.events?.map((e) => e.eventId)).toEqual(['cb-ok', 'toolu_ok'])
+    })
+
+    test('a Skill call is found whatever the JSON spacing', async () => {
+      const spaced = JSON.stringify(
+        skillCall('toolu_sp', 'kappa', '2026-10-30T10:40:00.000Z'),
+      ).replace('"name":"Skill"', '"name": "Skill"')
+      expect(spaced).toContain('"name": "Skill"')
+      writeFileSync(join(localDir, 'sess-4.jsonl'), `${spaced}\n`)
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(result.events?.map((e) => [e.eventId, e.name])).toEqual([['toolu_sp', 'kappa']])
+    })
+
+    test('a size line is emitted only when the message text itself is skill text', async () => {
+      writeFileSync(
+        join(localDir, 'sess-5.jsonl'),
         jsonl(
           // the marker sits in another field of an unrelated meta line
-          { ...skillText("toolu_m", "ordinary meta text", "2026-10-30T10:50:00.000Z"), note: "Base directory for this skill: elsewhere" },
-          skillText("toolu_n", [{ type: "text", text: "not a skill" }, { type: "text", text: "Base directory for this skill" }], "2026-10-30T10:50:01.000Z"),
-          skillText("toolu_ok", [{ type: "text", text: "Base directory for this skill: /s" }, { type: "text", text: "body" }], "2026-10-30T10:50:02.000Z"),
+          {
+            ...skillText('toolu_m', 'ordinary meta text', '2026-10-30T10:50:00.000Z'),
+            note: 'Base directory for this skill: elsewhere',
+          },
+          skillText(
+            'toolu_n',
+            [
+              { type: 'text', text: 'not a skill' },
+              { type: 'text', text: 'Base directory for this skill' },
+            ],
+            '2026-10-30T10:50:01.000Z',
+          ),
+          skillText(
+            'toolu_ok',
+            [
+              { type: 'text', text: 'Base directory for this skill: /s' },
+              { type: 'text', text: 'body' },
+            ],
+            '2026-10-30T10:50:02.000Z',
+          ),
         ),
-      );
-      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
-      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      expect(result.events?.map((e) => [e.eventId, e.sizeChars])).toEqual([["toolu_ok", "Base directory for this skill: /s".length + 4]]);
-    });
+      )
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(result.events?.map((e) => [e.eventId, e.sizeChars])).toEqual([
+        ['toolu_ok', 'Base directory for this skill: /s'.length + 4],
+      ])
+    })
 
     test("a non-skill meta line, a boundary-looking user text and a malformed line emit nothing; multibyte lines do not lose the next chunk's events", async () => {
-      const main = join(localDir, "sess-2.jsonl");
+      const main = join(localDir, 'sess-2.jsonl')
       writeFileSync(
         main,
         jsonl(
-          { type: "user", isMeta: true, sourceToolUseID: "toolu_x", sessionId: "sess-2", timestamp: "2026-10-30T10:00:00.000Z", message: { content: "plain meta" } },
-          { type: "user", sessionId: "sess-2", timestamp: "2026-10-30T10:00:01.000Z", message: { content: "the word compact_boundary in \"compact_boundary\" text" } },
-          { type: "assistant", requestId: "mb", sessionId: "sess-2", timestamp: "2026-10-30T10:00:02.000Z", message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "text", text: "ÄÖÜ → 日本語 🙂 ".repeat(40) }] } },
+          {
+            type: 'user',
+            isMeta: true,
+            sourceToolUseID: 'toolu_x',
+            sessionId: 'sess-2',
+            timestamp: '2026-10-30T10:00:00.000Z',
+            message: { content: 'plain meta' },
+          },
+          {
+            type: 'user',
+            sessionId: 'sess-2',
+            timestamp: '2026-10-30T10:00:01.000Z',
+            message: { content: 'the word compact_boundary in "compact_boundary" text' },
+          },
+          {
+            type: 'assistant',
+            requestId: 'mb',
+            sessionId: 'sess-2',
+            timestamp: '2026-10-30T10:00:02.000Z',
+            message: {
+              id: 'm',
+              model: 'claude-sonnet-5',
+              usage: { input_tokens: 1, output_tokens: 1 },
+              content: [{ type: 'text', text: 'ÄÖÜ → 日本語 🙂 '.repeat(40) }],
+            },
+          },
         ) + '{"type":"assistant","name":"Skill" broken\n',
-      );
-      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
-      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
-      expect(first.events).toEqual([]);
+      )
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(first.events).toEqual([])
 
-      appendFileSync(main, jsonl(skillCall("toolu_z", "zeta", "2026-10-30T11:00:00.000Z", { sessionId: "sess-2" })));
-      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log });
-      expect(second.events?.map((e) => [e.eventId, e.name])).toEqual([["toolu_z", "zeta"]]);
-    });
-  });
-});
+      appendFileSync(
+        main,
+        jsonl(skillCall('toolu_z', 'zeta', '2026-10-30T11:00:00.000Z', { sessionId: 'sess-2' })),
+      )
+      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log })
+      expect(second.events?.map((e) => [e.eventId, e.name])).toEqual([['toolu_z', 'zeta']])
+    })
+  })
+})

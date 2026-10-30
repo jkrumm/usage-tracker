@@ -1,9 +1,9 @@
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { getSessionLane } from "../models.ts";
-import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import { Database } from 'bun:sqlite'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { getSessionLane } from '../models.ts'
+import type { Collector, CollectContext, CollectResult, UsageRecord } from '../types.ts'
 
 // OpenCode (sst/opencode) was re-added 2026-09-23 (v1.18.30). Re-verified
 // against the live schema the same day: `session` still carries the same
@@ -28,80 +28,83 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // going dark.
 
 function dbPath(): string {
-  return process.env.USAGE_OPENCODE_DB?.trim() || join(homedir(), ".local", "share", "opencode", "opencode.db");
+  return (
+    process.env.USAGE_OPENCODE_DB?.trim() ||
+    join(homedir(), '.local', 'share', 'opencode', 'opencode.db')
+  )
 }
 
 interface MessageRow {
-  id: string;
-  session_id: string;
-  data: string;
-  directory: string | null;
+  id: string
+  session_id: string
+  data: string
+  directory: string | null
 }
 
 interface AssistantMessageData {
-  role?: string;
-  agent?: string | null;
-  mode?: string | null;
-  path?: { cwd?: string | null } | null;
-  cost?: number | null;
+  role?: string
+  agent?: string | null
+  mode?: string | null
+  path?: { cwd?: string | null } | null
+  cost?: number | null
   tokens?: {
-    input?: number | null;
-    output?: number | null;
-    reasoning?: number | null;
-    cache?: { read?: number | null; write?: number | null } | null;
-  } | null;
-  modelID?: string | null;
-  providerID?: string | null;
-  time?: { created?: number | null; completed?: number | null } | null;
-  finish?: string | null;
+    input?: number | null
+    output?: number | null
+    reasoning?: number | null
+    cache?: { read?: number | null; write?: number | null } | null
+  } | null
+  modelID?: string | null
+  providerID?: string | null
+  time?: { created?: number | null; completed?: number | null } | null
+  finish?: string | null
 }
 
 interface SessionRow {
-  id: string;
-  directory: string | null;
-  slug: string | null;
-  title: string | null;
-  agent: string | null;
-  model: string | null;
-  cost: number | null;
-  time_created: number; // epoch ms
-  tokens_input: number | null;
-  tokens_output: number | null;
-  tokens_reasoning: number | null;
-  tokens_cache_read: number | null;
-  tokens_cache_write: number | null;
+  id: string
+  directory: string | null
+  slug: string | null
+  title: string | null
+  agent: string | null
+  model: string | null
+  cost: number | null
+  time_created: number // epoch ms
+  tokens_input: number | null
+  tokens_output: number | null
+  tokens_reasoning: number | null
+  tokens_cache_read: number | null
+  tokens_cache_write: number | null
 }
 
 export const opencodeCollector: Collector = {
-  source: "opencode",
+  source: 'opencode',
   staleAfterHours: null,
-  workspace: "private",
+  workspace: 'private',
 
   available() {
-    return existsSync(dbPath());
+    return existsSync(dbPath())
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    let db: Database | undefined;
+    let db: Database | undefined
     try {
-      db = new Database(dbPath(), { readonly: true });
+      db = new Database(dbPath(), { readonly: true })
       try {
-        return collectMessages(db);
+        return collectMessages(db)
       } catch (err) {
         // Only a missing `message` table falls back — anything else (locked DB,
         // corrupt file) should surface as a real failure below.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("no such table")) throw err;
-        return collectSessions(db);
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!msg.includes('no such table')) throw err
+        return collectSessions(db)
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` };
+      const msg = err instanceof Error ? err.message : String(err)
+      return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` }
     } finally {
-      db?.close();
+      db?.close()
     }
   },
-};
+}
 
 function collectMessages(db: Database): CollectResult {
   const rows = db
@@ -111,36 +114,36 @@ function collectMessages(db: Database): CollectResult {
        JOIN session s ON s.id = m.session_id
        WHERE json_extract(m.data, '$.role') = 'assistant'`,
     )
-    .all();
+    .all()
 
-  const records: UsageRecord[] = [];
-  let maxTs = 0;
+  const records: UsageRecord[] = []
+  let maxTs = 0
   for (const row of rows) {
-    const record = toMessageRecord(row);
-    if (!record) continue;
-    records.push(record);
-    const ts = Date.parse(record.ts);
-    if (Number.isFinite(ts)) maxTs = Math.max(maxTs, ts);
+    const record = toMessageRecord(row)
+    if (!record) continue
+    records.push(record)
+    const ts = Date.parse(record.ts)
+    if (Number.isFinite(ts)) maxTs = Math.max(maxTs, ts)
   }
-  return { records, cursor: String(maxTs) };
+  return { records, cursor: String(maxTs) }
 }
 
 function toMessageRecord(row: MessageRow): UsageRecord | null {
-  let data: AssistantMessageData;
+  let data: AssistantMessageData
   try {
-    data = JSON.parse(row.data) as AssistantMessageData;
+    data = JSON.parse(row.data) as AssistantMessageData
   } catch {
-    return null;
+    return null
   }
-  if (data.role !== "assistant") return null;
+  if (data.role !== 'assistant') return null
 
-  const created = data.time?.created ?? null;
-  const completed = data.time?.completed ?? null;
-  const tokens = data.tokens ?? {};
+  const created = data.time?.created ?? null
+  const completed = data.time?.completed ?? null
+  const tokens = data.tokens ?? {}
 
   return {
     sourceId: row.id,
-    grain: "message",
+    grain: 'message',
     ts: created != null ? new Date(created).toISOString() : new Date().toISOString(),
     // Plain modelID, not the {"id":…,"providerID":…} shape session rows carry —
     // normalizeModel's lowercase pass handles a bare id fine, no JSON needed.
@@ -156,7 +159,7 @@ function toMessageRecord(row: MessageRow): UsageRecord | null {
     // persisted) means a manual `oc` run or an opencode wave pane, both
     // interactive TUIs. The table is re-read whole every run, so this must not
     // fall back to null: the upsert would then erase a lane once its line is gone.
-    subTool: getSessionLane(row.session_id) || "interactive",
+    subTool: getSessionLane(row.session_id) || 'interactive',
     inputTokens: tokens.input ?? 0,
     outputTokens: tokens.output ?? 0,
     cacheReadTokens: tokens.cache?.read ?? 0,
@@ -171,7 +174,7 @@ function toMessageRecord(row: MessageRow): UsageRecord | null {
       finish: data.finish ?? null,
       reportedCostUsd: data.cost ?? null,
     },
-  };
+  }
 }
 
 function collectSessions(db: Database): CollectResult {
@@ -182,16 +185,16 @@ function collectSessions(db: Database): CollectResult {
               tokens_cache_read, tokens_cache_write
        FROM session`,
     )
-    .all();
-  const records = rows.map((r) => toSessionRecord(r));
-  const cursor = String(Math.max(0, ...rows.map((r) => r.time_created)));
-  return { records, cursor };
+    .all()
+  const records = rows.map((r) => toSessionRecord(r))
+  const cursor = String(Math.max(0, ...rows.map((r) => r.time_created)))
+  return { records, cursor }
 }
 
 function toSessionRecord(r: SessionRow): UsageRecord {
   return {
     sourceId: r.id,
-    grain: "session",
+    grain: 'session',
     ts: new Date(r.time_created).toISOString(),
     model: r.model,
     project: r.directory,
@@ -206,5 +209,5 @@ function toSessionRecord(r: SessionRow): UsageRecord {
       agent: r.agent,
       reportedCostUsd: r.cost,
     },
-  };
+  }
 }

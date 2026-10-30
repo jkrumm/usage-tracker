@@ -1,5 +1,5 @@
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
 
 // Shared plumbing for collectors whose source is a tree of append-only JSONL
 // files read at a per-file byte offset — claude-code's transcripts and codex's
@@ -16,22 +16,22 @@ import { join } from "node:path";
  * of the numbers — which is exactly how workflow agents once went uncounted.
  */
 export async function walkJsonlFiles(root: string, nested = false): Promise<string[]> {
-  const out: string[] = [];
-  let entries;
+  const out: string[] = []
+  let entries
   try {
-    entries = await readdir(root, { withFileTypes: true });
+    entries = await readdir(root, { withFileTypes: true })
   } catch (err) {
     // A subdirectory deleted between the parent's listing and this scan (an agent worktree
     // torn down mid-run) holds nothing to count. A missing root still throws: callers decide.
-    if (nested && (err as NodeJS.ErrnoException).code === "ENOENT") return out;
-    throw err;
+    if (nested && (err as NodeJS.ErrnoException).code === 'ENOENT') return out
+    throw err
   }
   for (const e of entries) {
-    const path = join(root, e.name);
-    if (e.isDirectory()) out.push(...(await walkJsonlFiles(path, true)));
-    else if (e.isFile() && e.name.endsWith(".jsonl")) out.push(path);
+    const path = join(root, e.name)
+    if (e.isDirectory()) out.push(...(await walkJsonlFiles(path, true)))
+    else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(path)
   }
-  return out;
+  return out
 }
 
 /**
@@ -46,11 +46,11 @@ export async function readNewLines(
   from: number,
   size: number,
 ): Promise<{ lines: string[]; offset: number } | null> {
-  if (size <= from) return null;
+  if (size <= from) return null
 
-  const chunk = await Bun.file(file).slice(from, size).text();
-  const lastNl = chunk.lastIndexOf("\n");
-  if (lastNl === -1) return null;
+  const chunk = await Bun.file(file).slice(from, size).text()
+  const lastNl = chunk.lastIndexOf('\n')
+  if (lastNl === -1) return null
 
-  return { lines: chunk.slice(0, lastNl).split("\n"), offset: from + lastNl + 1 };
+  return { lines: chunk.slice(0, lastNl).split('\n'), offset: from + lastNl + 1 }
 }

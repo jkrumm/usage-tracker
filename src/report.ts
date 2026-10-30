@@ -1,26 +1,38 @@
-import type { SQL } from "bun";
-import { getSessionBaseUrl } from "./models.ts";
+import type { SQL } from 'bun'
+import { getSessionBaseUrl } from './models.ts'
 
 // Read-side queries for the CLI, over the Postgres usage schema. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "lane" | "account" | "iu_key" | "repo" | "role" | "subagent_type" | "effort";
+export type GroupBy =
+  | 'source'
+  | 'model'
+  | 'billing'
+  | 'day'
+  | 'machine'
+  | 'lane'
+  | 'account'
+  | 'iu_key'
+  | 'repo'
+  | 'role'
+  | 'subagent_type'
+  | 'effort'
 
 interface StatRow {
-  key: string;
-  records: number;
-  input: number;
-  output: number;
-  cacheWrite: number;
-  reasoning: number;
-  costUsd: number | null;
+  key: string
+  records: number
+  input: number
+  output: number
+  cacheWrite: number
+  reasoning: number
+  costUsd: number | null
 }
 
 /** Whitelisted: the only strings ever spliced into the query. `iu_key` is the IU key id, stored in `api_key`. */
 const GROUP_EXPR: Record<GroupBy, string> = {
-  source: "source",
+  source: 'source',
   model: "coalesce(model, '(unknown)')",
-  billing: "billing",
+  billing: 'billing',
   day: "to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
   machine: "coalesce(machine, '(unknown)')",
   lane: "coalesce(lane, '(none)')",
@@ -32,14 +44,17 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   role: "coalesce(lane_detail->>'role', '(none)')",
   subagent_type: "coalesce(lane_detail->>'subagent_type', '(none)')",
   effort: "coalesce(effort, '(none)')",
-};
+}
 
-export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[];
+export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[]
 
 // Reads usage.records_unique: the gateway mirror copies (docs/usage-schema.md, Duplicates) are not counted twice.
-export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number }): Promise<StatRow[]> {
-  const expr = GROUP_EXPR[opts.by];
-  if (!expr) throw new Error(`--by must be one of: ${GROUP_BY_DIMS.join(", ")}`);
+export async function stats(
+  sql: SQL,
+  opts: { by: GroupBy; sinceDays?: number },
+): Promise<StatRow[]> {
+  const expr = GROUP_EXPR[opts.by]
+  if (!expr) throw new Error(`--by must be one of: ${GROUP_BY_DIMS.join(', ')}`)
   // Error rows carry no tokens and would only dilute counts — keep token/cost
   // aggregates to successful requests; the error rate lives in `sources`.
   //
@@ -50,7 +65,7 @@ export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number })
   // genuinely incremental per turn, so they are safe to sum. cost_usd is
   // unaffected — it's computed per-row with cache_read's own cheap rate
   // before being summed, so dollar totals stay correct.
-  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null;
+  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null
   const rows = await sql.unsafe(
     `SELECT ${expr} AS key,
             count(*)::int                                        AS records,
@@ -64,13 +79,13 @@ export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number })
      GROUP BY 1
      ORDER BY "costUsd" DESC NULLS LAST, records DESC`,
     [since],
-  );
-  return rows as StatRow[];
+  )
+  return rows as StatRow[]
 }
 
 export interface UnpricedModel {
-  model: string;
-  rows: number;
+  model: string
+  rows: number
 }
 
 /**
@@ -85,18 +100,21 @@ export async function unpricedByModel(sql: SQL): Promise<UnpricedModel[]> {
     FROM usage.records
     WHERE cost_source = 'none'
     GROUP BY 1
-    ORDER BY 2 DESC`;
-  return rows.map((r: Record<string, unknown>) => ({ model: String(r.model), rows: Number(r.rows) }));
+    ORDER BY 2 DESC`
+  return rows.map((r: Record<string, unknown>) => ({
+    model: String(r.model),
+    rows: Number(r.rows),
+  }))
 }
 
 export interface SourceStatus {
-  source: string;
-  records: number;
-  lastRunAt: string | null;
-  lastStatus: string | null;
-  lastNote: string | null;
-  errors: number;
-  total: number;
+  source: string
+  records: number
+  lastRunAt: string | null
+  lastStatus: string | null
+  lastNote: string | null
+  errors: number
+  total: number
 }
 
 export async function sourceStatus(sql: SQL): Promise<SourceStatus[]> {
@@ -118,23 +136,23 @@ export async function sourceStatus(sql: SQL): Promise<SourceStatus[]> {
       FROM usage.records
       GROUP BY source
     ) oc ON oc.source = cs.source
-    ORDER BY cs.source`;
-  return rows as unknown as SourceStatus[];
+    ORDER BY cs.source`
+  return rows as unknown as SourceStatus[]
 }
 
 export interface BillingAuditRow {
-  sessionId: string;
-  records: number;
-  models: string;
-  billings: string;
+  sessionId: string
+  records: number
+  models: string
+  billings: string
   /** Distinct accounts on the session's Max rows ("" when none, e.g. an IU session). */
-  accounts: string;
-  costUsd: number | null;
-  firstTs: string;
-  lastTs: string;
-  liveLabel: "expired/missing" | "max (c)" | "iu (ca)";
-  multiBilling: boolean;
-  mismatch: boolean;
+  accounts: string
+  costUsd: number | null
+  firstTs: string
+  lastTs: string
+  liveLabel: 'expired/missing' | 'max (c)' | 'iu (ca)'
+  multiBilling: boolean
+  mismatch: boolean
 }
 
 /**
@@ -150,7 +168,7 @@ export async function sessionBillingAudit(
   sql: SQL,
   opts: { sinceDays?: number; sessionId?: string } = {},
 ): Promise<BillingAuditRow[]> {
-  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null;
+  const since = opts.sinceDays ? Math.floor(opts.sinceDays) : null
   const rows = await sql`
     SELECT s.source_session_id                                   AS "sessionId",
            count(*)::int                                         AS records,
@@ -166,15 +184,15 @@ export async function sessionBillingAudit(
       AND (${since}::int IS NULL OR r.ts >= now() - make_interval(days => ${since}::int))
       AND (${opts.sessionId ?? null}::text IS NULL OR s.source_session_id = ${opts.sessionId ?? null}::text)
     GROUP BY 1
-    ORDER BY max(r.ts) DESC`;
+    ORDER BY max(r.ts) DESC`
 
   return rows.map((row: Record<string, unknown>) => {
-    const sessionId = String(row.sessionId);
-    const liveBaseUrl = getSessionBaseUrl(sessionId);
-    const liveLabel: BillingAuditRow["liveLabel"] =
-      liveBaseUrl === undefined ? "expired/missing" : liveBaseUrl ? "iu (ca)" : "max (c)";
-    const billingValues = String(row.billings).split(",").filter(Boolean);
-    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? "api_key" : "max";
+    const sessionId = String(row.sessionId)
+    const liveBaseUrl = getSessionBaseUrl(sessionId)
+    const liveLabel: BillingAuditRow['liveLabel'] =
+      liveBaseUrl === undefined ? 'expired/missing' : liveBaseUrl ? 'iu (ca)' : 'max (c)'
+    const billingValues = String(row.billings).split(',').filter(Boolean)
+    const expected = liveBaseUrl === undefined ? null : liveBaseUrl ? 'api_key' : 'max'
     return {
       sessionId,
       records: Number(row.records),
@@ -187,22 +205,29 @@ export async function sessionBillingAudit(
       liveLabel,
       multiBilling: billingValues.length > 1,
       mismatch: expected != null && !(billingValues.length === 1 && billingValues[0] === expected),
-    };
-  });
+    }
+  })
 }
 
 // ── formatting ──────────────────────────────────────────────────────────────
 
 export function formatStats(rows: StatRow[], by: GroupBy): string {
-  if (rows.length === 0) return "(no data — run `ingest` first)";
+  if (rows.length === 0) return '(no data — run `ingest` first)'
 
-  const header = [pad(by, 22), r("records", 9), r("input", 13), r("output", 12), r("cacheW", 12), r("cost $", 11)];
-  const lines = [header.join("  ")];
-  lines.push("-".repeat(header.join("  ").length));
+  const header = [
+    pad(by, 22),
+    r('records', 9),
+    r('input', 13),
+    r('output', 12),
+    r('cacheW', 12),
+    r('cost $', 11),
+  ]
+  const lines = [header.join('  ')]
+  lines.push('-'.repeat(header.join('  ').length))
 
-  let tCost = 0;
+  let tCost = 0
   for (const row of rows) {
-    tCost += row.costUsd ?? 0;
+    tCost += row.costUsd ?? 0
     lines.push(
       [
         pad(row.key, 22),
@@ -210,57 +235,66 @@ export function formatStats(rows: StatRow[], by: GroupBy): string {
         r(num(row.input), 13),
         r(num(row.output), 12),
         r(num(row.cacheWrite), 12),
-        r(row.costUsd == null ? "n/a" : usd(row.costUsd), 11),
-      ].join("  "),
-    );
+        r(row.costUsd == null ? 'n/a' : usd(row.costUsd), 11),
+      ].join('  '),
+    )
   }
-  lines.push("-".repeat(header.join("  ").length));
+  lines.push('-'.repeat(header.join('  ').length))
   lines.push(
-    [pad("TOTAL", 22), r("", 9), r("", 13), r("", 12), r("", 12), r(usd(tCost), 11)].join("  "),
-  );
-  return lines.join("\n");
+    [pad('TOTAL', 22), r('', 9), r('', 13), r('', 12), r('', 12), r(usd(tCost), 11)].join('  '),
+  )
+  return lines.join('\n')
 }
 
 export function formatSources(rows: SourceStatus[]): string {
-  if (rows.length === 0) return "(no collector state yet — run `ingest`)";
+  if (rows.length === 0) return '(no collector state yet — run `ingest`)'
   const lines = [
-    [pad("source", 14), r("records", 9), pad("status", 9), r("err%", 7), pad("last run (UTC)", 22), "note"].join("  "),
-  ];
+    [
+      pad('source', 14),
+      r('records', 9),
+      pad('status', 9),
+      r('err%', 7),
+      pad('last run (UTC)', 22),
+      'note',
+    ].join('  '),
+  ]
   for (const s of rows) {
     lines.push(
       [
         pad(s.source, 14),
         r(num(s.records), 9),
-        pad(s.lastStatus ?? "-", 9),
+        pad(s.lastStatus ?? '-', 9),
         r(errPct(s), 7),
-        pad(s.lastRunAt ?? "-", 22),
-        s.lastNote ?? "",
-      ].join("  "),
-    );
+        pad(s.lastRunAt ?? '-', 22),
+        s.lastNote ?? '',
+      ].join('  '),
+    )
   }
-  return lines.join("\n");
+  return lines.join('\n')
 }
 
 export function formatBillingAudit(rows: BillingAuditRow[]): string {
-  if (rows.length === 0) return "(no claude-code sessions in range)";
+  if (rows.length === 0) return '(no claude-code sessions in range)'
 
   const header = [
-    pad("session", 36),
-    r("rows", 5),
-    pad("models", 24),
-    pad("billing", 14),
-    pad("live", 15),
-    pad("last (UTC)", 20),
-    pad("acct", 8),
-    "flags",
-  ];
-  const lines = [header.join("  ")];
-  lines.push("-".repeat(header.join("  ").length));
+    pad('session', 36),
+    r('rows', 5),
+    pad('models', 24),
+    pad('billing', 14),
+    pad('live', 15),
+    pad('last (UTC)', 20),
+    pad('acct', 8),
+    'flags',
+  ]
+  const lines = [header.join('  ')]
+  lines.push('-'.repeat(header.join('  ').length))
 
-  let flagged = 0;
+  let flagged = 0
   for (const row of rows) {
-    const flags = [row.multiBilling && "MULTI-BILLING", row.mismatch && "MISMATCH"].filter(Boolean).join(" ");
-    if (flags) flagged++;
+    const flags = [row.multiBilling && 'MULTI-BILLING', row.mismatch && 'MISMATCH']
+      .filter(Boolean)
+      .join(' ')
+    if (flags) flagged++
     lines.push(
       [
         pad(row.sessionId, 36),
@@ -269,34 +303,34 @@ export function formatBillingAudit(rows: BillingAuditRow[]): string {
         pad(row.billings, 14),
         pad(row.liveLabel, 15),
         pad(row.lastTs, 20),
-        pad(row.accounts || "-", 8),
+        pad(row.accounts || '-', 8),
         flags,
-      ].join("  "),
-    );
+      ].join('  '),
+    )
   }
-  lines.push("-".repeat(header.join("  ").length));
-  lines.push(`${rows.length} session${rows.length === 1 ? "" : "s"}, ${flagged} flagged`);
-  return lines.join("\n");
+  lines.push('-'.repeat(header.join('  ').length))
+  lines.push(`${rows.length} session${rows.length === 1 ? '' : 's'}, ${flagged} flagged`)
+  return lines.join('\n')
 }
 
 // "-" when nothing seen yet, "0%" when clean, else one decimal (e.g. "4.2%").
 const errPct = (s: SourceStatus): string => {
-  if (s.total === 0) return "-";
-  if (s.errors === 0) return "0%";
-  return `${((s.errors / s.total) * 100).toFixed(1)}%`;
-};
+  if (s.total === 0) return '-'
+  if (s.errors === 0) return '0%'
+  return `${((s.errors / s.total) * 100).toFixed(1)}%`
+}
 
-const num = (n: number | null) => (n ?? 0).toLocaleString("en-US");
-const usd = (n: number) => `$${n.toFixed(n < 10 ? 4 : 2)}`;
-const pad = (s: string, w: number) => s.padEnd(w).slice(0, Math.max(w, s.length));
-const r = (s: string, w: number) => s.padStart(w);
+const num = (n: number | null) => (n ?? 0).toLocaleString('en-US')
+const usd = (n: number) => `$${n.toFixed(n < 10 ? 4 : 2)}`
+const pad = (s: string, w: number) => s.padEnd(w).slice(0, Math.max(w, s.length))
+const r = (s: string, w: number) => s.padStart(w)
 
 export interface StaleSource {
-  source: string;
+  source: string
   /** Newest row's `ts`, or null when the source has never produced a row. */
-  newestTs: string | null;
-  ageHours: number | null;
-  limitHours: number;
+  newestTs: string | null
+  ageHours: number | null
+  limitHours: number
 }
 
 /**
@@ -309,37 +343,42 @@ export interface StaleSource {
 export async function staleSources(
   sql: SQL,
   collectors: ReadonlyArray<{
-    source: string;
-    staleAfterHours?: number | null;
-    available(sql?: SQL): boolean | Promise<boolean>;
+    source: string
+    staleAfterHours?: number | null
+    available(sql?: SQL): boolean | Promise<boolean>
     /** Freshness for sources that keep no records rows (default: newest usage.records.ts). */
-    newest?(sql: SQL): Promise<string | null>;
+    newest?(sql: SQL): Promise<string | null>
   }>,
   now = new Date(),
 ): Promise<StaleSource[]> {
-  const watched = collectors.filter((c) => c.staleAfterHours != null);
-  if (watched.length === 0) return [];
+  const watched = collectors.filter((c) => c.staleAfterHours != null)
+  if (watched.length === 0) return []
   // One grouped read for every source instead of a max(ts) scan per source.
-  const rows = await sql`SELECT source, max(ts) AS ts FROM usage.records GROUP BY source`;
-  const newestBySource = new Map<string, string>(rows.map((r: Record<string, unknown>) => [String(r.source), new Date(r.ts as string | Date).toISOString()]));
+  const rows = await sql`SELECT source, max(ts) AS ts FROM usage.records GROUP BY source`
+  const newestBySource = new Map<string, string>(
+    rows.map((r: Record<string, unknown>) => [
+      String(r.source),
+      new Date(r.ts as string | Date).toISOString(),
+    ]),
+  )
 
-  const stale: StaleSource[] = [];
+  const stale: StaleSource[] = []
   for (const c of watched) {
-    const limit = c.staleAfterHours as number;
-    const newestTs = (c.newest ? await c.newest(sql) : null) ?? newestBySource.get(c.source) ?? null;
+    const limit = c.staleAfterHours as number
+    const newestTs = (c.newest ? await c.newest(sql) : null) ?? newestBySource.get(c.source) ?? null
     // A source that has produced rows but whose store vanished is the moved-store
     // failure itself; only a source never seen on this machine is exempt.
-    if (!(await c.available(sql)) && newestTs === null) continue;
-    const ageHours = newestTs ? (now.getTime() - Date.parse(newestTs)) / 3_600_000 : null;
+    if (!(await c.available(sql)) && newestTs === null) continue
+    const ageHours = newestTs ? (now.getTime() - Date.parse(newestTs)) / 3_600_000 : null
     // A non-finite or future-dated newest row (beyond clock skew) can't prove
     // freshness, so it counts as stale rather than passing every comparison.
-    const fresh = ageHours !== null && ageHours >= -FUTURE_SKEW_HOURS && ageHours <= limit;
-    if (!fresh) stale.push({ source: c.source, newestTs, ageHours, limitHours: limit });
+    const fresh = ageHours !== null && ageHours >= -FUTURE_SKEW_HOURS && ageHours <= limit
+    if (!fresh) stale.push({ source: c.source, newestTs, ageHours, limitHours: limit })
   }
-  return stale;
+  return stale
 }
 
-const FUTURE_SKEW_HOURS = 1;
+const FUTURE_SKEW_HOURS = 1
 
 export function formatStale(stale: StaleSource[]): string {
   return stale
@@ -348,5 +387,5 @@ export function formatStale(stale: StaleSource[]): string {
         ? `stale: ${s.source} has no rows (limit ${s.limitHours}h)`
         : `stale: ${s.source} newest row ${s.newestTs} is ${s.ageHours.toFixed(1)}h old (limit ${s.limitHours}h)`,
     )
-    .join("\n");
+    .join('\n')
 }

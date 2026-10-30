@@ -1,4 +1,4 @@
-import type { SQL } from "bun";
+import type { SQL } from 'bun'
 
 /**
  * Re-cost already-ingested rows against the prices in force now (usage.prices, usage.price_overrides).
@@ -20,33 +20,33 @@ import type { SQL } from "bun";
 
 export interface RepriceOptions {
   /** Only rows with this `model`. Omit for the whole table. */
-  model?: string | undefined;
+  model?: string | undefined
   /** Report what would change without writing. */
-  dryRun?: boolean | undefined;
+  dryRun?: boolean | undefined
 }
 
 export interface RepriceModelSummary {
-  model: string;
+  model: string
   /** Rows whose cost, source or price row changes. */
-  changed: number;
-  oldCostUsd: number;
-  newCostUsd: number;
+  changed: number
+  oldCostUsd: number
+  newCostUsd: number
 }
 
 export interface RepriceResult {
   /** Rows compared: everything that is not provider-reported. */
-  scanned: number;
-  changed: number;
+  scanned: number
+  changed: number
   /** Priced rows whose model has no price today: deliberately left untouched. */
-  preserved: number;
+  preserved: number
   /** Rows with a provider-reported cost (`cost_reported_usd`): never recomputed. */
-  reportedSkipped: number;
-  dryRun: boolean;
-  models: RepriceModelSummary[];
+  reportedSkipped: number
+  dryRun: boolean
+  models: RepriceModelSummary[]
 }
 
 /** Sub-cent noise from a float round trip (a backfill) is not a change. */
-const EPSILON = 1e-9;
+const EPSILON = 1e-9
 
 // One statement. `calc` prices every candidate through compute_cost, `diff` keeps the rows that move, `upd` writes
 // them (a data-modifying CTE always runs, so the dry run gates it with $2), the final SELECT reports from `diff`.
@@ -78,12 +78,14 @@ WITH calc AS (
 SELECT (SELECT count(*) FROM calc)::int AS scanned,
        (SELECT count(*) FROM calc WHERE new_usd IS NULL AND old_usd IS NOT NULL)::int AS preserved,
        (SELECT count(*) FROM usage.records WHERE cost_reported_usd IS NOT NULL AND ($1::text IS NULL OR model = $1::text))::int AS reported,
-       coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY abs(p."newCostUsd" - p."oldCostUsd") DESC, p.model) FROM per_model p), '[]'::jsonb) AS models`;
+       coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY abs(p."newCostUsd" - p."oldCostUsd") DESC, p.model) FROM per_model p), '[]'::jsonb) AS models`
 
 export async function reprice(sql: SQL, opts: RepriceOptions = {}): Promise<RepriceResult> {
-  const dryRun = opts.dryRun ?? false;
-  const [row] = await sql.unsafe(REPRICE_SQL, [opts.model ?? null, dryRun]);
-  const models = (typeof row.models === "string" ? JSON.parse(row.models) : row.models) as RepriceModelSummary[];
+  const dryRun = opts.dryRun ?? false
+  const [row] = await sql.unsafe(REPRICE_SQL, [opts.model ?? null, dryRun])
+  const models = (
+    typeof row.models === 'string' ? JSON.parse(row.models) : row.models
+  ) as RepriceModelSummary[]
   return {
     scanned: row.scanned,
     changed: models.reduce((n, m) => n + m.changed, 0),
@@ -91,37 +93,39 @@ export async function reprice(sql: SQL, opts: RepriceOptions = {}): Promise<Repr
     reportedSkipped: row.reported,
     dryRun,
     models,
-  };
+  }
 }
 
 export function formatReprice(result: RepriceResult): string {
   const preservedNote =
-    result.preserved > 0 ? `\n${result.preserved} priced rows kept as-is: their model has no price today` : "";
+    result.preserved > 0
+      ? `\n${result.preserved} priced rows kept as-is: their model has no price today`
+      : ''
   const reportedNote =
     result.reportedSkipped > 0
       ? `\n${result.reportedSkipped} rows kept as-is: provider-reported cost (cost_reported_usd)`
-      : "";
+      : ''
   if (result.changed === 0) {
-    return `reprice: ${result.scanned} rows scanned, everything already matches the current prices${preservedNote}${reportedNote}`;
+    return `reprice: ${result.scanned} rows scanned, everything already matches the current prices${preservedNote}${reportedNote}`
   }
   const lines = [
-    `${"model".padEnd(24)} ${"rows".padStart(7)} ${"was".padStart(11)} ${"now".padStart(11)} ${"delta".padStart(11)}`,
-  ];
+    `${'model'.padEnd(24)} ${'rows'.padStart(7)} ${'was'.padStart(11)} ${'now'.padStart(11)} ${'delta'.padStart(11)}`,
+  ]
   for (const m of result.models) {
-    const delta = m.newCostUsd - m.oldCostUsd;
+    const delta = m.newCostUsd - m.oldCostUsd
     lines.push(
       `${m.model.padEnd(24)} ${String(m.changed).padStart(7)} ` +
         `${m.oldCostUsd.toFixed(4).padStart(11)} ${m.newCostUsd.toFixed(4).padStart(11)} ` +
-        `${(delta >= 0 ? "+" : "") + delta.toFixed(4)}`.padStart(12),
-    );
+        `${(delta >= 0 ? '+' : '') + delta.toFixed(4)}`.padStart(12),
+    )
   }
-  const verb = result.dryRun ? "would reprice" : "repriced";
-  lines.push("");
+  const verb = result.dryRun ? 'would reprice' : 'repriced'
+  lines.push('')
   lines.push(
     `${verb} ${result.changed} of ${result.scanned} rows` +
-      (result.dryRun ? " (dry run — nothing written)" : "") +
+      (result.dryRun ? ' (dry run — nothing written)' : '') +
       preservedNote +
       reportedNote,
-  );
-  return lines.join("\n");
+  )
+  return lines.join('\n')
 }

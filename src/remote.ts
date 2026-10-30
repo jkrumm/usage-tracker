@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { parseMacModel } from "./machine.ts";
-import type { Logger } from "./types.ts";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { parseMacModel } from './machine.ts'
+import type { Logger } from './types.ts'
 
 // The MacBook (ssh alias `iumac`) isn't a source of its own — it's a second
 // filesystem root for the *existing* claude-code and codex collectors.
@@ -22,27 +22,28 @@ import type { Logger } from "./types.ts";
 // types.ts UsageRecord.machine and db.ts upsertRecords).
 
 export function iumacHost(): string {
-  return process.env.USAGE_IUMAC_HOST?.trim() || "iumac";
+  return process.env.USAGE_IUMAC_HOST?.trim() || 'iumac'
 }
 
 function remoteRoot(): string {
   return (
-    process.env.USAGE_REMOTE_DIR?.trim() || join(homedir(), ".local", "share", "usage-tracker", "remote")
-  );
+    process.env.USAGE_REMOTE_DIR?.trim() ||
+    join(homedir(), '.local', 'share', 'usage-tracker', 'remote')
+  )
 }
 
 function mirrorRoot(): string {
-  return join(remoteRoot(), "iumac");
+  return join(remoteRoot(), 'iumac')
 }
 
 /** Local mirror of iumac's `~/.claude/projects`. Passed to the same listJsonl walker as the local root. */
 export function iumacProjectsDir(): string {
-  return join(mirrorRoot(), "projects");
+  return join(mirrorRoot(), 'projects')
 }
 
 /** Local mirror of iumac's `~/.claude/logs` (session_env lines for billing classification). */
 export function iumacLogsDir(): string {
-  return join(mirrorRoot(), "logs");
+  return join(mirrorRoot(), 'logs')
 }
 
 /**
@@ -52,7 +53,7 @@ export function iumacLogsDir(): string {
  * per-leg remote path.
  */
 export function iumacCodexDir(): string {
-  return join(mirrorRoot(), "codex-sessions");
+  return join(mirrorRoot(), 'codex-sessions')
 }
 
 /**
@@ -66,12 +67,12 @@ export function iumacCodexDir(): string {
  * leg-specific filter override is needed to keep that DB off this machine.
  */
 export function iumacUsageJsonlDir(): string {
-  return join(mirrorRoot(), "usage-jsonl");
+  return join(mirrorRoot(), 'usage-jsonl')
 }
 
 /** Hard off switch: when set, no ssh/rsync call is made at all. */
 export function iumacDisabled(): boolean {
-  return process.env.USAGE_IUMAC_DISABLE === "1";
+  return process.env.USAGE_IUMAC_DISABLE === '1'
 }
 
 /**
@@ -84,19 +85,19 @@ export function iumacDisabled(): boolean {
  * correctly, ever, so the offset has to be withheld instead.
  */
 export function hasMirroredLogs(): boolean {
-  const dir = iumacLogsDir();
-  if (!existsSync(dir)) return false;
+  const dir = iumacLogsDir()
+  if (!existsSync(dir)) return false
   try {
-    return readdirSync(dir).some((f) => f.endsWith(".jsonl"));
+    return readdirSync(dir).some((f) => f.endsWith('.jsonl'))
   } catch {
-    return false;
+    return false
   }
 }
 
 export interface SyncResult {
-  ok: boolean;
+  ok: boolean
   /** Present on failure; a short, log-friendly reason. */
-  note?: string;
+  note?: string
   /**
    * Outcome of the logs leg specifically, independent of `ok` (which reflects
    * the whole sync). collect() in claude-code.ts needs this on its own: a
@@ -106,7 +107,7 @@ export interface SyncResult {
    * mirror offsets hinges on this leg alone, not on whether projects also
    * synced fine.
    */
-  logsOk: boolean;
+  logsOk: boolean
   /**
    * Outcome of the codex-sessions leg specifically. Deliberately never folded
    * into `ok` or `note` the way projects/logs are: syncIumac's only call site
@@ -119,7 +120,7 @@ export interface SyncResult {
    * It's logged here regardless, so it's never silent even without an `ok`
    * flip.
    */
-  codexOk: boolean;
+  codexOk: boolean
   /**
    * Outcome of the usage-jsonl leg specifically (astra.jsonl and any sibling
    * one-shot jsonl logs mirrored from iumac's ~/.local/share/usage-tracker).
@@ -133,13 +134,13 @@ export interface SyncResult {
    * failed). It's logged here regardless, so it's never silent even without
    * an `ok` flip.
    */
-  usageJsonlOk: boolean;
+  usageJsonlOk: boolean
 }
 
 interface LegResult {
-  ok: boolean;
+  ok: boolean
   /** Present on failure; a short, log-friendly reason. */
-  note?: string;
+  note?: string
 }
 
 // BatchMode=yes guarantees ssh never prompts (no password, no host-key
@@ -147,9 +148,9 @@ interface LegResult {
 // ConnectTimeout bounds only the TCP handshake; --timeout on rsync itself
 // bounds the transfer, and Bun's spawn `timeout` is the last-resort kill
 // switch if both of those somehow don't fire.
-export const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"];
-const RSYNC_TIMEOUT_S = 60;
-const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}`;
+export const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
+const RSYNC_TIMEOUT_S = 60
+const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ''}`
 
 /**
  * Mirror iumac's transcripts + session logs into the local mirror root via
@@ -175,23 +176,23 @@ const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH
  */
 async function iumacReachable(): Promise<boolean> {
   try {
-    const proc = Bun.spawn(["ssh", ...SSH_OPTS, iumacHost(), "true"], {
-      stdout: "ignore",
-      stderr: "ignore",
+    const proc = Bun.spawn(['ssh', ...SSH_OPTS, iumacHost(), 'true'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
       timeout: (RSYNC_TIMEOUT_S + 15) * 1000,
-      killSignal: "SIGKILL",
+      killSignal: 'SIGKILL',
       env: { ...process.env, PATH: SPAWN_PATH },
-    });
-    return (await proc.exited) === 0;
+    })
+    return (await proc.exited) === 0
   } catch {
-    return false;
+    return false
   }
 }
 
 export async function syncIumac(log: Logger): Promise<SyncResult> {
   if (iumacDisabled()) {
-    log.info("iumac mirror: disabled via USAGE_IUMAC_DISABLE");
-    return { ok: true, logsOk: true, codexOk: true, usageJsonlOk: true };
+    log.info('iumac mirror: disabled via USAGE_IUMAC_DISABLE')
+    return { ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }
   }
 
   // One reachability probe before any leg. The sshd on the MacBook is a
@@ -205,43 +206,55 @@ export async function syncIumac(log: Logger): Promise<SyncResult> {
   // ConnectTimeout. With four legs that is 4x the stall for zero information,
   // so probe once and report every leg unreachable together.
   if (!(await iumacReachable())) {
-    const note = "iumac unreachable (no sshd — MacBook logged out or offline)";
-    log.info(`iumac mirror: ${note}`);
-    return { ok: false, note, logsOk: false, codexOk: false, usageJsonlOk: false };
+    const note = 'iumac unreachable (no sshd — MacBook logged out or offline)'
+    log.info(`iumac mirror: ${note}`)
+    return { ok: false, note, logsOk: false, codexOk: false, usageJsonlOk: false }
   }
 
-  const logs = await syncLeg("logs", iumacLogsDir());
-  const projects = await syncLeg("projects", iumacProjectsDir());
-  const codex = await syncLeg("codex", iumacCodexDir());
-  if (!codex.ok) log.warn(`iumac mirror: ${codex.note}`);
-  const usageJsonl = await syncLeg("usage-jsonl", iumacUsageJsonlDir());
-  if (!usageJsonl.ok) log.warn(`iumac mirror: ${usageJsonl.note}`);
+  const logs = await syncLeg('logs', iumacLogsDir())
+  const projects = await syncLeg('projects', iumacProjectsDir())
+  const codex = await syncLeg('codex', iumacCodexDir())
+  if (!codex.ok) log.warn(`iumac mirror: ${codex.note}`)
+  const usageJsonl = await syncLeg('usage-jsonl', iumacUsageJsonlDir())
+  if (!usageJsonl.ok) log.warn(`iumac mirror: ${usageJsonl.note}`)
 
   if (!projects.ok) {
-    return { ok: false, note: projects.note, logsOk: logs.ok, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
+    return {
+      ok: false,
+      note: projects.note,
+      logsOk: logs.ok,
+      codexOk: codex.ok,
+      usageJsonlOk: usageJsonl.ok,
+    }
   }
   if (!logs.ok) {
-    return { ok: false, note: logs.note, logsOk: false, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
+    return {
+      ok: false,
+      note: logs.note,
+      logsOk: false,
+      codexOk: codex.ok,
+      usageJsonlOk: usageJsonl.ok,
+    }
   }
-  return { ok: true, logsOk: true, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok };
+  return { ok: true, logsOk: true, codexOk: codex.ok, usageJsonlOk: usageJsonl.ok }
 }
 
-type Leg = "projects" | "logs" | "codex" | "usage-jsonl";
+type Leg = 'projects' | 'logs' | 'codex' | 'usage-jsonl'
 
 // Only the codex and usage-jsonl legs live outside ~/.claude on the remote —
 // everything else about the four legs (mkdir, rsync flags, failure handling)
 // is identical, so this is the one place a leg's remote path is allowed to
 // differ.
 const REMOTE_SUBDIR: Record<Leg, string> = {
-  projects: ".claude/projects",
-  logs: ".claude/logs",
-  codex: ".codex/sessions",
-  "usage-jsonl": ".local/share/usage-tracker",
-};
+  projects: '.claude/projects',
+  logs: '.claude/logs',
+  codex: '.codex/sessions',
+  'usage-jsonl': '.local/share/usage-tracker',
+}
 
 /** rsync exit 23 whose stderr names a missing source path — an absent month. */
 function isMissingSource(note: string | undefined): boolean {
-  return !!note && note.includes("rsync exit 23") && note.includes("No such file or directory");
+  return !!note && note.includes('rsync exit 23') && note.includes('No such file or directory')
 }
 
 /**
@@ -273,12 +286,11 @@ function isMissingSource(note: string | undefined): boolean {
  * exists for FUTURE `cx` use on the MacBook, not for history.
  */
 function legSubPaths(leg: Leg): string[] {
-  if (leg !== "codex") return [""];
-  const now = new Date();
-  const month = (d: Date) =>
-    `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-  return [month(prev), month(now)];
+  if (leg !== 'codex') return ['']
+  const now = new Date()
+  const month = (d: Date) => `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+  const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+  return [month(prev), month(now)]
 }
 
 /**
@@ -290,65 +302,68 @@ function legSubPaths(leg: Leg): string[] {
  */
 async function syncLeg(leg: Leg, destDir: string): Promise<LegResult> {
   for (const sub of legSubPaths(leg)) {
-    const dest = sub ? join(destDir, sub) : destDir;
+    const dest = sub ? join(destDir, sub) : destDir
     try {
-      mkdirSync(dest, { recursive: true });
+      mkdirSync(dest, { recursive: true })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, note: `iumac ${leg} mkdir failed: ${msg}` };
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, note: `iumac ${leg} mkdir failed: ${msg}` }
     }
-    const result = await rsyncDir(leg, dest, sub);
+    const result = await rsyncDir(leg, dest, sub)
     // A month with no Codex activity simply has no directory on the MacBook,
     // and rsync calls that exit 23 ("partial transfer due to error", with a
     // `(l)stat: No such file or directory` on the source). That is the normal
     // state for a machine that has not run `cx` this month, not a failure —
     // treat it as success so a quiet month cannot mark the leg unhealthy.
-    if (!result.ok && !isMissingSource(result.note)) return result;
+    if (!result.ok && !isMissingSource(result.note)) return result
   }
-  return { ok: true };
+  return { ok: true }
 }
 
-async function rsyncDir(leg: Leg, destDir: string, sub = ""): Promise<LegResult> {
-  const host = iumacHost();
-  const remote = sub ? `${REMOTE_SUBDIR[leg]}/${sub}` : REMOTE_SUBDIR[leg];
+async function rsyncDir(leg: Leg, destDir: string, sub = ''): Promise<LegResult> {
+  const host = iumacHost()
+  const remote = sub ? `${REMOTE_SUBDIR[leg]}/${sub}` : REMOTE_SUBDIR[leg]
   const args = [
-    "rsync",
-    "-a",
-    "--delete",
+    'rsync',
+    '-a',
+    '--delete',
     `--timeout=${RSYNC_TIMEOUT_S}`,
-    "-e",
-    `ssh ${SSH_OPTS.join(" ")}`,
-    "--include=*/",
-    "--include=*.jsonl",
+    '-e',
+    `ssh ${SSH_OPTS.join(' ')}`,
+    '--include=*/',
+    '--include=*.jsonl',
     // a Claude Code subagent's agent-<id>.meta.json names its agentType when its lines carry no attributionAgent
-    "--include=*.meta.json",
-    "--exclude=*",
+    '--include=*.meta.json',
+    '--exclude=*',
     `${host}:${remote}/`,
     `${destDir}/`,
-  ];
+  ]
   try {
     const proc = Bun.spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: 'pipe',
+      stderr: 'pipe',
       // Belt-and-braces: rsync's own --timeout should always fire first, this
       // is only the fallback if the process wedges some other way.
       timeout: (RSYNC_TIMEOUT_S + 15) * 1000,
-      killSignal: "SIGKILL",
+      killSignal: 'SIGKILL',
       env: { ...process.env, PATH: SPAWN_PATH },
-    });
-    const exitCode = await proc.exited;
+    })
+    const exitCode = await proc.exited
     if (exitCode !== 0) {
-      const stderr = (await new Response(proc.stderr).text()).trim().split("\n")[0];
-      return { ok: false, note: `iumac ${leg}${sub ? `/${sub}` : ""} rsync exit ${exitCode}${stderr ? ` — ${stderr}` : ""}` };
+      const stderr = (await new Response(proc.stderr).text()).trim().split('\n')[0]
+      return {
+        ok: false,
+        note: `iumac ${leg}${sub ? `/${sub}` : ''} rsync exit ${exitCode}${stderr ? ` — ${stderr}` : ''}`,
+      }
     }
-    return { ok: true };
+    return { ok: true }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, note: `iumac ${leg} rsync failed: ${msg}` };
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, note: `iumac ${leg} rsync failed: ${msg}` }
   }
 }
 
-let cachedLabel: string | null = null;
+let cachedLabel: string | null = null
 
 /**
  * Machine label for rows mirrored from iumac. Precedence: `USAGE_IUMAC_MACHINE`
@@ -358,20 +373,20 @@ let cachedLabel: string | null = null;
  * blocks ingest on a dead MacBook.
  */
 export async function iumacMachineLabel(): Promise<string> {
-  if (cachedLabel !== null) return cachedLabel;
+  if (cachedLabel !== null) return cachedLabel
 
-  const cacheFile = join(mirrorRoot(), "machine");
-  const envLabel = process.env.USAGE_IUMAC_MACHINE;
-  const diskLabel = readCachedLabel(cacheFile);
+  const cacheFile = join(mirrorRoot(), 'machine')
+  const envLabel = process.env.USAGE_IUMAC_MACHINE
+  const diskLabel = readCachedLabel(cacheFile)
 
   // Only probe when neither faster source answered — the whole point of the
   // disk cache is to make the ssh round-trip a one-time cost.
-  const shouldProbe = !envLabel?.trim() && !diskLabel && !iumacDisabled();
-  const probedLabel = shouldProbe ? await probeIumacModel() : null;
+  const shouldProbe = !envLabel?.trim() && !diskLabel && !iumacDisabled()
+  const probedLabel = shouldProbe ? await probeIumacModel() : null
 
-  cachedLabel = resolveIumacLabel({ envLabel, diskLabel, probedLabel });
-  if (shouldProbe && probedLabel) writeCachedLabel(cacheFile, probedLabel);
-  return cachedLabel;
+  cachedLabel = resolveIumacLabel({ envLabel, diskLabel, probedLabel })
+  if (shouldProbe && probedLabel) writeCachedLabel(cacheFile, probedLabel)
+  return cachedLabel
 }
 
 /**
@@ -380,31 +395,31 @@ export async function iumacMachineLabel(): Promise<string> {
  * touching ssh, rsync or the filesystem.
  */
 export function resolveIumacLabel(opts: {
-  envLabel: string | undefined;
-  diskLabel: string | null;
-  probedLabel: string | null;
+  envLabel: string | undefined
+  diskLabel: string | null
+  probedLabel: string | null
 }): string {
-  const env = opts.envLabel?.trim();
-  if (env) return env;
-  if (opts.diskLabel) return opts.diskLabel;
-  if (opts.probedLabel) return opts.probedLabel;
-  return "iumac";
+  const env = opts.envLabel?.trim()
+  if (env) return env
+  if (opts.diskLabel) return opts.diskLabel
+  if (opts.probedLabel) return opts.probedLabel
+  return 'iumac'
 }
 
 function readCachedLabel(cacheFile: string): string | null {
-  if (!existsSync(cacheFile)) return null;
+  if (!existsSync(cacheFile)) return null
   try {
-    const label = readFileSync(cacheFile, "utf-8").trim();
-    return label || null;
+    const label = readFileSync(cacheFile, 'utf-8').trim()
+    return label || null
   } catch {
-    return null;
+    return null
   }
 }
 
 function writeCachedLabel(cacheFile: string, label: string): void {
   try {
-    mkdirSync(mirrorRoot(), { recursive: true });
-    writeFileSync(cacheFile, label);
+    mkdirSync(mirrorRoot(), { recursive: true })
+    writeFileSync(cacheFile, label)
   } catch {
     // best-effort cache; a failed write just means we probe again next run
   }
@@ -412,18 +427,21 @@ function writeCachedLabel(cacheFile: string, label: string): void {
 
 async function probeIumacModel(): Promise<string | null> {
   try {
-    const proc = Bun.spawn(["ssh", ...SSH_OPTS, iumacHost(), "system_profiler", "SPHardwareDataType"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 15_000,
-      killSignal: "SIGKILL",
-      env: { ...process.env, PATH: SPAWN_PATH },
-    });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) return null;
-    const out = await new Response(proc.stdout).text();
-    return parseMacModel(out);
+    const proc = Bun.spawn(
+      ['ssh', ...SSH_OPTS, iumacHost(), 'system_profiler', 'SPHardwareDataType'],
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 15_000,
+        killSignal: 'SIGKILL',
+        env: { ...process.env, PATH: SPAWN_PATH },
+      },
+    )
+    const exitCode = await proc.exited
+    if (exitCode !== 0) return null
+    const out = await new Response(proc.stdout).text()
+    return parseMacModel(out)
   } catch {
-    return null;
+    return null
   }
 }

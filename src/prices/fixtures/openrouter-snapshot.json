@@ -1,47 +1,47 @@
 {
- "data": [
-  {
-   "id": "deepseek/deepseek-v4.1-flash",
-   "name": "DeepSeek: DeepSeek V4.1 Flash",
-   "pricing": {
-    "prompt": "0.000000045",
-    "completion": "0.0000005",
-    "input_cache_read": "0.000000006"
-   }
-  },
-  {
-   "id": "tencent/hy3",
-   "name": "Tencent: Hy3",
-   "pricing": {
-    "prompt": "0.000000132",
-    "completion": "0.000000528",
-    "input_cache_read": "0.000000033",
-    "overrides": [
-     {
-      "utc_start": 0,
-      "utc_end": 1600,
-      "prompt": "0.000000132",
-      "completion": "0.000000528",
-      "input_cache_read": "0.000000033"
-     },
-     {
-      "utc_start": 1600,
-      "utc_end": 0,
-      "prompt": "0.0000000825",
-      "completion": "0.00000033",
-      "input_cache_read": "0.000000020625"
-     }
-    ]
-   }
-  },
-  {
-   "id": "moonshotai/kimi-k2.7-code",
-   "name": "MoonshotAI: Kimi K2.7 Code",
-   "pricing": {
-    "prompt": "0.00000056",
-    "completion": "0.0000031",
-    "input_cache_read": "0.00000015"
-   }
-  }
- ]
+  "data": [
+    {
+      "id": "deepseek/deepseek-v4.1-flash",
+      "name": "DeepSeek: DeepSeek V4.1 Flash",
+      "pricing": {
+        "prompt": "0.000000045",
+        "completion": "0.0000005",
+        "input_cache_read": "0.000000006"
+      }
+    },
+    {
+      "id": "tencent/hy3",
+      "name": "Tencent: Hy3",
+      "pricing": {
+        "prompt": "0.000000132",
+        "completion": "0.000000528",
+        "input_cache_read": "0.000000033",
+        "overrides": [
+          {
+            "utc_start": 0,
+            "utc_end": 1600,
+            "prompt": "0.000000132",
+            "completion": "0.000000528",
+            "input_cache_read": "0.000000033"
+          },
+          {
+            "utc_start": 1600,
+            "utc_end": 0,
+            "prompt": "0.0000000825",
+            "completion": "0.00000033",
+            "input_cache_read": "0.000000020625"
+          }
+        ]
+      }
+    },
+    {
+      "id": "moonshotai/kimi-k2.7-code",
+      "name": "MoonshotAI: Kimi K2.7 Code",
+      "pricing": {
+        "prompt": "0.00000056",
+        "completion": "0.0000031",
+        "input_cache_read": "0.00000015"
+      }
+    }
+  ]
 }

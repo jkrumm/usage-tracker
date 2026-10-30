@@ -1,457 +1,775 @@
-import type { SQL } from "bun";
-import { expect, test } from "bun:test";
-import { currentMachine } from "../machine.ts";
-import { syncPrices } from "../prices/sync.ts";
-import { fixtureDeps } from "../prices/testing.ts";
-import { migrate } from "./migrate.ts";
-import { readSessionEnv, upsertSessionEnv } from "./session-env.ts";
-import { describePg, scratchDb } from "./testing.ts";
-import { upsertRecords, type WriterRecord } from "./writer.ts";
+import type { SQL } from 'bun'
+import { expect, test } from 'bun:test'
+import { currentMachine } from '../machine.ts'
+import { syncPrices } from '../prices/sync.ts'
+import { fixtureDeps } from '../prices/testing.ts'
+import { migrate } from './migrate.ts'
+import { readSessionEnv, upsertSessionEnv } from './session-env.ts'
+import { describePg, scratchDb } from './testing.ts'
+import { upsertRecords, type WriterRecord } from './writer.ts'
 
-const T0 = new Date("2026-10-30T09:00:00Z");
-const T1 = new Date("2026-10-30T10:00:00Z");
-const T2 = new Date("2026-10-30T11:00:00Z");
-const T3 = new Date("2026-10-30T12:00:00Z");
-const WED_OFF = "2026-10-28T17:17:00Z";
+const T0 = new Date('2026-10-30T09:00:00Z')
+const T1 = new Date('2026-10-30T10:00:00Z')
+const T2 = new Date('2026-10-30T11:00:00Z')
+const T3 = new Date('2026-10-30T12:00:00Z')
+const WED_OFF = '2026-10-28T17:17:00Z'
 
 const rec = (sourceId: string, o: Partial<WriterRecord> = {}): WriterRecord => ({
   sourceId,
-  grain: "message",
+  grain: 'message',
   ts: WED_OFF,
-  model: "claude-sonnet-5-5",
-  project: "/Users/jkrumm/SourceRoot/argo/apps/api",
+  model: 'claude-sonnet-5-5',
+  project: '/Users/jkrumm/SourceRoot/argo/apps/api',
   inputTokens: 0,
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   reasoningTokens: 0,
-  machine: "mini",
+  machine: 'mini',
   ...o,
-});
+})
 
-describePg("usage.records write path", () => {
-  const db = scratchDb();
+describePg('usage.records write path', () => {
+  const db = scratchDb()
   // One pool for the suite (db.connect() opens a new one per call); migrated and priced on first use.
-  let pool: Promise<SQL> | undefined;
+  let pool: Promise<SQL> | undefined
   const ready = (): Promise<SQL> =>
     (pool ??= (async () => {
-      const sql = await db.connect();
-      await migrate(sql);
-      await syncPrices(sql, fixtureDeps());
-      return sql;
-    })());
+      const sql = await db.connect()
+      await migrate(sql)
+      await syncPrices(sql, fixtureDeps())
+      return sql
+    })())
   const fails = async (run: () => Promise<unknown>) => {
-    await expect(run()).rejects.toThrow();
-  };
+    await expect(run()).rejects.toThrow()
+  }
   const one = async (source: string, sourceId: string) => {
-    const sql = await ready();
+    const sql = await ready()
     const [row] = await sql`
       SELECT r.*, r.cost_usd::float8 AS cost, r.cost_reported_usd::float8 AS reported, s.source_session_id, s.lane AS session_lane
       FROM usage.records r LEFT JOIN usage.sessions s ON s.id = r.session_id
-      WHERE r.source = ${source} AND r.source_id = ${sourceId}`;
-    return row;
-  };
+      WHERE r.source = ${source} AND r.source_id = ${sourceId}`
+    return row
+  }
   const session = async (source: string, id: string) => {
-    const sql = await ready();
+    const sql = await ready()
     const [row] = await sql`
       SELECT s.*, p.source_session_id AS parent
       FROM usage.sessions s LEFT JOIN usage.sessions p ON p.id = s.parent_session_id
-      WHERE s.source = ${source} AND s.source_session_id = ${id}`;
-    return row;
-  };
+      WHERE s.source = ${source} AND s.source_session_id = ${id}`
+    return row
+  }
 
-  test("migrates from empty twice and creates the state and portal tables", async () => {
-    const sql = await ready();
-    expect((await migrate(sql)).applied).toEqual([]);
+  test('migrates from empty twice and creates the state and portal tables', async () => {
+    const sql = await ready()
+    expect((await migrate(sql)).applied).toEqual([])
     const tables = await sql`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'usage' AND table_name IN ('collector_state', 'session_env', 'iu_portal_cost', 'iu_portal_total')
-      ORDER BY 1`;
-    expect(tables.map((t: { table_name: string }) => t.table_name)).toEqual(["collector_state", "iu_portal_cost", "iu_portal_total", "session_env"]);
-    await sql`INSERT INTO usage.iu_portal_cost (day, label, "row", cost_usd, fetched_at) VALUES ('2026-10-30', 'Kimi K2.6', 3, 1.5, now())`;
+      ORDER BY 1`
+    expect(tables.map((t: { table_name: string }) => t.table_name)).toEqual([
+      'collector_state',
+      'iu_portal_cost',
+      'iu_portal_total',
+      'session_env',
+    ])
+    await sql`INSERT INTO usage.iu_portal_cost (day, label, "row", cost_usd, fetched_at) VALUES ('2026-10-30', 'Kimi K2.6', 3, 1.5, now())`
     await fails(async () => {
-      await sql`INSERT INTO usage.iu_portal_cost (day, label, "row", cost_usd, fetched_at) VALUES ('2026-10-30', 'Kimi K2.6', 3, 2, now())`;
-    });
+      await sql`INSERT INTO usage.iu_portal_cost (day, label, "row", cost_usd, fetched_at) VALUES ('2026-10-30', 'Kimi K2.6', 3, 2, now())`
+    })
     await fails(async () => {
-      await sql`INSERT INTO usage.iu_portal_total (month, total_usd, fetched_at) VALUES ('2026-13', 1, now())`;
-    });
-  }, 60_000);
+      await sql`INSERT INTO usage.iu_portal_total (month, total_usd, fetched_at) VALUES ('2026-13', 1, now())`
+    })
+  }, 60_000)
 
-  test("upserting twice leaves one row and moves ingested_at only on a real change", async () => {
-    const sql = await ready();
-    const r = rec("idem_1", { inputTokens: 100, outputTokens: 10, raw: { sessionId: "idem-s" } });
-    expect(await upsertRecords(sql, "claude-code", [r], { now: T0 })).toEqual({ processed: 1, newRows: 1 });
-    expect(await upsertRecords(sql, "claude-code", [r], { now: T1 })).toEqual({ processed: 1, newRows: 0 });
-    const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE source_id = 'idem_1'`;
-    expect(n).toBe(1);
-    expect((await one("claude-code", "idem_1")).ingested_at).toEqual(T0);
+  test('upserting twice leaves one row and moves ingested_at only on a real change', async () => {
+    const sql = await ready()
+    const r = rec('idem_1', { inputTokens: 100, outputTokens: 10, raw: { sessionId: 'idem-s' } })
+    expect(await upsertRecords(sql, 'claude-code', [r], { now: T0 })).toEqual({
+      processed: 1,
+      newRows: 1,
+    })
+    expect(await upsertRecords(sql, 'claude-code', [r], { now: T1 })).toEqual({
+      processed: 1,
+      newRows: 0,
+    })
+    const [{ n }] =
+      await sql`SELECT count(*)::int AS n FROM usage.records WHERE source_id = 'idem_1'`
+    expect(n).toBe(1)
+    expect((await one('claude-code', 'idem_1')).ingested_at).toEqual(T0)
 
-    await upsertRecords(sql, "claude-code", [{ ...r, outputTokens: 11 }], { now: T2 });
-    const changed = await one("claude-code", "idem_1");
-    expect(changed.ingested_at).toEqual(T2);
-    expect(changed.output_tokens).toBe("11");
-  });
+    await upsertRecords(sql, 'claude-code', [{ ...r, outputTokens: 11 }], { now: T2 })
+    const changed = await one('claude-code', 'idem_1')
+    expect(changed.ingested_at).toEqual(T2)
+    expect(changed.output_tokens).toBe('11')
+  })
 
-  test("machine is an attribute: the same source id from two machines is one row", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [rec("mach_1", { machine: "mini" })]);
-    const summary = await upsertRecords(sql, "claude-code", [rec("mach_1", { machine: "macbook" })]);
-    expect(summary.newRows).toBe(0);
-    const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE source_id = 'mach_1'`;
-    expect(n).toBe(1);
-    expect((await one("claude-code", "mach_1")).machine).toBe("macbook");
-    await upsertRecords(sql, "claude-code", [rec("mach_2", { machine: null })]);
-    expect((await one("claude-code", "mach_2")).machine).toBe(currentMachine());
-  });
+  test('machine is an attribute: the same source id from two machines is one row', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [rec('mach_1', { machine: 'mini' })])
+    const summary = await upsertRecords(sql, 'claude-code', [rec('mach_1', { machine: 'macbook' })])
+    expect(summary.newRows).toBe(0)
+    const [{ n }] =
+      await sql`SELECT count(*)::int AS n FROM usage.records WHERE source_id = 'mach_1'`
+    expect(n).toBe(1)
+    expect((await one('claude-code', 'mach_1')).machine).toBe('macbook')
+    await upsertRecords(sql, 'claude-code', [rec('mach_2', { machine: null })])
+    expect((await one('claude-code', 'mach_2')).machine).toBe(currentMachine())
+  })
 
-  test("the five token kinds are separate, the 1h write is split out of the total", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [
-      rec("tok_1", { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 300, cacheWrite1hTokens: 100, reasoningTokens: 5, durationMs: 1500 }),
-      rec("tok_2", { cacheWriteTokens: 40, cacheWrite1hTokens: 99 }),
-      rec("tok_3", { cacheWriteTokens: 7 }),
-    ]);
-    expect(await one("claude-code", "tok_1")).toMatchObject({
-      input_tokens: "1", output_tokens: "2", cache_read_tokens: "3", cache_write_5m_tokens: "200", cache_write_1h_tokens: "100",
-      reasoning_tokens: "5", duration_ms: 1500,
-    });
+  test('the five token kinds are separate, the 1h write is split out of the total', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('tok_1', {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 300,
+        cacheWrite1hTokens: 100,
+        reasoningTokens: 5,
+        durationMs: 1500,
+      }),
+      rec('tok_2', { cacheWriteTokens: 40, cacheWrite1hTokens: 99 }),
+      rec('tok_3', { cacheWriteTokens: 7 }),
+    ])
+    expect(await one('claude-code', 'tok_1')).toMatchObject({
+      input_tokens: '1',
+      output_tokens: '2',
+      cache_read_tokens: '3',
+      cache_write_5m_tokens: '200',
+      cache_write_1h_tokens: '100',
+      reasoning_tokens: '5',
+      duration_ms: 1500,
+    })
     // A 1h count above the total is clamped to it; a source that cannot split writes it all as 5m.
-    expect(await one("claude-code", "tok_2")).toMatchObject({ cache_write_5m_tokens: "0", cache_write_1h_tokens: "40" });
-    expect(await one("claude-code", "tok_3")).toMatchObject({ cache_write_5m_tokens: "7", cache_write_1h_tokens: "0" });
-  });
+    expect(await one('claude-code', 'tok_2')).toMatchObject({
+      cache_write_5m_tokens: '0',
+      cache_write_1h_tokens: '40',
+    })
+    expect(await one('claude-code', 'tok_3')).toMatchObject({
+      cache_write_5m_tokens: '7',
+      cache_write_1h_tokens: '0',
+    })
+  })
 
-  test("a message-grain Claude row prices all five kinds in SQL (sonnet 5.5, 1M each = 18.60)", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [
-      rec("cost_1", { inputTokens: 1e6, outputTokens: 1e6, cacheReadTokens: 1e6, cacheWriteTokens: 2e6, cacheWrite1hTokens: 1e6 }),
-    ]);
-    const row = await one("claude-code", "cost_1");
-    expect(row.cost).toBeCloseTo(18.6, 9);
-    expect(row).toMatchObject({ cost_source: "prices", model: "claude-sonnet-5-5", model_raw: "claude-sonnet-5-5", cost_reported_usd: null });
-    expect(row.price_id).not.toBeNull();
-  });
+  test('a message-grain Claude row prices all five kinds in SQL (sonnet 5.5, 1M each = 18.60)', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('cost_1', {
+        inputTokens: 1e6,
+        outputTokens: 1e6,
+        cacheReadTokens: 1e6,
+        cacheWriteTokens: 2e6,
+        cacheWrite1hTokens: 1e6,
+      }),
+    ])
+    const row = await one('claude-code', 'cost_1')
+    expect(row.cost).toBeCloseTo(18.6, 9)
+    expect(row).toMatchObject({
+      cost_source: 'prices',
+      model: 'claude-sonnet-5-5',
+      model_raw: 'claude-sonnet-5-5',
+      cost_reported_usd: null,
+    })
+    expect(row.price_id).not.toBeNull()
+  })
 
-  test("model_raw stays verbatim, model drops the provider prefix, date and context flag", async () => {
-    await upsertRecords(await ready(), "opencode", [
-      rec("model_1", { model: "Anthropic/Claude-Sonnet-5[1M]", inputTokens: 1e6 }),
-      rec("model_2", { model: '{"id":"Kimi-K2.6","providerID":"iu"}', inputTokens: 1e6 }),
-    ]);
-    expect(await one("opencode", "model_1")).toMatchObject({ model_raw: "Anthropic/Claude-Sonnet-5[1M]", model: "claude-sonnet-5", cost_source: "prices" });
-    expect(await one("opencode", "model_2")).toMatchObject({ model_raw: '{"id":"Kimi-K2.6","providerID":"iu"}', model: "kimi-k2.6" });
-  });
+  test('model_raw stays verbatim, model drops the provider prefix, date and context flag', async () => {
+    await upsertRecords(await ready(), 'opencode', [
+      rec('model_1', { model: 'Anthropic/Claude-Sonnet-5[1M]', inputTokens: 1e6 }),
+      rec('model_2', { model: '{"id":"Kimi-K2.6","providerID":"iu"}', inputTokens: 1e6 }),
+    ])
+    expect(await one('opencode', 'model_1')).toMatchObject({
+      model_raw: 'Anthropic/Claude-Sonnet-5[1M]',
+      model: 'claude-sonnet-5',
+      cost_source: 'prices',
+    })
+    expect(await one('opencode', 'model_2')).toMatchObject({
+      model_raw: '{"id":"Kimi-K2.6","providerID":"iu"}',
+      model: 'kimi-k2.6',
+    })
+  })
 
   test("a provider-reported cost wins; sonar's is ignored and priced from tokens", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "agent-workflows", [
-      rec("rep_1", { inputTokens: 1e6, authoritativeCostUsd: 1.234 }),
-      rec("rep_2", { model: "sonar", inputTokens: 1e6, authoritativeCostUsd: 30.66 }),
-      rec("rep_3", { authoritativeCostUsd: 0 }),
-    ]);
-    expect(await one("agent-workflows", "rep_1")).toMatchObject({ cost: 1.234, reported: 1.234, cost_source: "reported", price_id: null });
-    const sonar = await one("agent-workflows", "rep_2");
-    expect(sonar.reported).toBeNull();
-    expect(sonar.cost_source).toBe("prices");
-    expect(sonar.cost).toBeLessThan(30);
+    const sql = await ready()
+    await upsertRecords(sql, 'agent-workflows', [
+      rec('rep_1', { inputTokens: 1e6, authoritativeCostUsd: 1.234 }),
+      rec('rep_2', { model: 'sonar', inputTokens: 1e6, authoritativeCostUsd: 30.66 }),
+      rec('rep_3', { authoritativeCostUsd: 0 }),
+    ])
+    expect(await one('agent-workflows', 'rep_1')).toMatchObject({
+      cost: 1.234,
+      reported: 1.234,
+      cost_source: 'reported',
+      price_id: null,
+    })
+    const sonar = await one('agent-workflows', 'rep_2')
+    expect(sonar.reported).toBeNull()
+    expect(sonar.cost_source).toBe('prices')
+    expect(sonar.cost).toBeLessThan(30)
     // A stated zero is a stated cost.
-    expect(await one("agent-workflows", "rep_3")).toMatchObject({ cost: 0, reported: 0, cost_source: "reported" });
-  });
+    expect(await one('agent-workflows', 'rep_3')).toMatchObject({
+      cost: 0,
+      reported: 0,
+      cost_source: 'reported',
+    })
+  })
 
-  test("an unknown or missing model is NULL / none, never 0", async () => {
-    await upsertRecords(await ready(), "claude-code", [
-      rec("none_1", { model: "claude-does-not-exist-9", inputTokens: 1e6 }),
-      rec("none_2", { model: null, inputTokens: 5 }),
-    ]);
-    expect(await one("claude-code", "none_1")).toMatchObject({ cost: null, cost_source: "none", price_id: null });
-    expect(await one("claude-code", "none_2")).toMatchObject({ cost: null, cost_source: "none", model: null, model_raw: null });
-  });
+  test('an unknown or missing model is NULL / none, never 0', async () => {
+    await upsertRecords(await ready(), 'claude-code', [
+      rec('none_1', { model: 'claude-does-not-exist-9', inputTokens: 1e6 }),
+      rec('none_2', { model: null, inputTokens: 5 }),
+    ])
+    expect(await one('claude-code', 'none_1')).toMatchObject({
+      cost: null,
+      cost_source: 'none',
+      price_id: null,
+    })
+    expect(await one('claude-code', 'none_2')).toMatchObject({
+      cost: null,
+      cost_source: 'none',
+      model: null,
+      model_raw: null,
+    })
+  })
 
-  test("gpt-5.6-terra reasoning is unbilled before 2026-10-16T08:55Z: kept in raw, zero in the column", async () => {
-    await upsertRecords(await ready(), "hermes", [
-      rec("rf_before", { model: "gpt-5.6-terra", ts: "2026-10-16T08:54:59Z", outputTokens: 1e6, reasoningTokens: 1e6, raw: { task: null } }),
-      rec("rf_after", { model: "gpt-5.6-terra", ts: "2026-10-16T08:55:00Z", outputTokens: 1e6, reasoningTokens: 1e6 }),
-      rec("rf_other", { model: "gpt-5.6-luna", ts: "2026-10-01T00:00:00Z", outputTokens: 1e6, reasoningTokens: 1e6 }),
-    ]);
-    const before = await one("hermes", "rf_before");
-    const after = await one("hermes", "rf_after");
-    expect(before.reasoning_tokens).toBe("0");
-    expect(before.raw).toEqual({ task: null, reasoningTokensUnbilled: 1_000_000 });
-    expect(after.reasoning_tokens).toBe("1000000");
-    expect(after.raw).toBeNull();
-    expect(before.cost).toBeGreaterThan(0);
-    expect(after.cost).toBeCloseTo(before.cost * 2, 9);
-    expect((await one("hermes", "rf_other")).reasoning_tokens).toBe("1000000");
-  });
+  test('gpt-5.6-terra reasoning is unbilled before 2026-10-16T08:55Z: kept in raw, zero in the column', async () => {
+    await upsertRecords(await ready(), 'hermes', [
+      rec('rf_before', {
+        model: 'gpt-5.6-terra',
+        ts: '2026-10-16T08:54:59Z',
+        outputTokens: 1e6,
+        reasoningTokens: 1e6,
+        raw: { task: null },
+      }),
+      rec('rf_after', {
+        model: 'gpt-5.6-terra',
+        ts: '2026-10-16T08:55:00Z',
+        outputTokens: 1e6,
+        reasoningTokens: 1e6,
+      }),
+      rec('rf_other', {
+        model: 'gpt-5.6-luna',
+        ts: '2026-10-01T00:00:00Z',
+        outputTokens: 1e6,
+        reasoningTokens: 1e6,
+      }),
+    ])
+    const before = await one('hermes', 'rf_before')
+    const after = await one('hermes', 'rf_after')
+    expect(before.reasoning_tokens).toBe('0')
+    expect(before.raw).toEqual({ task: null, reasoningTokensUnbilled: 1_000_000 })
+    expect(after.reasoning_tokens).toBe('1000000')
+    expect(after.raw).toBeNull()
+    expect(before.cost).toBeGreaterThan(0)
+    expect(after.cost).toBeCloseTo(before.cost * 2, 9)
+    expect((await one('hermes', 'rf_other')).reasoning_tokens).toBe('1000000')
+  })
 
-  test("billing, account and key follow the record and usage.session_env", async () => {
-    const sql = await ready();
+  test('billing, account and key follow the record and usage.session_env', async () => {
+    const sql = await ready()
     await upsertSessionEnv(sql, [
-      { session: "env-iu", base_url: "https://gateway.example", lane: "agent-gateway:review", account: null },
-      { session: "env-me", base_url: "", account: "b" },
-    ]);
-    await upsertRecords(sql, "claude-code", [
-      rec("bill_max", { raw: { sessionId: "env-me" } }),
-      rec("bill_iu_url", { raw: { sessionId: "env-iu" } }),
-      rec("bill_iu_model", { model: "deepseek-v4-flash", raw: { sessionId: "none-seen" } }),
-      rec("bill_default", { raw: { sessionId: "none-seen" } }),
-    ]);
-    await upsertRecords(sql, "athena-teamchat", [rec("bill_team", { model: null })]);
-    await upsertRecords(sql, "hermes", [rec("bill_hermes", { grain: "session", raw: { iuKey: "athena-team" } })]);
-    expect(await one("claude-code", "bill_max")).toMatchObject({ billing: "max", account: "me", api_key: null });
-    expect(await one("claude-code", "bill_iu_url")).toMatchObject({ billing: "api_key", account: null, api_key: "personal" });
-    expect(await one("claude-code", "bill_iu_model")).toMatchObject({ billing: "api_key", api_key: "personal" });
-    expect(await one("claude-code", "bill_default")).toMatchObject({ billing: "max", account: "iu" });
-    expect(await one("athena-teamchat", "bill_team")).toMatchObject({ billing: "api_key", api_key: "athena-team" });
-    expect(await one("hermes", "bill_hermes")).toMatchObject({ billing: "api_key", api_key: "athena-team" });
-  });
+      {
+        session: 'env-iu',
+        base_url: 'https://gateway.example',
+        lane: 'agent-gateway:review',
+        account: null,
+      },
+      { session: 'env-me', base_url: '', account: 'b' },
+    ])
+    await upsertRecords(sql, 'claude-code', [
+      rec('bill_max', { raw: { sessionId: 'env-me' } }),
+      rec('bill_iu_url', { raw: { sessionId: 'env-iu' } }),
+      rec('bill_iu_model', { model: 'deepseek-v4-flash', raw: { sessionId: 'none-seen' } }),
+      rec('bill_default', { raw: { sessionId: 'none-seen' } }),
+    ])
+    await upsertRecords(sql, 'athena-teamchat', [rec('bill_team', { model: null })])
+    await upsertRecords(sql, 'hermes', [
+      rec('bill_hermes', { grain: 'session', raw: { iuKey: 'athena-team' } }),
+    ])
+    expect(await one('claude-code', 'bill_max')).toMatchObject({
+      billing: 'max',
+      account: 'me',
+      api_key: null,
+    })
+    expect(await one('claude-code', 'bill_iu_url')).toMatchObject({
+      billing: 'api_key',
+      account: null,
+      api_key: 'personal',
+    })
+    expect(await one('claude-code', 'bill_iu_model')).toMatchObject({
+      billing: 'api_key',
+      api_key: 'personal',
+    })
+    expect(await one('claude-code', 'bill_default')).toMatchObject({
+      billing: 'max',
+      account: 'iu',
+    })
+    expect(await one('athena-teamchat', 'bill_team')).toMatchObject({
+      billing: 'api_key',
+      api_key: 'athena-team',
+    })
+    expect(await one('hermes', 'bill_hermes')).toMatchObject({
+      billing: 'api_key',
+      api_key: 'athena-team',
+    })
+  })
 
   test("repo is normalized, project_raw verbatim, workspace falls back to the collector's", async () => {
     await upsertRecords(
       await ready(),
-      "hermes",
+      'hermes',
       [
-        rec("repo_1", { project: "/Users/jkrumm/SourceRoot/warden-w6/src" }),
-        rec("repo_2", { project: "hermes-agent", workspace: "work" }),
+        rec('repo_1', { project: '/Users/jkrumm/SourceRoot/warden-w6/src' }),
+        rec('repo_2', { project: 'hermes-agent', workspace: 'work' }),
       ],
-      { defaultWorkspace: "private" },
-    );
-    expect(await one("hermes", "repo_1")).toMatchObject({ repo: "warden", project_raw: "/Users/jkrumm/SourceRoot/warden-w6/src", workspace: "private" });
-    expect(await one("hermes", "repo_2")).toMatchObject({ repo: null, project_raw: "hermes-agent", workspace: "work" });
-  });
+      { defaultWorkspace: 'private' },
+    )
+    expect(await one('hermes', 'repo_1')).toMatchObject({
+      repo: 'warden',
+      project_raw: '/Users/jkrumm/SourceRoot/warden-w6/src',
+      workspace: 'private',
+    })
+    expect(await one('hermes', 'repo_2')).toMatchObject({
+      repo: null,
+      project_raw: 'hermes-agent',
+      workspace: 'work',
+    })
+  })
 
-  test("lane, effort, issue and run pass through; lane_detail and raw stay NULL when absent", async () => {
-    await upsertRecords(await ready(), "claude-code", [
-      rec("pass_1", { subTool: "agent-gateway:review", raw: { sessionId: "pass-s", effort: "high", issueId: "FOO-7", runId: "run-1" } }),
-      rec("pass_2", { subTool: "wave" }),
-    ]);
-    expect(await one("claude-code", "pass_1")).toMatchObject({
-      lane: "agw_workflow", lane_detail: { workflow: "review" }, effort: "high", issue_id: "FOO-7", run_id: "run-1",
-    });
-    expect(await one("claude-code", "pass_2")).toMatchObject({ lane: "wave_mother", lane_detail: null, raw: null, effort: null });
-  });
+  test('lane, effort, issue and run pass through; lane_detail and raw stay NULL when absent', async () => {
+    await upsertRecords(await ready(), 'claude-code', [
+      rec('pass_1', {
+        subTool: 'agent-gateway:review',
+        raw: { sessionId: 'pass-s', effort: 'high', issueId: 'FOO-7', runId: 'run-1' },
+      }),
+      rec('pass_2', { subTool: 'wave' }),
+    ])
+    expect(await one('claude-code', 'pass_1')).toMatchObject({
+      lane: 'agw_workflow',
+      lane_detail: { workflow: 'review' },
+      effort: 'high',
+      issue_id: 'FOO-7',
+      run_id: 'run-1',
+    })
+    expect(await one('claude-code', 'pass_2')).toMatchObject({
+      lane: 'wave_mother',
+      lane_detail: null,
+      raw: null,
+      effort: null,
+    })
+  })
 
-  test("a duplicate source id inside one call keeps the last; a bad ts is skipped", async () => {
-    const sql = await ready();
-    const summary = await upsertRecords(sql, "claude-code", [
-      rec("dup_1", { inputTokens: 1 }),
-      rec("dup_1", { inputTokens: 2 }),
-      rec("bad_ts", { ts: "not a date" }),
-    ]);
-    expect(summary).toEqual({ processed: 3, newRows: 1 });
-    expect((await one("claude-code", "dup_1")).input_tokens).toBe("2");
-    expect(await one("claude-code", "bad_ts")).toBeUndefined();
-  });
+  test('a duplicate source id inside one call keeps the last; a bad ts is skipped', async () => {
+    const sql = await ready()
+    const summary = await upsertRecords(sql, 'claude-code', [
+      rec('dup_1', { inputTokens: 1 }),
+      rec('dup_1', { inputTokens: 2 }),
+      rec('bad_ts', { ts: 'not a date' }),
+    ])
+    expect(summary).toEqual({ processed: 3, newRows: 1 })
+    expect((await one('claude-code', 'dup_1')).input_tokens).toBe('2')
+    expect(await one('claude-code', 'bad_ts')).toBeUndefined()
+  })
 
-  test("sessions are created, widened by later batches and linked from the records", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [
-      rec("ses_a1", { ts: "2026-10-29T10:05:00Z", subTool: "wave", raw: { sessionId: "ses-1", effort: "high" } }),
-      rec("ses_a2", { ts: "2026-10-29T10:10:00Z", subTool: "wave", raw: { sessionId: "ses-1" } }),
-      rec("ses_none", { ts: "2026-10-29T10:10:00Z" }),
-    ]);
-    expect(await session("claude-code", "ses-1")).toMatchObject({
-      lane: "wave_mother", billing: "max", account: "iu", machine: "mini", model: "claude-sonnet-5-5", repo: "argo", effort: "high",
-      first_ts: new Date("2026-10-29T10:05:00Z"), last_ts: new Date("2026-10-29T10:10:00Z"),
-    });
-    expect((await one("claude-code", "ses_a1")).source_session_id).toBe("ses-1");
-    expect((await one("claude-code", "ses_none")).session_id).toBeNull();
+  test('sessions are created, widened by later batches and linked from the records', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('ses_a1', {
+        ts: '2026-10-29T10:05:00Z',
+        subTool: 'wave',
+        raw: { sessionId: 'ses-1', effort: 'high' },
+      }),
+      rec('ses_a2', { ts: '2026-10-29T10:10:00Z', subTool: 'wave', raw: { sessionId: 'ses-1' } }),
+      rec('ses_none', { ts: '2026-10-29T10:10:00Z' }),
+    ])
+    expect(await session('claude-code', 'ses-1')).toMatchObject({
+      lane: 'wave_mother',
+      billing: 'max',
+      account: 'iu',
+      machine: 'mini',
+      model: 'claude-sonnet-5-5',
+      repo: 'argo',
+      effort: 'high',
+      first_ts: new Date('2026-10-29T10:05:00Z'),
+      last_ts: new Date('2026-10-29T10:10:00Z'),
+    })
+    expect((await one('claude-code', 'ses_a1')).source_session_id).toBe('ses-1')
+    expect((await one('claude-code', 'ses_none')).session_id).toBeNull()
 
     // A later batch with an earlier and a later record widens the span and fills what was missing, erasing nothing.
-    await upsertRecords(sql, "claude-code", [
-      rec("ses_a0", { ts: "2026-10-29T09:00:00Z", subTool: "wave", project: null, raw: { sessionId: "ses-1", issueId: "FOO-1" } }),
-      rec("ses_a3", { ts: "2026-10-29T11:00:00Z", subTool: "wave", project: null, machine: "macbook", raw: { sessionId: "ses-1" } }),
-    ]);
-    expect(await session("claude-code", "ses-1")).toMatchObject({
-      repo: "argo", effort: "high", issue_id: "FOO-1", machine: "mini",
-      first_ts: new Date("2026-10-29T09:00:00Z"), last_ts: new Date("2026-10-29T11:00:00Z"),
-    });
-    const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.sessions WHERE source = 'claude-code' AND source_session_id = 'ses-1'`;
-    expect(n).toBe(1);
-  });
+    await upsertRecords(sql, 'claude-code', [
+      rec('ses_a0', {
+        ts: '2026-10-29T09:00:00Z',
+        subTool: 'wave',
+        project: null,
+        raw: { sessionId: 'ses-1', issueId: 'FOO-1' },
+      }),
+      rec('ses_a3', {
+        ts: '2026-10-29T11:00:00Z',
+        subTool: 'wave',
+        project: null,
+        machine: 'macbook',
+        raw: { sessionId: 'ses-1' },
+      }),
+    ])
+    expect(await session('claude-code', 'ses-1')).toMatchObject({
+      repo: 'argo',
+      effort: 'high',
+      issue_id: 'FOO-1',
+      machine: 'mini',
+      first_ts: new Date('2026-10-29T09:00:00Z'),
+      last_ts: new Date('2026-10-29T11:00:00Z'),
+    })
+    const [{ n }] =
+      await sql`SELECT count(*)::int AS n FROM usage.sessions WHERE source = 'claude-code' AND source_session_id = 'ses-1'`
+    expect(n).toBe(1)
+  })
 
-  test("a subagent record inside an interactive session keeps the session interactive, in either arrival order", async () => {
-    const sql = await ready();
-    const sub = { subagentType: "Explore" };
-    await upsertRecords(sql, "claude-code", [
-      rec("sub_i1", { ts: "2026-10-29T10:00:00Z", raw: { sessionId: "sub-ses" } }),
-      rec("sub_i2", { ts: "2026-10-29T10:01:00Z", raw: { sessionId: "sub-ses", ...sub } }),
-    ]);
-    const record = await one("claude-code", "sub_i2");
-    expect(record).toMatchObject({ lane: "subagent", lane_detail: { subagent_type: "Explore" }, session_lane: "interactive" });
-    await upsertRecords(sql, "claude-code", [rec("sub_i3", { ts: "2026-10-29T09:00:00Z", raw: { sessionId: "sub-ses", ...sub } })]);
-    expect((await session("claude-code", "sub-ses")).lane).toBe("interactive");
+  test('a subagent record inside an interactive session keeps the session interactive, in either arrival order', async () => {
+    const sql = await ready()
+    const sub = { subagentType: 'Explore' }
+    await upsertRecords(sql, 'claude-code', [
+      rec('sub_i1', { ts: '2026-10-29T10:00:00Z', raw: { sessionId: 'sub-ses' } }),
+      rec('sub_i2', { ts: '2026-10-29T10:01:00Z', raw: { sessionId: 'sub-ses', ...sub } }),
+    ])
+    const record = await one('claude-code', 'sub_i2')
+    expect(record).toMatchObject({
+      lane: 'subagent',
+      lane_detail: { subagent_type: 'Explore' },
+      session_lane: 'interactive',
+    })
+    await upsertRecords(sql, 'claude-code', [
+      rec('sub_i3', { ts: '2026-10-29T09:00:00Z', raw: { sessionId: 'sub-ses', ...sub } }),
+    ])
+    expect((await session('claude-code', 'sub-ses')).lane).toBe('interactive')
 
     // Seen through its subagent requests alone first, the session becomes interactive once a main record shows up.
-    await upsertRecords(sql, "claude-code", [rec("sub_o1", { ts: "2026-10-29T10:00:00Z", raw: { sessionId: "sub-late", ...sub } })]);
-    expect((await session("claude-code", "sub-late")).lane).toBe("subagent");
-    await upsertRecords(sql, "claude-code", [rec("sub_o2", { ts: "2026-10-29T10:05:00Z", raw: { sessionId: "sub-late" } })]);
-    expect((await session("claude-code", "sub-late")).lane).toBe("interactive");
-  });
+    await upsertRecords(sql, 'claude-code', [
+      rec('sub_o1', { ts: '2026-10-29T10:00:00Z', raw: { sessionId: 'sub-late', ...sub } }),
+    ])
+    expect((await session('claude-code', 'sub-late')).lane).toBe('subagent')
+    await upsertRecords(sql, 'claude-code', [
+      rec('sub_o2', { ts: '2026-10-29T10:05:00Z', raw: { sessionId: 'sub-late' } }),
+    ])
+    expect((await session('claude-code', 'sub-late')).lane).toBe('interactive')
+  })
 
-  test("hermes, opencode and agent-workflows rows find their sessions", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "hermes", [
-      rec("hs_1:main:gpt-5.6-luna", { grain: "session", subTool: "cron", raw: {} }),
-      rec("hs_1:title:gpt-5.6-luna", { grain: "session", subTool: "cron:title", raw: {} }),
-    ]);
-    expect(await session("hermes", "hs_1")).toMatchObject({ lane: "hermes", lane_detail: { surface: "cron" } });
-    await upsertRecords(sql, "opencode", [
-      rec("ses_oc1", { grain: "session", raw: { slug: "x" } }),
-      rec("msg_oc1", { raw: { sessionId: "ses_oc1" } }),
-    ]);
-    expect((await one("opencode", "msg_oc1")).source_session_id).toBe("ses_oc1");
-    expect((await one("opencode", "ses_oc1")).source_session_id).toBe("ses_oc1");
-    await upsertRecords(sql, "agent-workflows", [
-      rec("call_1", { subTool: "review:angle", raw: { runId: "run-42", issueId: "FOO-9" } }),
-    ]);
-    expect(await session("agent-workflows", "run-42")).toMatchObject({ lane: "agw_workflow", run_id: "run-42", issue_id: "FOO-9" });
-  });
+  test('hermes, opencode and agent-workflows rows find their sessions', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'hermes', [
+      rec('hs_1:main:gpt-5.6-luna', { grain: 'session', subTool: 'cron', raw: {} }),
+      rec('hs_1:title:gpt-5.6-luna', { grain: 'session', subTool: 'cron:title', raw: {} }),
+    ])
+    expect(await session('hermes', 'hs_1')).toMatchObject({
+      lane: 'hermes',
+      lane_detail: { surface: 'cron' },
+    })
+    await upsertRecords(sql, 'opencode', [
+      rec('ses_oc1', { grain: 'session', raw: { slug: 'x' } }),
+      rec('msg_oc1', { raw: { sessionId: 'ses_oc1' } }),
+    ])
+    expect((await one('opencode', 'msg_oc1')).source_session_id).toBe('ses_oc1')
+    expect((await one('opencode', 'ses_oc1')).source_session_id).toBe('ses_oc1')
+    await upsertRecords(sql, 'agent-workflows', [
+      rec('call_1', { subTool: 'review:angle', raw: { runId: 'run-42', issueId: 'FOO-9' } }),
+    ])
+    expect(await session('agent-workflows', 'run-42')).toMatchObject({
+      lane: 'agw_workflow',
+      run_id: 'run-42',
+      issue_id: 'FOO-9',
+    })
+  })
 
-  test("a parent link resolves inside a batch and later, and is never erased", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [
-      rec("par_c1", { raw: { sessionId: "par-child", parentSessionId: "par-parent" } }),
-      rec("par_p1", { raw: { sessionId: "par-parent" } }),
-    ]);
-    expect((await session("claude-code", "par-child")).parent).toBe("par-parent");
-    await upsertRecords(sql, "claude-code", [rec("par_c2", { raw: { sessionId: "par-child" } })]);
-    expect((await session("claude-code", "par-child")).parent).toBe("par-parent");
+  test('a parent link resolves inside a batch and later, and is never erased', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('par_c1', { raw: { sessionId: 'par-child', parentSessionId: 'par-parent' } }),
+      rec('par_p1', { raw: { sessionId: 'par-parent' } }),
+    ])
+    expect((await session('claude-code', 'par-child')).parent).toBe('par-parent')
+    await upsertRecords(sql, 'claude-code', [rec('par_c2', { raw: { sessionId: 'par-child' } })])
+    expect((await session('claude-code', 'par-child')).parent).toBe('par-parent')
 
     // The parent arrives after the child: the next batch that mentions the link resolves it.
-    await upsertRecords(sql, "claude-code", [rec("par_o1", { raw: { sessionId: "orphan", parentSessionId: "later" } })]);
-    expect((await session("claude-code", "orphan")).parent).toBeNull();
-    await upsertRecords(sql, "claude-code", [rec("par_l1", { raw: { sessionId: "later" } })]);
-    await upsertRecords(sql, "claude-code", [rec("par_o2", { raw: { sessionId: "orphan", parentSessionId: "later" } })]);
-    expect((await session("claude-code", "orphan")).parent).toBe("later");
-  });
+    await upsertRecords(sql, 'claude-code', [
+      rec('par_o1', { raw: { sessionId: 'orphan', parentSessionId: 'later' } }),
+    ])
+    expect((await session('claude-code', 'orphan')).parent).toBeNull()
+    await upsertRecords(sql, 'claude-code', [rec('par_l1', { raw: { sessionId: 'later' } })])
+    await upsertRecords(sql, 'claude-code', [
+      rec('par_o2', { raw: { sessionId: 'orphan', parentSessionId: 'later' } }),
+    ])
+    expect((await session('claude-code', 'orphan')).parent).toBe('later')
+  })
 
-  test("a Claude Code subagent is a session of its own under its parent: lane subagent, type, role, effort", async () => {
-    const sql = await ready();
-    await upsertSessionEnv(sql, [{ session: "own-par", lane: "wave", factory_role: "lead", factory_session: "spawn-1", seen_at: T0 }], T0);
-    const main = { sessionId: "own-par", effort: "high", factoryRole: "lead" };
-    const sub = { ...main, subagentType: "implementer", agentId: "a1", parentSessionId: "own-par", effort: "medium" };
-    await upsertRecords(sql, "claude-code", [
-      rec("own_m1", { ts: "2026-10-29T10:00:00Z", subTool: "wave", raw: main }),
-      rec("own_s1", { ts: "2026-10-29T10:01:00Z", subTool: "wave", raw: sub }),
-      rec("own_s2", { ts: "2026-10-29T10:02:00Z", subTool: "wave", raw: sub }),
-    ]);
-    expect(await one("claude-code", "own_m1")).toMatchObject({
-      source_session_id: "own-par", lane: "lead", lane_detail: { role: "lead" }, effort: "high",
-    });
-    expect(await one("claude-code", "own_s1")).toMatchObject({
-      source_session_id: "own-par:a1", lane: "subagent", lane_detail: { subagent_type: "implementer", role: "lead" }, effort: "medium",
-    });
-    expect(await session("claude-code", "own-par")).toMatchObject({ lane: "lead", effort: "high", parent: null });
-    expect(await session("claude-code", "own-par:a1")).toMatchObject({
-      lane: "subagent", lane_detail: { subagent_type: "implementer", role: "lead" }, effort: "medium", parent: "own-par",
-    });
+  test('a Claude Code subagent is a session of its own under its parent: lane subagent, type, role, effort', async () => {
+    const sql = await ready()
+    await upsertSessionEnv(
+      sql,
+      [
+        {
+          session: 'own-par',
+          lane: 'wave',
+          factory_role: 'lead',
+          factory_session: 'spawn-1',
+          seen_at: T0,
+        },
+      ],
+      T0,
+    )
+    const main = { sessionId: 'own-par', effort: 'high', factoryRole: 'lead' }
+    const sub = {
+      ...main,
+      subagentType: 'implementer',
+      agentId: 'a1',
+      parentSessionId: 'own-par',
+      effort: 'medium',
+    }
+    await upsertRecords(sql, 'claude-code', [
+      rec('own_m1', { ts: '2026-10-29T10:00:00Z', subTool: 'wave', raw: main }),
+      rec('own_s1', { ts: '2026-10-29T10:01:00Z', subTool: 'wave', raw: sub }),
+      rec('own_s2', { ts: '2026-10-29T10:02:00Z', subTool: 'wave', raw: sub }),
+    ])
+    expect(await one('claude-code', 'own_m1')).toMatchObject({
+      source_session_id: 'own-par',
+      lane: 'lead',
+      lane_detail: { role: 'lead' },
+      effort: 'high',
+    })
+    expect(await one('claude-code', 'own_s1')).toMatchObject({
+      source_session_id: 'own-par:a1',
+      lane: 'subagent',
+      lane_detail: { subagent_type: 'implementer', role: 'lead' },
+      effort: 'medium',
+    })
+    expect(await session('claude-code', 'own-par')).toMatchObject({
+      lane: 'lead',
+      effort: 'high',
+      parent: null,
+    })
+    expect(await session('claude-code', 'own-par:a1')).toMatchObject({
+      lane: 'subagent',
+      lane_detail: { subagent_type: 'implementer', role: 'lead' },
+      effort: 'medium',
+      parent: 'own-par',
+    })
     // a re-run changes nothing
-    const again = await upsertRecords(sql, "claude-code", [rec("own_s1", { ts: "2026-10-29T10:01:00Z", subTool: "wave", raw: sub })]);
-    expect(again.newRows).toBe(0);
-  });
+    const again = await upsertRecords(sql, 'claude-code', [
+      rec('own_s1', { ts: '2026-10-29T10:01:00Z', subTool: 'wave', raw: sub }),
+    ])
+    expect(again.newRows).toBe(0)
+  })
 
   test("a subagent's billing and account follow the parent's session_env line", async () => {
-    const sql = await ready();
-    await upsertSessionEnv(sql, [{ session: "env-par", base_url: null, account: "me2", seen_at: T0 }], T0);
-    await upsertRecords(sql, "claude-code", [
-      rec("env_s1", { raw: { sessionId: "env-par", subagentType: "Explore", agentId: "z", parentSessionId: "env-par" } }),
-    ]);
-    expect(await one("claude-code", "env_s1")).toMatchObject({ billing: "max", account: "me2", source_session_id: "env-par:z" });
-  });
+    const sql = await ready()
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'env-par', base_url: null, account: 'me2', seen_at: T0 }],
+      T0,
+    )
+    await upsertRecords(sql, 'claude-code', [
+      rec('env_s1', {
+        raw: {
+          sessionId: 'env-par',
+          subagentType: 'Explore',
+          agentId: 'z',
+          parentSessionId: 'env-par',
+        },
+      }),
+    ])
+    expect(await one('claude-code', 'env_s1')).toMatchObject({
+      billing: 'max',
+      account: 'me2',
+      source_session_id: 'env-par:z',
+    })
+  })
 
-  test("a parent whose records come in a later chunk of the same call is still linked", async () => {
-    const sql = await ready();
-    const fill = Array.from({ length: 520 }, (_, i) => rec(`chunk_f${i}`, { raw: { sessionId: "chunk-fill" } }));
-    await upsertRecords(sql, "claude-code", [
-      rec("chunk_c", { raw: { sessionId: "chunk-par", agentId: "c", subagentType: "Explore", parentSessionId: "chunk-par" } }),
+  test('a parent whose records come in a later chunk of the same call is still linked', async () => {
+    const sql = await ready()
+    const fill = Array.from({ length: 520 }, (_, i) =>
+      rec(`chunk_f${i}`, { raw: { sessionId: 'chunk-fill' } }),
+    )
+    await upsertRecords(sql, 'claude-code', [
+      rec('chunk_c', {
+        raw: {
+          sessionId: 'chunk-par',
+          agentId: 'c',
+          subagentType: 'Explore',
+          parentSessionId: 'chunk-par',
+        },
+      }),
       ...fill,
-      rec("chunk_p", { raw: { sessionId: "chunk-par" } }),
-    ]);
-    expect((await session("claude-code", "chunk-par:c")).parent).toBe("chunk-par");
-  });
+      rec('chunk_p', { raw: { sessionId: 'chunk-par' } }),
+    ])
+    expect((await session('claude-code', 'chunk-par:c')).parent).toBe('chunk-par')
+  })
 
-  test("session_env keeps the factory role and spawn key: a later line without them never erases them", async () => {
-    const sql = await ready();
-    await upsertSessionEnv(sql, [{ session: "se-f", lane: "wave", factory_role: "worker", factory_session: "spawn-2" }], T0);
-    await upsertSessionEnv(sql, [{ session: "se-f", lane: "wave" }], T1);
-    expect((await readSessionEnv(sql, ["se-f"])).get("se-f")).toMatchObject({ factory_role: "worker", factory_session: "spawn-2" });
+  test('session_env keeps the factory role and spawn key: a later line without them never erases them', async () => {
+    const sql = await ready()
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'se-f', lane: 'wave', factory_role: 'worker', factory_session: 'spawn-2' }],
+      T0,
+    )
+    await upsertSessionEnv(sql, [{ session: 'se-f', lane: 'wave' }], T1)
+    expect((await readSessionEnv(sql, ['se-f'])).get('se-f')).toMatchObject({
+      factory_role: 'worker',
+      factory_session: 'spawn-2',
+    })
     // an older line fills a role the newer one lacks
-    await upsertSessionEnv(sql, [{ session: "se-g", seen_at: T2 }], T3);
-    await upsertSessionEnv(sql, [{ session: "se-g", factory_role: "lead", seen_at: T0 }], T3);
-    expect((await readSessionEnv(sql, ["se-g"])).get("se-g")).toMatchObject({ factory_role: "lead", seen_at: T2 });
-  });
+    await upsertSessionEnv(sql, [{ session: 'se-g', seen_at: T2 }], T3)
+    await upsertSessionEnv(sql, [{ session: 'se-g', factory_role: 'lead', seen_at: T0 }], T3)
+    expect((await readSessionEnv(sql, ['se-g'])).get('se-g')).toMatchObject({
+      factory_role: 'lead',
+      seen_at: T2,
+    })
+  })
 
   test("a session's lane detail is filled by a later batch: a late role, an unknown subagent type made known", async () => {
-    const sql = await ready();
-    const sub = (type: string, role?: string) => ({ sessionId: "fill-par", agentId: "f", parentSessionId: "fill-par", subagentType: type, ...(role ? { factoryRole: role } : {}) });
-    await upsertRecords(sql, "claude-code", [rec("fill_1", { ts: "2026-10-29T10:00:00Z", raw: sub("unknown") })]);
-    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "unknown" });
-    await upsertRecords(sql, "claude-code", [rec("fill_2", { ts: "2026-10-29T10:01:00Z", raw: sub("Explore", "lead") })]);
-    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "Explore", role: "lead" });
+    const sql = await ready()
+    const sub = (type: string, role?: string) => ({
+      sessionId: 'fill-par',
+      agentId: 'f',
+      parentSessionId: 'fill-par',
+      subagentType: type,
+      ...(role ? { factoryRole: role } : {}),
+    })
+    await upsertRecords(sql, 'claude-code', [
+      rec('fill_1', { ts: '2026-10-29T10:00:00Z', raw: sub('unknown') }),
+    ])
+    expect((await session('claude-code', 'fill-par:f')).lane_detail).toEqual({
+      subagent_type: 'unknown',
+    })
+    await upsertRecords(sql, 'claude-code', [
+      rec('fill_2', { ts: '2026-10-29T10:01:00Z', raw: sub('Explore', 'lead') }),
+    ])
+    expect((await session('claude-code', 'fill-par:f')).lane_detail).toEqual({
+      subagent_type: 'Explore',
+      role: 'lead',
+    })
     // a known type is not overwritten by a later, different one
-    await upsertRecords(sql, "claude-code", [rec("fill_3", { ts: "2026-10-29T10:02:00Z", raw: sub("verifier", "lead") })]);
-    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "Explore", role: "lead" });
-  });
+    await upsertRecords(sql, 'claude-code', [
+      rec('fill_3', { ts: '2026-10-29T10:02:00Z', raw: sub('verifier', 'lead') }),
+    ])
+    expect((await session('claude-code', 'fill-par:f')).lane_detail).toEqual({
+      subagent_type: 'Explore',
+      role: 'lead',
+    })
+  })
 
-  test("a subagent ingested before its parent is linked once the parent exists, with no further mention of the link", async () => {
-    const sql = await ready();
-    await upsertRecords(sql, "claude-code", [
-      rec("orph_c", { raw: { sessionId: "orph-par", agentId: "o", subagentType: "Explore", parentSessionId: "orph-par" } }),
-    ]);
-    expect((await session("claude-code", "orph-par:o")).parent).toBeNull();
-    await upsertRecords(sql, "claude-code", [rec("orph_p", { raw: { sessionId: "orph-par" } })]);
-    expect((await session("claude-code", "orph-par:o")).parent).toBe("orph-par");
-  });
+  test('a subagent ingested before its parent is linked once the parent exists, with no further mention of the link', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('orph_c', {
+        raw: {
+          sessionId: 'orph-par',
+          agentId: 'o',
+          subagentType: 'Explore',
+          parentSessionId: 'orph-par',
+        },
+      }),
+    ])
+    expect((await session('claude-code', 'orph-par:o')).parent).toBeNull()
+    await upsertRecords(sql, 'claude-code', [rec('orph_p', { raw: { sessionId: 'orph-par' } })])
+    expect((await session('claude-code', 'orph-par:o')).parent).toBe('orph-par')
+  })
 
-  test("session_env helpers: the newest line wins, a missing lane or account never erases a stored one", async () => {
-    const sql = await ready();
-    await upsertSessionEnv(sql, [{ session: "se-1", base_url: "https://a.example", lane: "wave", account: "a" }], T0);
-    await upsertSessionEnv(sql, [{ session: "se-1", base_url: "", lane: null }], T1);
-    const env = await readSessionEnv(sql, ["se-1", "se-absent"]);
-    expect([...env.keys()]).toEqual(["se-1"]);
+  test('session_env helpers: the newest line wins, a missing lane or account never erases a stored one', async () => {
+    const sql = await ready()
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'se-1', base_url: 'https://a.example', lane: 'wave', account: 'a' }],
+      T0,
+    )
+    await upsertSessionEnv(sql, [{ session: 'se-1', base_url: '', lane: null }], T1)
+    const env = await readSessionEnv(sql, ['se-1', 'se-absent'])
+    expect([...env.keys()]).toEqual(['se-1'])
     // base_url is replaced as given ("" and NULL are real values: no gateway), the lane and account stay
-    expect(env.get("se-1")).toMatchObject({ base_url: "", lane: "wave", account: "iu", seen_at: T1 });
-  });
+    expect(env.get('se-1')).toMatchObject({
+      base_url: '',
+      lane: 'wave',
+      account: 'iu',
+      seen_at: T1,
+    })
+  })
 
-  test("session_env: a line is stamped with its own time, and an older line never rolls a newer one back", async () => {
-    const sql = await ready();
-    await upsertSessionEnv(sql, [{ session: "se-2", base_url: "new", lane: "bg", account: "me", seen_at: T2 }], T3);
+  test('session_env: a line is stamped with its own time, and an older line never rolls a newer one back', async () => {
+    const sql = await ready()
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'se-2', base_url: 'new', lane: 'bg', account: 'me', seen_at: T2 }],
+      T3,
+    )
     // replayed later (process time T3), but the line itself is older: nothing changes, seen_at stays the line's time
-    await upsertSessionEnv(sql, [{ session: "se-2", base_url: "old", lane: "wave", account: "me2", seen_at: T0 }], T3);
-    expect((await readSessionEnv(sql, ["se-2"])).get("se-2")).toMatchObject({ base_url: "new", lane: "bg", account: "me", seen_at: T2 });
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'se-2', base_url: 'old', lane: 'wave', account: 'me2', seen_at: T0 }],
+      T3,
+    )
+    expect((await readSessionEnv(sql, ['se-2'])).get('se-2')).toMatchObject({
+      base_url: 'new',
+      lane: 'bg',
+      account: 'me',
+      seen_at: T2,
+    })
     // an older line still fills what the newer one left empty
-    await upsertSessionEnv(sql, [{ session: "se-3", base_url: null, lane: null, seen_at: T2 }], T3);
-    await upsertSessionEnv(sql, [{ session: "se-3", base_url: "old", lane: "wave", account: "me", seen_at: T0 }], T3);
-    expect((await readSessionEnv(sql, ["se-3"])).get("se-3")).toMatchObject({ base_url: null, lane: "wave", account: "me", seen_at: T2 });
+    await upsertSessionEnv(sql, [{ session: 'se-3', base_url: null, lane: null, seen_at: T2 }], T3)
+    await upsertSessionEnv(
+      sql,
+      [{ session: 'se-3', base_url: 'old', lane: 'wave', account: 'me', seen_at: T0 }],
+      T3,
+    )
+    expect((await readSessionEnv(sql, ['se-3'])).get('se-3')).toMatchObject({
+      base_url: null,
+      lane: 'wave',
+      account: 'me',
+      seen_at: T2,
+    })
     // a newer line replaces; the newest line of a batch wins over an earlier one
-    await upsertSessionEnv(sql, [
-      { session: "se-2", base_url: "mid", lane: "fan", seen_at: T3 },
-      { session: "se-2", base_url: "stale", lane: "x", seen_at: T1 },
-    ], T3);
-    expect((await readSessionEnv(sql, ["se-2"])).get("se-2")).toMatchObject({ base_url: "mid", lane: "fan", account: "me", seen_at: T3 });
-  });
+    await upsertSessionEnv(
+      sql,
+      [
+        { session: 'se-2', base_url: 'mid', lane: 'fan', seen_at: T3 },
+        { session: 'se-2', base_url: 'stale', lane: 'x', seen_at: T1 },
+      ],
+      T3,
+    )
+    expect((await readSessionEnv(sql, ['se-2'])).get('se-2')).toMatchObject({
+      base_url: 'mid',
+      lane: 'fan',
+      account: 'me',
+      seen_at: T3,
+    })
+  })
 
-  test("concurrent writers of overlapping batches converge without errors", async () => {
-    const sql = await ready();
+  test('concurrent writers of overlapping batches converge without errors', async () => {
+    const sql = await ready()
     const batch = (from: number, to: number) =>
-      Array.from({ length: to - from }, (_, i) => rec(`conc_${from + i}`, { inputTokens: from + i, raw: { sessionId: `conc-s${(from + i) % 7}` } }));
+      Array.from({ length: to - from }, (_, i) =>
+        rec(`conc_${from + i}`, {
+          inputTokens: from + i,
+          raw: { sessionId: `conc-s${(from + i) % 7}` },
+        }),
+      )
     const results = await Promise.all([
-      upsertRecords(sql, "claude-code", batch(0, 300)),
-      upsertRecords(sql, "claude-code", batch(150, 450)),
-      upsertRecords(sql, "claude-code", batch(0, 450)),
-    ]);
-    expect(results.reduce((n, r) => n + r.newRows, 0)).toBe(450);
+      upsertRecords(sql, 'claude-code', batch(0, 300)),
+      upsertRecords(sql, 'claude-code', batch(150, 450)),
+      upsertRecords(sql, 'claude-code', batch(0, 450)),
+    ])
+    expect(results.reduce((n, r) => n + r.newRows, 0)).toBe(450)
     const [{ n, s }] = await sql`
-      SELECT count(*)::int AS n, count(DISTINCT session_id)::int AS s FROM usage.records WHERE source_id LIKE 'conc\\_%'`;
-    expect(n).toBe(450);
-    expect(s).toBe(7);
-  });
+      SELECT count(*)::int AS n, count(DISTINCT session_id)::int AS s FROM usage.records WHERE source_id LIKE 'conc\\_%'`
+    expect(n).toBe(450)
+    expect(s).toBe(7)
+  })
 
-  test("a 5k-row batch with sessions completes in a few seconds", async () => {
-    const sql = await ready();
+  test('a 5k-row batch with sessions completes in a few seconds', async () => {
+    const sql = await ready()
     const rows = Array.from({ length: 5000 }, (_, i) =>
       rec(`bulk_${i}`, {
-        ts: new Date(Date.parse("2026-10-20T00:00:00Z") + i * 60_000).toISOString(),
-        model: i % 3 === 0 ? "claude-opus-5-5" : "claude-sonnet-5-5",
+        ts: new Date(Date.parse('2026-10-20T00:00:00Z') + i * 60_000).toISOString(),
+        model: i % 3 === 0 ? 'claude-opus-5-5' : 'claude-sonnet-5-5',
         inputTokens: 1000 + i,
         outputTokens: 200,
         cacheReadTokens: 50_000,
@@ -459,108 +777,181 @@ describePg("usage.records write path", () => {
         cacheWrite1hTokens: 1000,
         raw: { sessionId: `bulk-s${i % 120}` },
       }),
-    );
-    const started = performance.now();
-    const summary = await upsertRecords(sql, "claude-code", rows);
-    const seconds = (performance.now() - started) / 1000;
-    expect(summary).toEqual({ processed: 5000, newRows: 5000 });
-    expect(seconds).toBeLessThan(15);
+    )
+    const started = performance.now()
+    const summary = await upsertRecords(sql, 'claude-code', rows)
+    const seconds = (performance.now() - started) / 1000
+    expect(summary).toEqual({ processed: 5000, newRows: 5000 })
+    expect(seconds).toBeLessThan(15)
     const [{ n, s, priced }] = await sql`
       SELECT count(*)::int AS n, count(DISTINCT session_id)::int AS s, count(cost_usd)::int AS priced
-      FROM usage.records WHERE source_id LIKE 'bulk\\_%'`;
-    expect([n, s, priced]).toEqual([5000, 120, 5000]);
+      FROM usage.records WHERE source_id LIKE 'bulk\\_%'`
+    expect([n, s, priced]).toEqual([5000, 120, 5000])
     // The unchanged re-run is cheap and writes nothing.
-    const again = await upsertRecords(sql, "claude-code", rows);
-    expect(again.newRows).toBe(0);
-  }, 60_000);
-  test("preclassified billing, account, IU key and machine are written as given, not re-derived", async () => {
-    const sql = await ready();
+    const again = await upsertRecords(sql, 'claude-code', rows)
+    expect(again.newRows).toBe(0)
+  }, 60_000)
+  test('preclassified billing, account, IU key and machine are written as given, not re-derived', async () => {
+    const sql = await ready()
     // Without it, a claude-code row on an unknown session classifies as Max; with it, the stored class wins.
-    await upsertRecords(sql, "claude-code", [
-      rec("pre_1", { raw: { sessionId: "pre-s1" }, preclassified: { billing: "iu", account: "me", iuKey: "athena-team", machine: null } }),
-      rec("pre_2", { raw: { sessionId: "pre-s2" }, preclassified: { billing: "max", account: "me2", iuKey: "personal" } }),
-      rec("pre_3", { raw: { sessionId: "pre-s3" }, preclassified: { billing: "anthropic-api", account: "iu", iuKey: "personal" } }),
-      rec("pre_4", { raw: { sessionId: "pre-s4" }, preclassified: { billing: "unknown", account: null, iuKey: null } }),
-      rec("pre_5", { raw: { sessionId: "pre-s5" } }),
-    ]);
+    await upsertRecords(sql, 'claude-code', [
+      rec('pre_1', {
+        raw: { sessionId: 'pre-s1' },
+        preclassified: { billing: 'iu', account: 'me', iuKey: 'athena-team', machine: null },
+      }),
+      rec('pre_2', {
+        raw: { sessionId: 'pre-s2' },
+        preclassified: { billing: 'max', account: 'me2', iuKey: 'personal' },
+      }),
+      rec('pre_3', {
+        raw: { sessionId: 'pre-s3' },
+        preclassified: { billing: 'anthropic-api', account: 'iu', iuKey: 'personal' },
+      }),
+      rec('pre_4', {
+        raw: { sessionId: 'pre-s4' },
+        preclassified: { billing: 'unknown', account: null, iuKey: null },
+      }),
+      rec('pre_5', { raw: { sessionId: 'pre-s5' } }),
+    ])
     // account only on max rows, api_key only on iu rows; machine null is stored as NULL, undefined keeps the host
-    expect(await one("claude-code", "pre_1")).toMatchObject({ billing: "api_key", account: null, api_key: "athena-team", machine: null });
-    expect(await one("claude-code", "pre_2")).toMatchObject({ billing: "max", account: "me2", api_key: null, machine: "mini" });
-    expect(await one("claude-code", "pre_3")).toMatchObject({ billing: "api_key", account: null, api_key: null });
-    expect(await one("claude-code", "pre_4")).toMatchObject({ billing: "unknown", account: null, api_key: null });
-    expect(await session("claude-code", "pre-s1")).toMatchObject({ billing: "api_key", api_key: "athena-team", machine: null });
-    expect(await session("claude-code", "pre-s2")).toMatchObject({ billing: "max", account: "me2" });
+    expect(await one('claude-code', 'pre_1')).toMatchObject({
+      billing: 'api_key',
+      account: null,
+      api_key: 'athena-team',
+      machine: null,
+    })
+    expect(await one('claude-code', 'pre_2')).toMatchObject({
+      billing: 'max',
+      account: 'me2',
+      api_key: null,
+      machine: 'mini',
+    })
+    expect(await one('claude-code', 'pre_3')).toMatchObject({
+      billing: 'api_key',
+      account: null,
+      api_key: null,
+    })
+    expect(await one('claude-code', 'pre_4')).toMatchObject({
+      billing: 'unknown',
+      account: null,
+      api_key: null,
+    })
+    expect(await session('claude-code', 'pre-s1')).toMatchObject({
+      billing: 'api_key',
+      api_key: 'athena-team',
+      machine: null,
+    })
+    expect(await session('claude-code', 'pre-s2')).toMatchObject({ billing: 'max', account: 'me2' })
     // the default path is untouched: a record without preclassified is classified by the writer as before
-    expect((await one("claude-code", "pre_5")).billing).toBe("max");
-  });
+    expect((await one('claude-code', 'pre_5')).billing).toBe('max')
+  })
 
-  test("insertOnly leaves an existing record and its session alone, inserts the rest, and a re-run inserts nothing", async () => {
-    const sql = await ready();
-    const native = rec("ins_1", { inputTokens: 10, raw: { sessionId: "ins-s", effort: "high" }, machine: "native-host" });
-    await upsertRecords(sql, "agent-workflows", [native], { now: T0 });
-    const stored = await one("agent-workflows", "ins_1");
-    const storedSession = await session("agent-workflows", "ins-s");
+  test('insertOnly leaves an existing record and its session alone, inserts the rest, and a re-run inserts nothing', async () => {
+    const sql = await ready()
+    const native = rec('ins_1', {
+      inputTokens: 10,
+      raw: { sessionId: 'ins-s', effort: 'high' },
+      machine: 'native-host',
+    })
+    await upsertRecords(sql, 'agent-workflows', [native], { now: T0 })
+    const stored = await one('agent-workflows', 'ins_1')
+    const storedSession = await session('agent-workflows', 'ins-s')
 
     const backfill = [
-      rec("ins_1", { inputTokens: 999, raw: { sessionId: "ins-s" }, machine: "argo-host", ts: "2026-10-01T00:00:00Z" }),
-      rec("ins_2", { inputTokens: 5, raw: { sessionId: "ins-s" }, ts: "2026-10-01T00:00:00Z" }),
-      rec("ins_3", { inputTokens: 6, raw: { sessionId: "ins-new" }, ts: "2026-10-01T00:00:00Z" }),
-    ];
-    expect(await upsertRecords(sql, "agent-workflows", backfill, { now: T1, insertOnly: true })).toEqual({ processed: 3, newRows: 2 });
+      rec('ins_1', {
+        inputTokens: 999,
+        raw: { sessionId: 'ins-s' },
+        machine: 'argo-host',
+        ts: '2026-10-01T00:00:00Z',
+      }),
+      rec('ins_2', { inputTokens: 5, raw: { sessionId: 'ins-s' }, ts: '2026-10-01T00:00:00Z' }),
+      rec('ins_3', { inputTokens: 6, raw: { sessionId: 'ins-new' }, ts: '2026-10-01T00:00:00Z' }),
+    ]
+    expect(
+      await upsertRecords(sql, 'agent-workflows', backfill, { now: T1, insertOnly: true }),
+    ).toEqual({ processed: 3, newRows: 2 })
 
     // untouched: record content, ingested_at and the session's attributes and span
-    const after = await one("agent-workflows", "ins_1");
-    expect(after.input_tokens).toBe(stored.input_tokens);
-    expect(after.machine).toBe("native-host");
-    expect(after.ingested_at).toEqual(T0);
+    const after = await one('agent-workflows', 'ins_1')
+    expect(after.input_tokens).toBe(stored.input_tokens)
+    expect(after.machine).toBe('native-host')
+    expect(after.ingested_at).toEqual(T0)
     // the session keeps its attributes; only the span widened to the earlier backfilled record
-    const widened = await session("agent-workflows", "ins-s");
-    expect({ ...widened, first_ts: null }).toEqual({ ...storedSession, first_ts: null });
-    expect(widened.first_ts).toEqual(new Date("2026-10-01T00:00:00Z"));
-    expect(widened.last_ts).toEqual(storedSession.last_ts);
+    const widened = await session('agent-workflows', 'ins-s')
+    expect({ ...widened, first_ts: null }).toEqual({ ...storedSession, first_ts: null })
+    expect(widened.first_ts).toEqual(new Date('2026-10-01T00:00:00Z'))
+    expect(widened.last_ts).toEqual(storedSession.last_ts)
     // inserted: the absent record joins the existing session, the new one brings its own session
-    expect((await one("agent-workflows", "ins_2")).source_session_id).toBe("ins-s");
-    expect((await one("agent-workflows", "ins_3")).source_session_id).toBe("ins-new");
-    expect((await one("agent-workflows", "ins_2")).ingested_at).toEqual(T1);
+    expect((await one('agent-workflows', 'ins_2')).source_session_id).toBe('ins-s')
+    expect((await one('agent-workflows', 'ins_3')).source_session_id).toBe('ins-new')
+    expect((await one('agent-workflows', 'ins_2')).ingested_at).toEqual(T1)
 
-    expect(await upsertRecords(sql, "agent-workflows", backfill, { now: T3, insertOnly: true })).toEqual({ processed: 3, newRows: 0 });
-    const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${T3.toISOString()}::timestamptz`;
-    expect(n).toBe(0);
-  });
+    expect(
+      await upsertRecords(sql, 'agent-workflows', backfill, { now: T3, insertOnly: true }),
+    ).toEqual({ processed: 3, newRows: 0 })
+    const [{ n }] =
+      await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${T3.toISOString()}::timestamptz`
+    expect(n).toBe(0)
+  })
 
-  test("insertOnly widens a session split across runs and fills its NULL attributes, never overwriting a stored one", async () => {
-    const sql = await ready();
-    const at = (iso: string) => ({ ts: iso, raw: { sessionId: "split-s" } });
-    await upsertRecords(sql, "claude-code", [rec("split_2", { ...at("2026-10-10T12:00:00Z"), project: "/Users/jkrumm/SourceRoot/argo" })], { insertOnly: true });
-    expect(await session("claude-code", "split-s")).toMatchObject({ first_ts: new Date("2026-10-10T12:00:00Z"), last_ts: new Date("2026-10-10T12:00:00Z"), repo: "argo", effort: null });
+  test('insertOnly widens a session split across runs and fills its NULL attributes, never overwriting a stored one', async () => {
+    const sql = await ready()
+    const at = (iso: string) => ({ ts: iso, raw: { sessionId: 'split-s' } })
+    await upsertRecords(
+      sql,
+      'claude-code',
+      [rec('split_2', { ...at('2026-10-10T12:00:00Z'), project: '/Users/jkrumm/SourceRoot/argo' })],
+      { insertOnly: true },
+    )
+    expect(await session('claude-code', 'split-s')).toMatchObject({
+      first_ts: new Date('2026-10-10T12:00:00Z'),
+      last_ts: new Date('2026-10-10T12:00:00Z'),
+      repo: 'argo',
+      effort: null,
+    })
 
     // earlier and later halves of the same session arrive in separate calls
-    await upsertRecords(sql, "claude-code", [rec("split_1", { ...at("2026-10-10T08:00:00Z"), project: "/Users/jkrumm/SourceRoot/vps", raw: { sessionId: "split-s", effort: "high" } })], { insertOnly: true });
-    await upsertRecords(sql, "claude-code", [rec("split_3", at("2026-10-10T18:00:00Z"))], { insertOnly: true });
-    expect(await session("claude-code", "split-s")).toMatchObject({
-      first_ts: new Date("2026-10-10T08:00:00Z"),
-      last_ts: new Date("2026-10-10T18:00:00Z"),
-      repo: "argo", // a stored attribute is not overwritten
-      effort: "high", // a NULL one is filled
-    });
+    await upsertRecords(
+      sql,
+      'claude-code',
+      [
+        rec('split_1', {
+          ...at('2026-10-10T08:00:00Z'),
+          project: '/Users/jkrumm/SourceRoot/vps',
+          raw: { sessionId: 'split-s', effort: 'high' },
+        }),
+      ],
+      { insertOnly: true },
+    )
+    await upsertRecords(sql, 'claude-code', [rec('split_3', at('2026-10-10T18:00:00Z'))], {
+      insertOnly: true,
+    })
+    expect(await session('claude-code', 'split-s')).toMatchObject({
+      first_ts: new Date('2026-10-10T08:00:00Z'),
+      last_ts: new Date('2026-10-10T18:00:00Z'),
+      repo: 'argo', // a stored attribute is not overwritten
+      effort: 'high', // a NULL one is filled
+    })
 
     // a re-run changes nothing
-    const before = await session("claude-code", "split-s");
-    await upsertRecords(sql, "claude-code", [rec("split_1", at("2026-10-10T08:00:00Z"))], { insertOnly: true });
-    expect(await session("claude-code", "split-s")).toEqual(before);
-  });
+    const before = await session('claude-code', 'split-s')
+    await upsertRecords(sql, 'claude-code', [rec('split_1', at('2026-10-10T08:00:00Z'))], {
+      insertOnly: true,
+    })
+    expect(await session('claude-code', 'split-s')).toEqual(before)
+  })
 
-  test("U+0000 is stripped from values and keys, and a text that merely spells it out survives", async () => {
-    const sql = await ready();
-    const spelled = "path C:\\new\\u0000dir and \\u0000";
-    await upsertRecords(sql, "claude-code", [
-      rec("nul_1", {
-        project: "/Users/jkrumm/SourceRoot/argo\u0000",
-        raw: { spelled, real: "a\u0000b", "k\u0000ey": ["x\u0000", { "n\u0000": "v" }] },
+  test('U+0000 is stripped from values and keys, and a text that merely spells it out survives', async () => {
+    const sql = await ready()
+    const spelled = 'path C:\\new\\u0000dir and \\u0000'
+    await upsertRecords(sql, 'claude-code', [
+      rec('nul_1', {
+        project: '/Users/jkrumm/SourceRoot/argo\u0000',
+        raw: { spelled, real: 'a\u0000b', 'k\u0000ey': ['x\u0000', { 'n\u0000': 'v' }] },
       }),
-    ]);
-    const row = await one("claude-code", "nul_1");
-    expect(row.raw).toEqual({ spelled, real: "ab", key: ["x", { n: "v" }] });
-    expect(row.project_raw).toBe("/Users/jkrumm/SourceRoot/argo");
-  });
-});
+    ])
+    const row = await one('claude-code', 'nul_1')
+    expect(row.raw).toEqual({ spelled, real: 'ab', key: ['x', { n: 'v' }] })
+    expect(row.project_raw).toBe('/Users/jkrumm/SourceRoot/argo')
+  })
+})

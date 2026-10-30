@@ -1,13 +1,13 @@
 {
   "name": "usage-tracker",
   "version": "0.1.0",
-  "description": "Token/cost telemetry across every AI tool, ingested into the Postgres usage schema",
   "private": true,
-  "type": "module",
-  "module": "src/cli.ts",
+  "description": "Token/cost telemetry across every AI tool, ingested into the Postgres usage schema",
   "bin": {
     "usage-tracker": "src/cli.ts"
   },
+  "type": "module",
+  "module": "src/cli.ts",
   "scripts": {
     "ingest": "bun run src/cli.ts ingest",
     "stats": "bun run src/cli.ts stats",

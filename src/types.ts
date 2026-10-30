@@ -1,4 +1,4 @@
-import type { SyncResult } from "./remote.ts";
+import type { SyncResult } from './remote.ts'
 
 // Shared contracts for the usage tracker.
 //
@@ -7,10 +7,10 @@ import type { SyncResult } from "./remote.ts";
 // one record per session — but every record normalizes to the same shape so a
 // single table and a single set of queries cover all of them.
 
-export type Billing = "max" | "iu" | "anthropic-api" | "unknown";
-export type Workspace = "work" | "private";
-export type Grain = "message" | "session";
-export type Outcome = "ok" | "error";
+export type Billing = 'max' | 'iu' | 'anthropic-api' | 'unknown'
+export type Workspace = 'work' | 'private'
+export type Grain = 'message' | 'session'
+export type Outcome = 'ok' | 'error'
 
 /**
  * A normalized usage record. Collectors produce these knowing only tokens —
@@ -19,47 +19,47 @@ export type Outcome = "ok" | "error";
  */
 export interface UsageRecord {
   /** Stable source-local id used for dedup (requestId, session id, …). */
-  sourceId: string;
-  grain: Grain;
+  sourceId: string
+  grain: Grain
   /** Event time as ISO 8601 UTC. */
-  ts: string;
+  ts: string
   /** Raw model string exactly as the source recorded it (may be JSON). */
-  model: string | null;
+  model: string | null
   /** Project / workspace / channel context, source-specific. */
-  project: string | null;
+  project: string | null
   /**
    * Optional per-record workspace override. Collectors that are pinned to a
    * single workspace (hermes, feuer, …) declare it on the Collector and let
    * upsertRecords stamp it; per-record path-based classification on the Argo
    * side handles claude-code/litellm where the cwd determines workspace.
    */
-  workspace?: Workspace | null;
+  workspace?: Workspace | null
   /**
    * Sub-tool / action that triggered the request, where the source can attribute
    * it — e.g. "check", "review:angle", "implement" for agent-gateway-attributed rows.
    * Null when the source doesn't expose this granularity.
    */
-  subTool?: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+  subTool?: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
   /**
    * Subset of cacheWriteTokens created at the 1-hour TTL (vs. the default
    * 5-minute TTL). Omit/0 means "treat all cache-write as 5m", which preserves
    * current behavior for collectors that can't report the split.
    */
-  cacheWrite1hTokens?: number;
-  reasoningTokens: number;
+  cacheWrite1hTokens?: number
+  reasoningTokens: number
   /**
    * Set only when the record came from another host (e.g. the claude-code
    * collector's iumac mirror); otherwise the local machine is stamped
    * centrally by upsertRecords from currentMachine(). Per-record, not
    * per-collector, because one collector (claude-code) now spans two hosts.
    */
-  machine?: string | null;
+  machine?: string | null
   /** Request/session latency in milliseconds when the source reports it. */
-  durationMs?: number | null;
+  durationMs?: number | null
   /**
    * Vendor-reported cost that must be stored verbatim instead of being derived
    * from tokens — the retired research-gateway's `sonar` rows (billed per call, not per
@@ -71,33 +71,33 @@ export interface UsageRecord {
    * compute — opencode and modelpick keep their raw vendor cost in `raw` for
    * inspection only.
    */
-  authoritativeCostUsd?: number | null;
+  authoritativeCostUsd?: number | null
   /**
    * Request outcome. Defaults to "ok"; sources that observe failures (the
    * LiteLLM bridge) emit zero-token "error" rows so the error rate is queryable.
    */
-  outcome?: Outcome;
+  outcome?: Outcome
   /** Optional source-specific extras, persisted as JSON for later inspection. */
-  raw?: Record<string, unknown>;
+  raw?: Record<string, unknown>
 }
 
 export interface Logger {
-  info(msg: string): void;
-  warn(msg: string): void;
-  error(msg: string): void;
+  info(msg: string): void
+  warn(msg: string): void
+  error(msg: string): void
 }
 
 export interface CollectContext {
   /** The watermark this collector persisted on its previous run, or null. */
-  cursor: string | null;
+  cursor: string | null
   /** When true, ignore the cursor and re-scan everything. */
-  full: boolean;
-  log: Logger;
+  full: boolean
+  log: Logger
   /**
    * Shared iumac mirror sync for this ingest pass: runs at most once, on first
    * use. Absent for direct callers, which sync on their own.
    */
-  syncIumac?: () => Promise<SyncResult>;
+  syncIumac?: () => Promise<SyncResult>
 }
 
 /**
@@ -107,48 +107,48 @@ export interface CollectContext {
  */
 export interface SessionEvent {
   /** Stable source-local id: the boundary line's uuid, the Skill tool_use id. */
-  eventId: string;
+  eventId: string
   /** The transcript's session id; with `agentId` the session is the subagent's own (`eventSessionKey`). */
-  sessionId: string;
-  agentId?: string;
-  kind: "compaction" | "skill";
+  sessionId: string
+  agentId?: string
+  kind: 'compaction' | 'skill'
   /** ISO 8601 UTC. */
-  ts: string;
+  ts: string
   /** Skill: the skill's name. */
-  name?: string;
+  name?: string
   /** Skill: characters of the injected skill text. */
-  sizeChars?: number;
+  sizeChars?: number
   /** Compaction: trigger, preTokens, postTokens, durationMs. */
-  detail?: Record<string, unknown>;
+  detail?: Record<string, unknown>
 }
 
 export interface CollectResult {
-  records: UsageRecord[];
+  records: UsageRecord[]
   /** Session events (compactions, skill loads); sources without any leave it out. */
-  events?: SessionEvent[];
+  events?: SessionEvent[]
   /** New watermark to persist for the next run. Echo the old one if unused. */
-  cursor: string | null;
+  cursor: string | null
   /** Human-readable note surfaced in the ingest summary (e.g. skip reason). */
-  note?: string;
+  note?: string
 }
 
 export interface Collector {
   /** Stable source key — also the value stored in usage_record.source. */
-  readonly source: string;
+  readonly source: string
   /**
    * Workspace the collector emits when records don't carry one of their own.
    * Set when the daemon is pinned to a workspace (hermes/feuer/opencode);
    * omit when the workspace is per-record and Argo derives it
    * from the cwd (claude-code, litellm).
    */
-  readonly workspace?: Workspace | null;
+  readonly workspace?: Workspace | null
   /**
    * Expected cadence: hours of silence after which the newest row's `ts` makes
    * the source stale (`health` / `make verify` go not-ok). `null` = frozen or
    * legacy by design. Required, so a moved store can never go silent again.
    */
-  readonly staleAfterHours: number | null;
+  readonly staleAfterHours: number | null
   /** Cheap check: is this source present on this machine at all? */
-  available(): boolean;
-  collect(ctx: CollectContext): Promise<CollectResult>;
+  available(): boolean
+  collect(ctx: CollectContext): Promise<CollectResult>
 }

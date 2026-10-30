@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { iumacLogsDir } from "./remote.ts";
-import type { Billing } from "./types.ts";
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { iumacLogsDir } from './remote.ts'
+import type { Billing } from './types.ts'
 
 // claude-code's transcripts don't record which ANTHROPIC_BASE_URL produced a
 // message, so `hooks/notify.ts` logs it once per SessionStart to the same
@@ -15,11 +15,11 @@ import type { Billing } from "./types.ts";
 // `usage.session_env` lines (useStoredSessionEnvs), merges the live logs on
 // top, and persists what changed (pendingSessionEnvs) before the writer runs.
 /** Claude Max account id. Unrelated to `billing`: account "iu" is a Max account, billing "iu" is IU-paid API spend. */
-export type Account = string;
+export type Account = string
 
 // The same shape the registry (dotfiles claude-accounts.json) and argo's own
 // ACCOUNT_PATTERN enforce for an account id.
-const ACCOUNT_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
+const ACCOUNT_PATTERN = /^[a-z][a-z0-9-]{0,15}$/
 
 /**
  * The one account mapping: the legacy ids `a`/`b` (log lines and session_env
@@ -28,28 +28,28 @@ const ACCOUNT_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
  * itself; anything else (non-string, empty, bad charset) is null.
  */
 export function parseAccount(value: unknown): Account | null {
-  if (value === "a") return "iu";
-  if (value === "b") return "me";
-  if (typeof value === "string" && ACCOUNT_PATTERN.test(value)) return value;
-  return null;
+  if (value === 'a') return 'iu'
+  if (value === 'b') return 'me'
+  if (typeof value === 'string' && ACCOUNT_PATTERN.test(value)) return value
+  return null
 }
 
 interface SessionEnv {
-  base_url: string | null;
-  lane: string | null;
+  base_url: string | null
+  lane: string | null
   /** Claude Max account id; null on lines older than the account field. */
-  account: Account | null;
+  account: Account | null
   /** The factory runner's FACTORY_ROLE / FACTORY_SESSION; null on lines older than the fields and on sessions it did not spawn. */
-  factory_role: string | null;
-  factory_session: string | null;
+  factory_role: string | null
+  factory_session: string | null
   /** The log line's own timestamp (absent on stored rows and on lines without one). */
-  seen_at?: Date;
+  seen_at?: Date
 }
-let sessionEnvs: Map<string, SessionEnv> | null = null;
+let sessionEnvs: Map<string, SessionEnv> | null = null
 /** The lines already in usage.session_env: the baseline the logs are merged onto. */
-let storedEnvs = new Map<string, SessionEnv>();
+let storedEnvs = new Map<string, SessionEnv>()
 /** Sessions whose merged line differs from the stored one: what ingest still has to write. */
-let changedSessions = new Set<string>();
+let changedSessions = new Set<string>()
 
 /**
  * Prime the lookups with the stored session_env lines. Drops the cache so the
@@ -60,15 +60,15 @@ let changedSessions = new Set<string>();
  */
 export function useStoredSessionEnvs(
   rows: Iterable<{
-    session: string;
-    base_url: string | null;
-    lane: string | null;
-    account: string | null;
-    factory_role?: string | null;
-    factory_session?: string | null;
+    session: string
+    base_url: string | null
+    lane: string | null
+    account: string | null
+    factory_role?: string | null
+    factory_session?: string | null
   }>,
 ): void {
-  storedEnvs = new Map();
+  storedEnvs = new Map()
   for (const r of rows) {
     storedEnvs.set(r.session, {
       base_url: r.base_url,
@@ -76,38 +76,38 @@ export function useStoredSessionEnvs(
       account: parseAccount(r.account),
       factory_role: r.factory_role ?? null,
       factory_session: r.factory_session ?? null,
-    });
+    })
   }
-  sessionEnvs = null;
-  changedSessions = new Set();
+  sessionEnvs = null
+  changedSessions = new Set()
 }
 
 /** A session_env line that is new or changed against the stored table (the log entry is the latest SessionStart). */
 export interface SessionEnvChange {
-  session: string;
-  base_url: string | null;
-  lane: string | null;
-  account: Account | null;
-  factory_role: string | null;
-  factory_session: string | null;
+  session: string
+  base_url: string | null
+  lane: string | null
+  account: Account | null
+  factory_role: string | null
+  factory_session: string | null
   /** The log line's timestamp, so usage.session_env keeps the newest line by the line's time, not the run's. */
-  seen_at?: Date;
+  seen_at?: Date
 }
 
 /** Lines the logs added or changed since the stored baseline; loads the logs if no lookup did yet. */
 export function pendingSessionEnvs(): SessionEnvChange[] {
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  const out: SessionEnvChange[] = [];
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  const out: SessionEnvChange[] = []
   for (const session of changedSessions) {
-    const env = sessionEnvs.get(session);
-    if (env) out.push({ session, ...env });
+    const env = sessionEnvs.get(session)
+    if (env) out.push({ session, ...env })
   }
-  return out;
+  return out
 }
 
 /** Call after the pending lines are written to usage.session_env; they are then the stored baseline. */
 export function markSessionEnvsPersisted(changes: Iterable<{ session: string }>): void {
-  for (const c of changes) changedSessions.delete(c.session);
+  for (const c of changes) changedSessions.delete(c.session)
 }
 
 /**
@@ -117,7 +117,7 @@ export function markSessionEnvsPersisted(changes: Iterable<{ session: string }>)
  * local transcripts root.
  */
 function localSessionLogDir(): string {
-  return process.env.USAGE_CLAUDE_LOGS_DIR?.trim() || join(homedir(), ".claude", "logs");
+  return process.env.USAGE_CLAUDE_LOGS_DIR?.trim() || join(homedir(), '.claude', 'logs')
 }
 
 /**
@@ -126,9 +126,9 @@ function localSessionLogDir(): string {
  * code.
  */
 export function resetSessionBaseUrlsCacheForTest(): void {
-  sessionEnvs = null;
-  storedEnvs = new Map();
-  changedSessions = new Set();
+  sessionEnvs = null
+  storedEnvs = new Map()
+  changedSessions = new Set()
 }
 
 // iumac sessions never wrote into this machine's log dir, so a MacBook
@@ -139,28 +139,28 @@ export function resetSessionBaseUrlsCacheForTest(): void {
 // already gone on the source machine by the time the mirror first syncs them.
 // Only going-forward classification is expected to be accurate.
 function sessionLogDirs(): string[] {
-  const dirs = [localSessionLogDir()];
-  const mirror = iumacLogsDir();
-  if (existsSync(mirror)) dirs.push(mirror);
-  return dirs;
+  const dirs = [localSessionLogDir()]
+  const mirror = iumacLogsDir()
+  if (existsSync(mirror)) dirs.push(mirror)
+  return dirs
 }
 
 function loadSessionEnvs(): Map<string, SessionEnv> {
-  const logged = loadLoggedSessionEnvs();
-  const map = new Map(storedEnvs);
-  changedSessions = new Set();
+  const logged = loadLoggedSessionEnvs()
+  const map = new Map(storedEnvs)
+  changedSessions = new Set()
   for (const [session, env] of logged) {
     // A log entry wins over the stored row for the same session: the latest
     // SessionStart is the truth (a resume can change base_url or lane). A line
     // without `account` (a hook that predates the field) must not erase a
     // stored one: carry it forward.
-    const stored = storedEnvs.get(session);
-    env.account ??= stored?.account ?? null;
+    const stored = storedEnvs.get(session)
+    env.account ??= stored?.account ?? null
     // Same for the lane: a resume without USAGE_LANE does not unset the stored one (usage.session_env keeps it too).
-    env.lane ??= stored?.lane ?? null;
-    env.factory_role ??= stored?.factory_role ?? null;
-    env.factory_session ??= stored?.factory_session ?? null;
-    map.set(session, env);
+    env.lane ??= stored?.lane ?? null
+    env.factory_role ??= stored?.factory_role ?? null
+    env.factory_session ??= stored?.factory_session ?? null
+    map.set(session, env)
     if (
       !stored ||
       stored.base_url !== env.base_url ||
@@ -169,47 +169,47 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
       stored.factory_role !== env.factory_role ||
       stored.factory_session !== env.factory_session
     ) {
-      changedSessions.add(session);
+      changedSessions.add(session)
     }
   }
-  return map;
+  return map
 }
 
 function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
-  const map = new Map<string, SessionEnv>();
+  const map = new Map<string, SessionEnv>()
   for (const dir of sessionLogDirs()) {
-    if (!existsSync(dir)) continue;
+    if (!existsSync(dir)) continue
     try {
       // Sorted (daily files are date-named) so "later line" means later in time.
       for (const file of readdirSync(dir).sort()) {
-        if (!file.endsWith(".jsonl")) continue;
-        let text: string;
+        if (!file.endsWith('.jsonl')) continue
+        let text: string
         try {
-          text = readFileSync(join(dir, file), "utf-8");
+          text = readFileSync(join(dir, file), 'utf-8')
         } catch {
-          continue;
+          continue
         }
-        for (const line of text.split("\n")) {
-          if (!line) continue;
+        for (const line of text.split('\n')) {
+          if (!line) continue
           try {
             const entry = JSON.parse(line) as {
-              ts?: string;
-              event?: string;
+              ts?: string
+              event?: string
               data?: {
-                session?: string;
-                base_url?: string | null;
-                lane?: string | null;
-                account?: string | null;
-                factory_role?: string | null;
-                factory_session?: string | null;
-              };
-            };
-            if (entry.event === "session_env" && entry.data?.session) {
-              const seen = typeof entry.ts === "string" ? new Date(entry.ts) : undefined;
-              const seenAt = seen && !Number.isNaN(seen.getTime()) ? seen : undefined;
-              const prev = map.get(entry.data.session);
+                session?: string
+                base_url?: string | null
+                lane?: string | null
+                account?: string | null
+                factory_role?: string | null
+                factory_session?: string | null
+              }
+            }
+            if (entry.event === 'session_env' && entry.data?.session) {
+              const seen = typeof entry.ts === 'string' ? new Date(entry.ts) : undefined
+              const seenAt = seen && !Number.isNaN(seen.getTime()) ? seen : undefined
+              const prev = map.get(entry.data.session)
               // The newest line wins by its timestamp, whichever directory (local, iumac mirror) it came from.
-              if (prev?.seen_at && seenAt && seenAt < prev.seen_at) continue;
+              if (prev?.seen_at && seenAt && seenAt < prev.seen_at) continue
               map.set(entry.data.session, {
                 seen_at: seenAt,
                 base_url: entry.data.base_url ?? null,
@@ -218,10 +218,10 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
                 account: parseAccount(entry.data.account) ?? prev?.account ?? null,
                 factory_role: entry.data.factory_role ?? prev?.factory_role ?? null,
                 factory_session: entry.data.factory_session ?? prev?.factory_session ?? null,
-              });
+              })
             }
           } catch {
-            continue;
+            continue
           }
         }
       }
@@ -229,13 +229,13 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
       // never fail classification on a log-dir read error
     }
   }
-  return map;
+  return map
 }
 
 export function getSessionBaseUrl(sessionId: string | null | undefined): string | null | undefined {
-  if (!sessionId) return undefined;
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  return sessionEnvs.get(sessionId)?.base_url;
+  if (!sessionId) return undefined
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  return sessionEnvs.get(sessionId)?.base_url
 }
 
 /**
@@ -246,23 +246,27 @@ export function getSessionBaseUrl(sessionId: string | null | undefined): string 
  * `null` means the line exists but no lane was set for that session.
  */
 export function getSessionLane(sessionId: string | null | undefined): string | null | undefined {
-  if (!sessionId) return undefined;
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  return sessionEnvs.get(sessionId)?.lane;
+  if (!sessionId) return undefined
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  return sessionEnvs.get(sessionId)?.lane
 }
 
 /** The factory role (`FACTORY_ROLE`) that spawned the session; `undefined`/`null` = no line, or not a factory spawn. */
-export function getSessionFactoryRole(sessionId: string | null | undefined): string | null | undefined {
-  if (!sessionId) return undefined;
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  return sessionEnvs.get(sessionId)?.factory_role;
+export function getSessionFactoryRole(
+  sessionId: string | null | undefined,
+): string | null | undefined {
+  if (!sessionId) return undefined
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  return sessionEnvs.get(sessionId)?.factory_role
 }
 
 /** The factory's spawn key (`FACTORY_SESSION`) of the session, same lookup as the role. */
-export function getSessionFactorySession(sessionId: string | null | undefined): string | null | undefined {
-  if (!sessionId) return undefined;
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  return sessionEnvs.get(sessionId)?.factory_session;
+export function getSessionFactorySession(
+  sessionId: string | null | undefined,
+): string | null | undefined {
+  if (!sessionId) return undefined
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  return sessionEnvs.get(sessionId)?.factory_session
 }
 
 /**
@@ -270,10 +274,12 @@ export function getSessionFactorySession(sessionId: string | null | undefined): 
  * `account` field. `undefined`/`null` = no line, or a line older than the
  * field; resolveAccount treats both as account "iu".
  */
-export function getSessionAccount(sessionId: string | null | undefined): Account | null | undefined {
-  if (!sessionId) return undefined;
-  if (!sessionEnvs) sessionEnvs = loadSessionEnvs();
-  return sessionEnvs.get(sessionId)?.account;
+export function getSessionAccount(
+  sessionId: string | null | undefined,
+): Account | null | undefined {
+  if (!sessionId) return undefined
+  if (!sessionEnvs) sessionEnvs = loadSessionEnvs()
+  return sessionEnvs.get(sessionId)?.account
 }
 
 /**
@@ -288,13 +294,13 @@ export function resolveAccount(
   record: { billing: Billing; raw?: Record<string, unknown> },
   lookup: (sessionId: string) => Account | null | undefined = getSessionAccount,
 ): Account | null {
-  if (record.billing !== "max") return null;
-  const sessionId = record.raw?.sessionId;
+  if (record.billing !== 'max') return null
+  const sessionId = record.raw?.sessionId
   return (
     parseAccount(record.raw?.account) ||
-    (typeof sessionId === "string" ? lookup(sessionId) : null) ||
-    "iu"
-  );
+    (typeof sessionId === 'string' ? lookup(sessionId) : null) ||
+    'iu'
+  )
 }
 
 /**
@@ -303,10 +309,10 @@ export function resolveAccount(
  * desktop app. null for a missing or unrecognised entrypoint.
  */
 export function entrypointLane(entrypoint: string | null | undefined): string | null {
-  if (entrypoint === "cli") return "interactive";
-  if (entrypoint === "sdk-cli") return "headless";
-  if (entrypoint === "claude-desktop") return "desktop";
-  return null;
+  if (entrypoint === 'cli') return 'interactive'
+  if (entrypoint === 'sdk-cli') return 'headless'
+  if (entrypoint === 'claude-desktop') return 'desktop'
+  return null
 }
 
 // Fallback for the case getSessionLane can never solve. Until 2026-09-24,
@@ -331,20 +337,20 @@ export function entrypointLane(entrypoint: string | null | undefined): string | 
 // disambiguate concurrent agent-gateway sessions (litellm rows carry no cwd, so
 // litellm.ts can't do this) — ties fall back to the narrowest window.
 interface AgentGatewayWindow {
-  tool: string;
-  project: string | null;
-  tsStartMs: number;
-  tsEndMs: number;
+  tool: string
+  project: string | null
+  tsStartMs: number
+  tsEndMs: number
   /** End - start in ms; used to pick the narrowest match when windows overlap. */
-  spanMs: number;
+  spanMs: number
 }
-let agentGatewayWindows: AgentGatewayWindow[] | null = null;
+let agentGatewayWindows: AgentGatewayWindow[] | null = null
 
 function agentGatewaySessionsLogPath(): string {
   return (
     process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG?.trim() ||
-    join(homedir(), ".local", "share", "usage-tracker", "agent-gateway-sessions.jsonl")
-  );
+    join(homedir(), '.local', 'share', 'usage-tracker', 'agent-gateway-sessions.jsonl')
+  )
 }
 
 /**
@@ -353,38 +359,43 @@ function agentGatewaySessionsLogPath(): string {
  * production code.
  */
 export function resetAgentGatewayWindowsCacheForTest(): void {
-  agentGatewayWindows = null;
+  agentGatewayWindows = null
 }
 
 function loadAgentGatewayWindows(): AgentGatewayWindow[] {
-  const path = agentGatewaySessionsLogPath();
-  if (!existsSync(path)) return [];
-  let text: string;
+  const path = agentGatewaySessionsLogPath()
+  if (!existsSync(path)) return []
+  let text: string
   try {
-    text = readFileSync(path, "utf-8");
+    text = readFileSync(path, 'utf-8')
   } catch {
-    return [];
+    return []
   }
-  const windows: AgentGatewayWindow[] = [];
-  for (const line of text.split("\n")) {
-    if (!line) continue;
+  const windows: AgentGatewayWindow[] = []
+  for (const line of text.split('\n')) {
+    if (!line) continue
     try {
-      const obj = JSON.parse(line) as { tool?: string; project?: string; tsStart?: string; tsEnd?: string };
-      const tsStartMs = typeof obj.tsStart === "string" ? Date.parse(obj.tsStart) : NaN;
-      const tsEndMs = typeof obj.tsEnd === "string" ? Date.parse(obj.tsEnd) : NaN;
-      if (!Number.isFinite(tsStartMs) || !Number.isFinite(tsEndMs)) continue;
+      const obj = JSON.parse(line) as {
+        tool?: string
+        project?: string
+        tsStart?: string
+        tsEnd?: string
+      }
+      const tsStartMs = typeof obj.tsStart === 'string' ? Date.parse(obj.tsStart) : NaN
+      const tsEndMs = typeof obj.tsEnd === 'string' ? Date.parse(obj.tsEnd) : NaN
+      if (!Number.isFinite(tsStartMs) || !Number.isFinite(tsEndMs)) continue
       windows.push({
-        tool: typeof obj.tool === "string" ? obj.tool : "unknown",
-        project: typeof obj.project === "string" ? obj.project : null,
+        tool: typeof obj.tool === 'string' ? obj.tool : 'unknown',
+        project: typeof obj.project === 'string' ? obj.project : null,
         tsStartMs,
         tsEndMs,
         spanMs: Math.max(0, tsEndMs - tsStartMs),
-      });
+      })
     } catch {
-      continue;
+      continue
     }
   }
-  return windows;
+  return windows
 }
 
 /**
@@ -394,23 +405,30 @@ function loadAgentGatewayWindows(): AgentGatewayWindow[] {
  * Returns null when no window contains `ts` — a manual `c`/`ca` session, or a
  * agent-gateway window this log has already rotated past.
  */
-export function getAgentGatewayLane(ts: string | null | undefined, project: string | null | undefined): string | null {
-  if (!ts) return null;
-  const rowMs = Date.parse(ts);
-  if (!Number.isFinite(rowMs)) return null;
-  if (!agentGatewayWindows) agentGatewayWindows = loadAgentGatewayWindows();
+export function getAgentGatewayLane(
+  ts: string | null | undefined,
+  project: string | null | undefined,
+): string | null {
+  if (!ts) return null
+  const rowMs = Date.parse(ts)
+  if (!Number.isFinite(rowMs)) return null
+  if (!agentGatewayWindows) agentGatewayWindows = loadAgentGatewayWindows()
 
-  let best: AgentGatewayWindow | undefined;
-  let bestIsProjectMatch = false;
+  let best: AgentGatewayWindow | undefined
+  let bestIsProjectMatch = false
   for (const w of agentGatewayWindows) {
-    if (rowMs < w.tsStartMs || rowMs > w.tsEndMs) continue;
-    const isProjectMatch = project != null && w.project === project;
-    if (!best || (isProjectMatch && !bestIsProjectMatch) || (isProjectMatch === bestIsProjectMatch && w.spanMs < best.spanMs)) {
-      best = w;
-      bestIsProjectMatch = isProjectMatch;
+    if (rowMs < w.tsStartMs || rowMs > w.tsEndMs) continue
+    const isProjectMatch = project != null && w.project === project
+    if (
+      !best ||
+      (isProjectMatch && !bestIsProjectMatch) ||
+      (isProjectMatch === bestIsProjectMatch && w.spanMs < best.spanMs)
+    ) {
+      best = w
+      bestIsProjectMatch = isProjectMatch
     }
   }
-  return best ? `agent-gateway:${best.tool.split(":")[0]}` : null;
+  return best ? `agent-gateway:${best.tool.split(':')[0]}` : null
 }
 
 /**
@@ -419,31 +437,31 @@ export function getAgentGatewayLane(ts: string | null | undefined, project: stri
  * and provider prefixes like `iu/` or `anthropic/`.
  */
 export function normalizeModel(raw: string | null): string | null {
-  if (!raw) return null;
-  let m = raw.trim();
+  if (!raw) return null
+  let m = raw.trim()
 
   // OpenCode stores: {"id":"Kimi-K2.6","providerID":"iu"}
-  if (m.startsWith("{")) {
+  if (m.startsWith('{')) {
     try {
-      const parsed = JSON.parse(m) as { id?: string };
-      if (parsed.id) m = parsed.id;
+      const parsed = JSON.parse(m) as { id?: string }
+      if (parsed.id) m = parsed.id
     } catch {
       // fall through with the raw string
     }
   }
 
-  m = m.toLowerCase();
-  if (m.includes("/")) m = m.split("/").pop() ?? m;
+  m = m.toLowerCase()
+  if (m.includes('/')) m = m.split('/').pop() ?? m
   // The IU gateway's EU-routed twin — same rate card as its parent. Still
   // live: Hermes fails over to `claude-sonnet-4-6-eu` under throttling.
-  m = m.replace(/-eu$/, "");
+  m = m.replace(/-eu$/, '')
   // Dated variant → bare alias. Both vendor conventions, since a source may
   // record either the id it requested or the dated id the vendor reports back:
   //   claude-haiku-4-5-20251001  (Anthropic, compact)
   //   gpt-5.6-terra-2026-07-09   (OpenAI, hyphenated)
   // Verified against the IU catalog's 287 ids: this collapses 44 dated variants
   // onto their bare alias and produces no unintended collisions.
-  m = m.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  m = m.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '')
   // `deepseek-flash` (no version) is Claude Code's own small/fast-model slot
   // (ANTHROPIC_DEFAULT_HAIKU_MODEL), which agent-gateway's session-runner.ts pins to
   // the literal id "DeepSeek-V4-Flash" for every non-Claude worker route — the
@@ -454,8 +472,8 @@ export function normalizeModel(raw: string | null): string | null {
   // exactly with a live `review:router` agent-gateway-sessions.jsonl entry whose own
   // `model` field is "DeepSeek-V4-Flash". Without this it silently priced at
   // NULL (no price for the bare alias).
-  if (m === "deepseek-flash") m = "deepseek-v4-flash";
-  return m;
+  if (m === 'deepseek-flash') m = 'deepseek-v4-flash'
+  return m
 }
 
 /**
@@ -467,7 +485,7 @@ export function normalizeModel(raw: string | null): string | null {
  * 2026-09-04; its log holds one stray row after this date (a probe), nothing
  * a transcript could mirror.
  */
-export const LITELLM_BRIDGE_CUTOFF = "2026-07-08T00:00:00Z";
+export const LITELLM_BRIDGE_CUTOFF = '2026-07-08T00:00:00Z'
 
 /**
  * True only for the retired-bridge era: a bridge-shaped id (non-`claude-*`, or
@@ -477,15 +495,15 @@ export const LITELLM_BRIDGE_CUTOFF = "2026-07-08T00:00:00Z";
  * and the transcript is the only record of it, so nothing is skipped.
  */
 export function isBridgeRouted(rawModel: string | null, ts: string | null | undefined): boolean {
-  if (!ts || ts >= LITELLM_BRIDGE_CUTOFF) return false;
-  return isIuOnlyModel(rawModel);
+  if (!ts || ts >= LITELLM_BRIDGE_CUTOFF) return false
+  return isIuOnlyModel(rawModel)
 }
 
 /**
  * `message.model` of the line Claude Code synthesizes locally when a request
  * fails outright — not a served id, so it says nothing about who pays.
  */
-export const SYNTHETIC_MODEL = "<synthetic>";
+export const SYNTHETIC_MODEL = '<synthetic>'
 
 /**
  * An id the Max subscription can never serve: anything outside `claude-*`, or
@@ -493,8 +511,8 @@ export const SYNTHETIC_MODEL = "<synthetic>";
  * `claude-sonnet-4-6-eu`, which is why normalizeModel keeps stripping it).
  */
 function isIuOnlyModel(rawModel: string | null): boolean {
-  const r = (rawModel ?? "").toLowerCase();
-  return !r.startsWith("claude") || r.endsWith("-eu");
+  const r = (rawModel ?? '').toLowerCase()
+  return !r.startsWith('claude') || r.endsWith('-eu')
 }
 
 /**
@@ -541,25 +559,27 @@ export function classifyBilling(
   rawModel: string | null,
   sessionId?: string | null,
   backend?: string | null,
-  lookupBaseUrl: (sessionId: string | null | undefined) => string | null | undefined = getSessionBaseUrl,
+  lookupBaseUrl: (
+    sessionId: string | null | undefined,
+  ) => string | null | undefined = getSessionBaseUrl,
 ): Billing {
-  if (source === "claude-code") {
-    if (rawModel !== SYNTHETIC_MODEL && isIuOnlyModel(rawModel)) return "iu";
-    const baseUrl = lookupBaseUrl(sessionId);
-    if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
-    return "max";
+  if (source === 'claude-code') {
+    if (rawModel !== SYNTHETIC_MODEL && isIuOnlyModel(rawModel)) return 'iu'
+    const baseUrl = lookupBaseUrl(sessionId)
+    if (baseUrl !== undefined) return baseUrl ? 'iu' : 'max'
+    return 'max'
   }
 
   // agent-gateway-sessions carries its own backend ("max" | "iu") straight from the
   // session log — agent-gateway dispatches both lanes, so the model id alone can't
   // tell them apart. Older rows written before the field existed fall back to
   // the same id-based heuristic as the no-session_env case above.
-  if (source === "agent-gateway-sessions") {
-    if (backend === "max" || backend === "iu") return backend;
-    return isIuOnlyModel(rawModel) ? "iu" : "max";
+  if (source === 'agent-gateway-sessions') {
+    if (backend === 'max' || backend === 'iu') return backend
+    return isIuOnlyModel(rawModel) ? 'iu' : 'max'
   }
 
   // hermes / feuer / opencode / agent-gateway-iu all bill per-token against the IU
   // unified endpoint.
-  return "iu";
+  return 'iu'
 }

@@ -1,63 +1,66 @@
-import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { resetSessionBaseUrlsCacheForTest } from "../models.ts";
-import type { Logger } from "../types.ts";
-import { opencodeCollector } from "./opencode.ts";
+import { Database } from 'bun:sqlite'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { resetSessionBaseUrlsCacheForTest } from '../models.ts'
+import type { Logger } from '../types.ts'
+import { opencodeCollector } from './opencode.ts'
 
 // Exercises the collector against a real sqlite file shaped like the live
 // opencode.db schema (session + message, message.data a JSON blob) rather
 // than mocking bun:sqlite — the message-grain read, the path.cwd/directory
 // fallback and the legacy session-grain fallback are the whole point.
 
-const log: Logger = { info() {}, warn() {}, error() {} };
-let originalDbPath: string | undefined;
+const log: Logger = { info() {}, warn() {}, error() {} }
+let originalDbPath: string | undefined
 
 function messageData(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    role: "assistant",
-    agent: "build",
-    mode: "build",
-    path: { cwd: "/Users/jkrumm/SourceRoot/agentsmd-poc", root: "/Users/jkrumm/SourceRoot/agentsmd-poc" },
+    role: 'assistant',
+    agent: 'build',
+    mode: 'build',
+    path: {
+      cwd: '/Users/jkrumm/SourceRoot/agentsmd-poc',
+      root: '/Users/jkrumm/SourceRoot/agentsmd-poc',
+    },
     cost: 0.000103878,
     tokens: { total: 21635, input: 257, output: 2, reasoning: 0, cache: { write: 0, read: 21376 } },
-    modelID: "deepseek-v4.1-flash",
-    providerID: "iu",
+    modelID: 'deepseek-v4.1-flash',
+    providerID: 'iu',
     time: { created: 1_790_275_376_743, completed: 1_790_275_377_961 },
-    finish: "stop",
+    finish: 'stop',
     ...overrides,
-  });
+  })
 }
 
-describe("opencode collector", () => {
-  let dir: string;
-  let dbPath: string;
+describe('opencode collector', () => {
+  let dir: string
+  let dbPath: string
 
   beforeEach(() => {
-    originalDbPath = process.env.USAGE_OPENCODE_DB;
-    dir = mkdtempSync(join(tmpdir(), "usage-tracker-opencode-"));
-    dbPath = join(dir, "opencode.db");
-    process.env.USAGE_OPENCODE_DB = dbPath;
+    originalDbPath = process.env.USAGE_OPENCODE_DB
+    dir = mkdtempSync(join(tmpdir(), 'usage-tracker-opencode-'))
+    dbPath = join(dir, 'opencode.db')
+    process.env.USAGE_OPENCODE_DB = dbPath
     // getSessionLane() runs on every message — keep it off this machine's real
     // ~/.claude/logs.
-    process.env.USAGE_CLAUDE_LOGS_DIR = join(dir, "logs");
-    process.env.USAGE_REMOTE_DIR = join(dir, "no-mirror");
-    resetSessionBaseUrlsCacheForTest();
-  });
+    process.env.USAGE_CLAUDE_LOGS_DIR = join(dir, 'logs')
+    process.env.USAGE_REMOTE_DIR = join(dir, 'no-mirror')
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   afterEach(() => {
-    if (originalDbPath === undefined) delete process.env.USAGE_OPENCODE_DB;
-    else process.env.USAGE_OPENCODE_DB = originalDbPath;
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    resetSessionBaseUrlsCacheForTest();
-    rmSync(dir, { recursive: true, force: true });
-  });
+    if (originalDbPath === undefined) delete process.env.USAGE_OPENCODE_DB
+    else process.env.USAGE_OPENCODE_DB = originalDbPath
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    resetSessionBaseUrlsCacheForTest()
+    rmSync(dir, { recursive: true, force: true })
+  })
 
-  test("prefers message grain: one record per assistant message, project from path.cwd", async () => {
-    const db = new Database(dbPath, { create: true });
+  test('prefers message grain: one record per assistant message, project from path.cwd', async () => {
+    const db = new Database(dbPath, { create: true })
     db.exec(`
       CREATE TABLE session (
         id TEXT PRIMARY KEY, directory TEXT, slug TEXT, title TEXT, agent TEXT, model TEXT,
@@ -70,40 +73,41 @@ describe("opencode collector", () => {
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL, data TEXT NOT NULL
       );
-    `);
+    `)
+    db.run('INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)', [
+      'ses-1',
+      '/Users/jkrumm/SourceRoot/agentsmd-poc',
+      1_790_275_000_000,
+    ])
     db.run(
-      "INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)",
-      ["ses-1", "/Users/jkrumm/SourceRoot/agentsmd-poc", 1_790_275_000_000],
-    );
+      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+      ['msg-user', 'ses-1', 1_790_275_376_000, 1_790_275_376_000, JSON.stringify({ role: 'user' })],
+    )
     db.run(
-      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-      ["msg-user", "ses-1", 1_790_275_376_000, 1_790_275_376_000, JSON.stringify({ role: "user" })],
-    );
-    db.run(
-      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-      ["msg-1", "ses-1", 1_790_275_376_743, 1_790_275_377_961, messageData()],
-    );
-    db.close();
+      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+      ['msg-1', 'ses-1', 1_790_275_376_743, 1_790_275_377_961, messageData()],
+    )
+    db.close()
 
-    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
+    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log })
 
-    expect(records).toHaveLength(1); // user-role message excluded
-    const r = records[0]!;
-    expect(r.sourceId).toBe("msg-1");
-    expect(r.grain).toBe("message");
-    expect(r.model).toBe("deepseek-v4.1-flash");
-    expect(r.project).toBe("/Users/jkrumm/SourceRoot/agentsmd-poc");
-    expect(r.inputTokens).toBe(257);
-    expect(r.outputTokens).toBe(2);
-    expect(r.cacheReadTokens).toBe(21376);
-    expect(r.cacheWriteTokens).toBe(0);
-    expect(r.reasoningTokens).toBe(0);
-    expect(r.durationMs).toBe(1_790_275_377_961 - 1_790_275_376_743);
-    expect(r.raw?.providerID).toBe("iu");
-  });
+    expect(records).toHaveLength(1) // user-role message excluded
+    const r = records[0]!
+    expect(r.sourceId).toBe('msg-1')
+    expect(r.grain).toBe('message')
+    expect(r.model).toBe('deepseek-v4.1-flash')
+    expect(r.project).toBe('/Users/jkrumm/SourceRoot/agentsmd-poc')
+    expect(r.inputTokens).toBe(257)
+    expect(r.outputTokens).toBe(2)
+    expect(r.cacheReadTokens).toBe(21376)
+    expect(r.cacheWriteTokens).toBe(0)
+    expect(r.reasoningTokens).toBe(0)
+    expect(r.durationMs).toBe(1_790_275_377_961 - 1_790_275_376_743)
+    expect(r.raw?.providerID).toBe('iu')
+  })
 
   test("falls back to the session's directory when a message carries no path", async () => {
-    const db = new Database(dbPath, { create: true });
+    const db = new Database(dbPath, { create: true })
     db.exec(`
       CREATE TABLE session (
         id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER NOT NULL
@@ -112,26 +116,26 @@ describe("opencode collector", () => {
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL, data TEXT NOT NULL
       );
-    `);
-    db.run("INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)", [
-      "ses-2",
-      "/Users/jkrumm/SourceRoot/warden",
+    `)
+    db.run('INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)', [
+      'ses-2',
+      '/Users/jkrumm/SourceRoot/warden',
       1_790_275_000_000,
-    ]);
+    ])
     db.run(
-      "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
-      ["msg-2", "ses-2", 1_790_275_400_000, 1_790_275_401_000, messageData({ path: undefined })],
-    );
-    db.close();
+      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+      ['msg-2', 'ses-2', 1_790_275_400_000, 1_790_275_401_000, messageData({ path: undefined })],
+    )
+    db.close()
 
-    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
+    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log })
 
-    expect(records).toHaveLength(1);
-    expect(records[0]?.project).toBe("/Users/jkrumm/SourceRoot/warden");
-  });
+    expect(records).toHaveLength(1)
+    expect(records[0]?.project).toBe('/Users/jkrumm/SourceRoot/warden')
+  })
 
   test("falls back to session grain when the message table doesn't exist", async () => {
-    const db = new Database(dbPath, { create: true });
+    const db = new Database(dbPath, { create: true })
     db.exec(`
       CREATE TABLE session (
         id TEXT PRIMARY KEY, directory TEXT, slug TEXT, title TEXT, agent TEXT, model TEXT,
@@ -140,51 +144,64 @@ describe("opencode collector", () => {
         tokens_reasoning INTEGER DEFAULT 0, tokens_cache_read INTEGER DEFAULT 0,
         tokens_cache_write INTEGER DEFAULT 0
       );
-    `);
+    `)
     db.run(
       `INSERT INTO session (id, directory, model, time_created, tokens_input, tokens_output)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      ["ses-3", "/Users/jkrumm/SourceRoot/legacy", '{"id":"kimi-k2.6","providerID":"iu"}', 1_790_275_000_000, 100, 50],
-    );
-    db.close();
+      [
+        'ses-3',
+        '/Users/jkrumm/SourceRoot/legacy',
+        '{"id":"kimi-k2.6","providerID":"iu"}',
+        1_790_275_000_000,
+        100,
+        50,
+      ],
+    )
+    db.close()
 
-    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
+    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log })
 
-    expect(records).toHaveLength(1);
-    expect(records[0]?.sourceId).toBe("ses-3");
-    expect(records[0]?.grain).toBe("session");
-    expect(records[0]?.inputTokens).toBe(100);
-  });
+    expect(records).toHaveLength(1)
+    expect(records[0]?.sourceId).toBe('ses-3')
+    expect(records[0]?.grain).toBe('session')
+    expect(records[0]?.inputTokens).toBe(100)
+  })
 
-  test("sub_tool is the agent-gateway lane when a session_env line exists, else interactive", async () => {
-    const db = new Database(dbPath, { create: true });
+  test('sub_tool is the agent-gateway lane when a session_env line exists, else interactive', async () => {
+    const db = new Database(dbPath, { create: true })
     db.exec(`
       CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER NOT NULL);
       CREATE TABLE message (
         id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
         time_updated INTEGER NOT NULL, data TEXT NOT NULL
       );
-    `);
-    for (const id of ["ses_worker", "ses_manual"]) {
-      db.run("INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)", [id, "/tmp/p", 1_790_275_000_000]);
+    `)
+    for (const id of ['ses_worker', 'ses_manual']) {
+      db.run('INSERT INTO session (id, directory, time_created) VALUES (?, ?, ?)', [
+        id,
+        '/tmp/p',
+        1_790_275_000_000,
+      ])
       db.run(
-        "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+        'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
         [`msg-${id}`, id, 1_790_275_376_743, 1_790_275_377_961, messageData()],
-      );
+      )
     }
-    db.close();
-    mkdirSync(process.env.USAGE_CLAUDE_LOGS_DIR!, { recursive: true });
+    db.close()
+    mkdirSync(process.env.USAGE_CLAUDE_LOGS_DIR!, { recursive: true })
     writeFileSync(
-      join(process.env.USAGE_CLAUDE_LOGS_DIR!, "2026-10-06.jsonl"),
+      join(process.env.USAGE_CLAUDE_LOGS_DIR!, '2026-10-06.jsonl'),
       `${JSON.stringify({
-        event: "session_env",
-        data: { session: "ses_worker", base_url: null, lane: "agent-gateway:implement" },
+        event: 'session_env',
+        data: { session: 'ses_worker', base_url: null, lane: 'agent-gateway:implement' },
       })}\n`,
-    );
+    )
 
-    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log });
+    const { records } = await opencodeCollector.collect({ cursor: null, full: false, log })
 
-    expect(records.find((r) => r.sourceId === "msg-ses_worker")?.subTool).toBe("agent-gateway:implement");
-    expect(records.find((r) => r.sourceId === "msg-ses_manual")?.subTool).toBe("interactive");
-  });
-});
+    expect(records.find((r) => r.sourceId === 'msg-ses_worker')?.subTool).toBe(
+      'agent-gateway:implement',
+    )
+    expect(records.find((r) => r.sourceId === 'msg-ses_manual')?.subTool).toBe('interactive')
+  })
+})

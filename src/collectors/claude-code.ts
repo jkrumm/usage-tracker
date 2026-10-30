@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import {
   entrypointLane,
   getAgentGatewayLane,
@@ -9,11 +9,17 @@ import {
   getSessionLane,
   isBridgeRouted,
   SYNTHETIC_MODEL,
-} from "../models.ts";
-import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
-import type { SyncResult } from "../remote.ts";
-import type { Collector, CollectContext, CollectResult, SessionEvent, UsageRecord } from "../types.ts";
-import { walkJsonlFiles } from "./fs-incremental.ts";
+} from '../models.ts'
+import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from '../remote.ts'
+import type { SyncResult } from '../remote.ts'
+import type {
+  Collector,
+  CollectContext,
+  CollectResult,
+  SessionEvent,
+  UsageRecord,
+} from '../types.ts'
+import { walkJsonlFiles } from './fs-incremental.ts'
 
 // Claude Code writes one JSONL file per session under ~/.claude/projects/.
 // Files are append-only, so we resume each by byte offset (advancing only to the
@@ -39,12 +45,12 @@ import { walkJsonlFiles } from "./fs-incremental.ts";
  * the iumac mirror root.
  */
 function localProjectsDir(): string {
-  return process.env.USAGE_CLAUDE_PROJECTS_DIR?.trim() || join(homedir(), ".claude", "projects");
+  return process.env.USAGE_CLAUDE_PROJECTS_DIR?.trim() || join(homedir(), '.claude', 'projects')
 }
 
 /** Every transcripts root that exists: this machine's, then the iumac mirror's. */
 export function claudeCodeRoots(): string[] {
-  return [localProjectsDir(), iumacProjectsDir()].filter((root) => existsSync(root));
+  return [localProjectsDir(), iumacProjectsDir()].filter((root) => existsSync(root))
 }
 
 /**
@@ -52,98 +58,103 @@ export function claudeCodeRoots(): string[] {
  * collect() without an ssh/rsync call ever happening. Always null in
  * production; only setSyncOverrideForTest ever changes it.
  */
-let syncOverrideForTest: (() => Promise<SyncResult>) | null = null;
+let syncOverrideForTest: (() => Promise<SyncResult>) | null = null
 
 export function setSyncOverrideForTest(fn: (() => Promise<SyncResult>) | null): void {
-  syncOverrideForTest = fn;
+  syncOverrideForTest = fn
 }
 
 interface AssistantLine {
-  type?: string;
-  requestId?: string;
-  sessionId?: string;
-  uuid?: string;
-  parentUuid?: string;
-  timestamp?: string;
-  cwd?: string;
+  type?: string
+  requestId?: string
+  sessionId?: string
+  uuid?: string
+  parentUuid?: string
+  timestamp?: string
+  cwd?: string
   // "cli" (interactive), "sdk-cli" (`claude -p`, i.e. every agent-gateway worker) or
   // "claude-desktop"; on every transcript line.
-  entrypoint?: string;
+  entrypoint?: string
   // The reasoning effort the request ran at (`low` ... `max`); `perTurnEffort` repeats it per turn and is the
   // fallback. Both sit at the top level of the assistant line, main transcript and subagent file alike.
-  effort?: string;
-  perTurnEffort?: string;
+  effort?: string
+  perTurnEffort?: string
   // Subagent files (`<session>/subagents/agent-<id>.jsonl`, also under `subagents/workflows/`): every line is a
   // sidechain of the parent session, carries the parent's `sessionId`, its own `agentId` and, on most lines, the
   // agent type as `attributionAgent` (else the sibling `agent-<id>.meta.json` names it as `agentType`).
-  isSidechain?: boolean;
-  agentId?: string;
-  attributionAgent?: string;
+  isSidechain?: boolean
+  agentId?: string
+  attributionAgent?: string
   // Set on the local, non-API line a failed request synthesizes in place of a
   // real assistant response — see the isApiErrorMessage branch in parseLine.
-  error?: string;
-  isApiErrorMessage?: boolean;
-  apiErrorStatus?: number;
+  error?: string
+  isApiErrorMessage?: boolean
+  apiErrorStatus?: number
   // The `compact_boundary` system line: no usage, not an assistant line.
-  subtype?: string;
-  compactMetadata?: { trigger?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+  subtype?: string
+  compactMetadata?: {
+    trigger?: string
+    preTokens?: number
+    postTokens?: number
+    durationMs?: number
+  }
   // The injected skill text: an `isMeta` user line whose `sourceToolUseID` is the Skill tool_use id.
-  isMeta?: boolean;
-  sourceToolUseID?: string;
+  isMeta?: boolean
+  sourceToolUseID?: string
   message?: {
-    id?: string;
-    content?: unknown;
-    model?: string;
+    id?: string
+    content?: unknown
+    model?: string
     usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
+      input_tokens?: number
+      output_tokens?: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
       cache_creation?: {
-        ephemeral_5m_input_tokens?: number;
-        ephemeral_1h_input_tokens?: number;
-      };
+        ephemeral_5m_input_tokens?: number
+        ephemeral_1h_input_tokens?: number
+      }
       // The provider's own thinking spend, billed at the output rate. Present
       // whenever the response used extended thinking; 0/absent otherwise —
       // see the module comment above parseLine for the verified evidence.
       output_tokens_details?: {
-        thinking_tokens?: number;
-      };
-      service_tier?: string;
-    };
-  };
+        thinking_tokens?: number
+      }
+      service_tier?: string
+    }
+  }
 }
 
-type Offsets = Record<string, number>;
+type Offsets = Record<string, number>
 
 export const claudeCodeCollector: Collector = {
-  source: "claude-code",
+  source: 'claude-code',
   staleAfterHours: 48,
 
   available() {
     // Local-root semantics only, deliberately unchanged: the collector must
     // stay available even when the MacBook is asleep or unreachable — the
     // remote half degrades on its own inside collect(), never here.
-    return existsSync(localProjectsDir());
+    return existsSync(localProjectsDir())
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const offsets: Offsets = ctx.full ? {} : parseOffsets(ctx.cursor);
-    const records: UsageRecord[] = [];
-    const events: SessionEvent[] = [];
+    const offsets: Offsets = ctx.full ? {} : parseOffsets(ctx.cursor)
+    const records: UsageRecord[] = []
+    const events: SessionEvent[] = []
 
     // Refresh the mirror before reading it. Never lets a sync failure abort
     // local ingest.
-    const sync = await (syncOverrideForTest ?? ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
-    if (!sync.ok) ctx.log.warn(`claude-code: ${sync.note}`);
+    const sync = await (syncOverrideForTest ?? ctx.syncIumac ?? (() => syncIumac(ctx.log)))()
+    if (!sync.ok) ctx.log.warn(`claude-code: ${sync.note}`)
 
-    await collectRoot(localProjectsDir(), offsets, records, events, null, { advanceOffsets: true });
+    await collectRoot(localProjectsDir(), offsets, records, events, null, { advanceOffsets: true })
 
     // If the mirror doesn't exist at all (first run, or sync never succeeded
     // once), there's nothing to walk — skip it rather than treat a missing
     // root as an error.
     if (existsSync(iumacProjectsDir())) {
-      const machine = await iumacMachineLabel();
+      const machine = await iumacMachineLabel()
       // Advance mirror offsets unless the logs leg failed *and* there's no
       // previously-mirrored logs data at all. A failed logs leg with existing
       // mirrored logs is at most one run (15 min) stale — good enough to
@@ -156,8 +167,8 @@ export const claudeCodeCollector: Collector = {
       // the next successful sync simply overwrites the same rows with
       // corrected billing — the repo's reconcile-by-upsert property doing
       // the work instead of the collector having to be clever.
-      const advanceOffsets = sync.logsOk || hasMirroredLogs();
-      await collectRoot(iumacProjectsDir(), offsets, records, events, machine, { advanceOffsets });
+      const advanceOffsets = sync.logsOk || hasMirroredLogs()
+      await collectRoot(iumacProjectsDir(), offsets, records, events, machine, { advanceOffsets })
     }
 
     // Unconditional — not gated on records.length === 0. ingest.ts's runOne
@@ -167,10 +178,10 @@ export const claudeCodeCollector: Collector = {
     // an otherwise `ok` status. Previously the note was swallowed the moment
     // any local record came in, which on this machine (which almost always
     // has local usage) meant a persistently broken mirror was silent forever.
-    const note = sync.ok ? undefined : sync.note;
-    return { records, events, cursor: JSON.stringify(offsets), note };
+    const note = sync.ok ? undefined : sync.note
+    return { records, events, cursor: JSON.stringify(offsets), note }
   },
-};
+}
 
 async function collectRoot(
   root: string,
@@ -180,20 +191,20 @@ async function collectRoot(
   machine: string | null,
   opts: { advanceOffsets: boolean },
 ): Promise<void> {
-  const files = await walkJsonlFiles(root);
+  const files = await walkJsonlFiles(root)
   for (const file of files) {
-    const size = statSync(file).size;
-    const from = offsets[file] ?? 0;
-    if (size <= from) continue;
+    const size = statSync(file).size
+    const from = offsets[file] ?? 0
+    if (size <= from) continue
 
     // Bytes, not characters: the offset is fed back to Bun.file().slice, and a line with multibyte text is longer in
     // bytes than in characters (a character index undershot and made every poll re-read part of what it had consumed).
-    const chunk = new Uint8Array(await Bun.file(file).slice(from, size).arrayBuffer());
-    const lastNl = chunk.lastIndexOf(0x0a);
-    if (lastNl === -1) continue; // no complete line yet; revisit next run
+    const chunk = new Uint8Array(await Bun.file(file).slice(from, size).arrayBuffer())
+    const lastNl = chunk.lastIndexOf(0x0a)
+    if (lastNl === -1) continue // no complete line yet; revisit next run
 
-    const complete = new TextDecoder().decode(chunk.subarray(0, lastNl));
-    const lines = complete.split("\n");
+    const complete = new TextDecoder().decode(chunk.subarray(0, lastNl))
+    const lines = complete.split('\n')
     // parentUuid chains a line to whatever causally preceded it (the user
     // message that triggered a turn, or — for a turn that streamed several
     // assistant lines — the previous one). That gap is the closest thing to a
@@ -201,41 +212,43 @@ async function collectRoot(
     // chunk and used below for duration_ms. A parent from an earlier,
     // already-offset-consumed chunk (the first line after a resume) simply
     // isn't in the map, and that one record's duration falls back to null.
-    const timestamps = buildTimestampMap(lines);
-    const ctx: LineContext = { machine, timestamps, file };
+    const timestamps = buildTimestampMap(lines)
+    const ctx: LineContext = { machine, timestamps, file }
     for (const line of lines) {
-      const rec = parseLine(line, ctx);
-      if (rec) records.push(rec);
-      events.push(...parseEvents(line));
+      const rec = parseLine(line, ctx)
+      if (rec) records.push(rec)
+      events.push(...parseEvents(line))
     }
     // Withheld only by the mirror root's bounded-re-read fallback above — the
     // local root always passes advanceOffsets: true.
-    if (opts.advanceOffsets) offsets[file] = from + lastNl + 1;
+    if (opts.advanceOffsets) offsets[file] = from + lastNl + 1
   }
 }
 
 /** What parseLine needs besides the line: the host, the chunk's uuid -> timestamp map, the file (for its meta sidecar). */
 interface LineContext {
-  machine: string | null;
-  timestamps: Map<string, string>;
-  file: string;
+  machine: string | null
+  timestamps: Map<string, string>
+  file: string
   /** The sidecar's agent type, read once per file on first use (`null` = none). */
-  metaType?: string | null;
+  metaType?: string | null
 }
 
 /** `agent-<id>.meta.json` next to a subagent file names its `agentType`. */
 function metaAgentType(ctx: LineContext): string | null {
-  if (ctx.metaType !== undefined) return ctx.metaType;
-  ctx.metaType = null;
+  if (ctx.metaType !== undefined) return ctx.metaType
+  ctx.metaType = null
   try {
-    const meta = JSON.parse(readFileSync(join(dirname(ctx.file), basename(ctx.file, ".jsonl") + ".meta.json"), "utf8")) as {
-      agentType?: unknown;
-    };
-    if (typeof meta.agentType === "string" && meta.agentType) ctx.metaType = meta.agentType;
+    const meta = JSON.parse(
+      readFileSync(join(dirname(ctx.file), basename(ctx.file, '.jsonl') + '.meta.json'), 'utf8'),
+    ) as {
+      agentType?: unknown
+    }
+    if (typeof meta.agentType === 'string' && meta.agentType) ctx.metaType = meta.agentType
   } catch {
     // no sidecar (older Claude Code, or a workflow file): the caller falls back to "unknown"
   }
-  return ctx.metaType;
+  return ctx.metaType
 }
 
 /**
@@ -245,40 +258,40 @@ function metaAgentType(ctx: LineContext): string | null {
  * account are looked up by it); `agentId` is what makes the writer give it a session of its own (`sessionKey`).
  */
 function attribution(obj: AssistantLine, ctx: LineContext): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const effort = obj.effort ?? obj.perTurnEffort;
-  if (effort) out.effort = effort;
-  const role = getSessionFactoryRole(obj.sessionId);
-  if (role) out.factoryRole = role;
-  const spawn = getSessionFactorySession(obj.sessionId);
-  if (spawn) out.factorySession = spawn;
+  const out: Record<string, unknown> = {}
+  const effort = obj.effort ?? obj.perTurnEffort
+  if (effort) out.effort = effort
+  const role = getSessionFactoryRole(obj.sessionId)
+  if (role) out.factoryRole = role
+  const spawn = getSessionFactorySession(obj.sessionId)
+  if (spawn) out.factorySession = spawn
   if (obj.isSidechain && obj.agentId && obj.sessionId) {
-    out.subagentType = obj.attributionAgent || metaAgentType(ctx) || "unknown";
-    out.agentId = obj.agentId;
-    out.parentSessionId = obj.sessionId;
+    out.subagentType = obj.attributionAgent || metaAgentType(ctx) || 'unknown'
+    out.agentId = obj.agentId
+    out.parentSessionId = obj.sessionId
   }
-  return out;
+  return out
 }
 
 function buildTimestampMap(lines: string[]): Map<string, string> {
-  const map = new Map<string, string>();
+  const map = new Map<string, string>()
   for (const line of lines) {
-    if (!line) continue;
+    if (!line) continue
     try {
-      const obj = JSON.parse(line) as { uuid?: string; timestamp?: string };
-      if (obj.uuid && obj.timestamp) map.set(obj.uuid, obj.timestamp);
+      const obj = JSON.parse(line) as { uuid?: string; timestamp?: string }
+      if (obj.uuid && obj.timestamp) map.set(obj.uuid, obj.timestamp)
     } catch {
-      continue;
+      continue
     }
   }
-  return map;
+  return map
 }
 
 function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>): number | null {
-  const parentTs = obj.parentUuid ? timestamps.get(obj.parentUuid) : undefined;
-  if (!parentTs || !obj.timestamp) return null;
-  const delta = Date.parse(obj.timestamp) - Date.parse(parentTs);
-  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+  const parentTs = obj.parentUuid ? timestamps.get(obj.parentUuid) : undefined
+  if (!parentTs || !obj.timestamp) return null
+  const delta = Date.parse(obj.timestamp) - Date.parse(parentTs)
+  return Number.isFinite(delta) && delta >= 0 ? delta : null
 }
 
 /** Stamp sub_tool, same rule for every record this file emits — never
@@ -290,34 +303,38 @@ function computeDurationMs(obj: AssistantLine, timestamps: Map<string, string>):
  *      workers are always `claude -p`, so a `cli`/`claude-desktop` session that
  *      merely overlaps a window in time must never be stamped with it;
  *   3. the entrypoint lane (interactive / headless / desktop), null if unknown. */
-function stampLane(record: UsageRecord, sessionId: string | undefined, entrypoint: string | undefined): void {
-  if (record.subTool) return;
-  const lane = getSessionLane(sessionId);
+function stampLane(
+  record: UsageRecord,
+  sessionId: string | undefined,
+  entrypoint: string | undefined,
+): void {
+  if (record.subTool) return
+  const lane = getSessionLane(sessionId)
   if (lane) {
-    record.subTool = lane;
-    return;
+    record.subTool = lane
+    return
   }
-  if (lane === undefined && (entrypoint === undefined || entrypoint === "sdk-cli")) {
-    const fallback = getAgentGatewayLane(record.ts, record.project);
+  if (lane === undefined && (entrypoint === undefined || entrypoint === 'sdk-cli')) {
+    const fallback = getAgentGatewayLane(record.ts, record.project)
     if (fallback) {
-      record.subTool = fallback;
-      return;
+      record.subTool = fallback
+      return
     }
   }
-  record.subTool = entrypointLane(entrypoint);
+  record.subTool = entrypointLane(entrypoint)
 }
 
 function parseLine(line: string, ctx: LineContext): UsageRecord | null {
-  const { machine, timestamps } = ctx;
-  if (!line) return null;
-  let obj: AssistantLine;
+  const { machine, timestamps } = ctx
+  if (!line) return null
+  let obj: AssistantLine
   try {
-    obj = JSON.parse(line) as AssistantLine;
+    obj = JSON.parse(line) as AssistantLine
   } catch {
-    return null;
+    return null
   }
 
-  if (obj.type !== "assistant") return null;
+  if (obj.type !== 'assistant') return null
 
   // The CLI synthesizes this line locally in place of a real API response
   // when a request fails outright (model_not_found, auth, rate_limit,
@@ -332,12 +349,12 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
   // 401/403/404 (auth/model_not_found) — uuid is always present, so it's the
   // dedup key here rather than the triple fallback the success path uses.
   if (obj.isApiErrorMessage) {
-    const sourceId = obj.requestId ?? obj.uuid;
-    if (!sourceId) return null;
+    const sourceId = obj.requestId ?? obj.uuid
+    if (!sourceId) return null
 
     const record: UsageRecord = {
       sourceId,
-      grain: "message",
+      grain: 'message',
       ts: obj.timestamp ?? new Date().toISOString(),
       model: obj.message?.model ?? null,
       project: obj.cwd ?? null,
@@ -347,7 +364,7 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
       cacheWriteTokens: 0,
       reasoningTokens: 0,
       durationMs: computeDurationMs(obj, timestamps),
-      outcome: "error",
+      outcome: 'error',
       machine,
       raw: {
         sessionId: obj.sessionId,
@@ -356,28 +373,28 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
         entrypoint: obj.entrypoint ?? null,
         ...attribution(obj, ctx),
       },
-    };
-    stampLane(record, obj.sessionId, obj.entrypoint);
-    return record;
+    }
+    stampLane(record, obj.sessionId, obj.entrypoint)
+    return record
   }
 
-  const usage = obj.message?.usage;
-  if (!usage) return null;
-  if (obj.message?.model === SYNTHETIC_MODEL) return null; // local, non-API message
+  const usage = obj.message?.usage
+  if (!usage) return null
+  if (obj.message?.model === SYNTHETIC_MODEL) return null // local, non-API message
 
-  const model = obj.message?.model ?? null;
+  const model = obj.message?.model ?? null
   // Every id counts — Max, `ca` and agent-gateway's `iu` lane all leave the
   // transcript as their only record. The one exception is the retired LiteLLM
   // bridge era, where the litellm source already holds the request (see
   // LITELLM_BRIDGE_CUTOFF); billing is classified centrally in db.ts.
-  if (isBridgeRouted(model, obj.timestamp)) return null;
+  if (isBridgeRouted(model, obj.timestamp)) return null
 
-  const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`;
-  if (!sourceId) return null;
+  const sourceId = obj.requestId ?? obj.uuid ?? `${obj.sessionId}:${obj.message?.id}`
+  if (!sourceId) return null
 
   const record: UsageRecord = {
     sourceId,
-    grain: "message",
+    grain: 'message',
     ts: obj.timestamp ?? new Date().toISOString(),
     model: obj.message?.model ?? null,
     project: obj.cwd ?? null,
@@ -399,29 +416,29 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
       entrypoint: obj.entrypoint ?? null,
       ...attribution(obj, ctx),
     },
-  };
+  }
 
-  stampLane(record, obj.sessionId, obj.entrypoint);
-  return record;
+  stampLane(record, obj.sessionId, obj.entrypoint)
+  return record
 }
 
 // Cheap prefilters: a line is parsed again for events only when it can hold one.
-const COMPACTION_MARK = '"compact_boundary"';
-const SKILL_CALL_MARK = '"Skill"'; // not '"name":"Skill"': that would depend on the JSON spacing
-const SKILL_TEXT_MARK = "Base directory for this skill";
+const COMPACTION_MARK = '"compact_boundary"'
+const SKILL_CALL_MARK = '"Skill"' // not '"name":"Skill"': that would depend on the JSON spacing
+const SKILL_TEXT_MARK = 'Base directory for this skill'
 // An event ts outside this range is garbage (Postgres also rejects year 0): the line is no event, the batch is never failed by it.
-const EVENT_TS_MIN = Date.UTC(2000, 0, 1);
-const EVENT_TS_MAX = Date.UTC(2200, 0, 1);
+const EVENT_TS_MIN = Date.UTC(2000, 0, 1)
+const EVENT_TS_MAX = Date.UTC(2200, 0, 1)
 
 /** The text of a message's content: a bare string, or the text blocks concatenated. */
 function messageText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  let text = "";
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  let text = ''
   for (const block of content as { type?: string; text?: unknown }[]) {
-    if (block?.type === "text" && typeof block.text === "string") text += block.text;
+    if (block?.type === 'text' && typeof block.text === 'string') text += block.text
   }
-  return text;
+  return text
 }
 
 /**
@@ -430,58 +447,68 @@ function messageText(content: unknown): string {
  * a skill the user invoked by slash command has no call to key on.
  */
 function parseEvents(line: string): SessionEvent[] {
-  if (!line) return [];
-  const compaction = line.includes(COMPACTION_MARK);
-  const call = line.includes(SKILL_CALL_MARK);
-  const text = line.includes(SKILL_TEXT_MARK);
-  if (!compaction && !call && !text) return [];
-  let obj: AssistantLine;
+  if (!line) return []
+  const compaction = line.includes(COMPACTION_MARK)
+  const call = line.includes(SKILL_CALL_MARK)
+  const text = line.includes(SKILL_TEXT_MARK)
+  if (!compaction && !call && !text) return []
+  let obj: AssistantLine
   try {
-    obj = JSON.parse(line) as AssistantLine;
+    obj = JSON.parse(line) as AssistantLine
   } catch {
-    return [];
+    return []
   }
   // An unparseable ts would fail the whole batch in Postgres and pin the cursor: such a line is no event. The ts is
   // normalized through Date, so what reaches Postgres is always a valid ISO instant (a date like 02-30 rolls over, never fails).
-  const at = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : Number.NaN;
-  if (!obj.sessionId || !(at >= EVENT_TS_MIN && at <= EVENT_TS_MAX)) return [];
-  const base = { sessionId: obj.sessionId, agentId: obj.isSidechain && obj.agentId ? obj.agentId : undefined, ts: new Date(at).toISOString() };
-
-  if (compaction && obj.type === "system" && obj.subtype === "compact_boundary") {
-    if (!obj.uuid) return [];
-    const m = obj.compactMetadata;
-    const detail: Record<string, unknown> = {};
-    if (m?.trigger !== undefined) detail.trigger = m.trigger;
-    if (m?.preTokens !== undefined) detail.preTokens = m.preTokens;
-    if (m?.postTokens !== undefined) detail.postTokens = m.postTokens;
-    if (m?.durationMs !== undefined) detail.durationMs = m.durationMs;
-    return [{ ...base, eventId: obj.uuid, kind: "compaction", detail }];
+  const at = typeof obj.timestamp === 'string' ? Date.parse(obj.timestamp) : Number.NaN
+  if (!obj.sessionId || !(at >= EVENT_TS_MIN && at <= EVENT_TS_MAX)) return []
+  const base = {
+    sessionId: obj.sessionId,
+    agentId: obj.isSidechain && obj.agentId ? obj.agentId : undefined,
+    ts: new Date(at).toISOString(),
   }
 
-  if (call && obj.type === "assistant" && Array.isArray(obj.message?.content)) {
-    const out: SessionEvent[] = [];
-    for (const block of obj.message.content as { type?: string; id?: string; name?: string; input?: { skill?: unknown } }[]) {
-      if (block?.type !== "tool_use" || block.name !== "Skill" || !block.id) continue;
-      const name = typeof block.input?.skill === "string" && block.input.skill ? block.input.skill : undefined;
-      out.push({ ...base, eventId: block.id, kind: "skill", name });
+  if (compaction && obj.type === 'system' && obj.subtype === 'compact_boundary') {
+    if (!obj.uuid) return []
+    const m = obj.compactMetadata
+    const detail: Record<string, unknown> = {}
+    if (m?.trigger !== undefined) detail.trigger = m.trigger
+    if (m?.preTokens !== undefined) detail.preTokens = m.preTokens
+    if (m?.postTokens !== undefined) detail.postTokens = m.postTokens
+    if (m?.durationMs !== undefined) detail.durationMs = m.durationMs
+    return [{ ...base, eventId: obj.uuid, kind: 'compaction', detail }]
+  }
+
+  if (call && obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+    const out: SessionEvent[] = []
+    for (const block of obj.message.content as {
+      type?: string
+      id?: string
+      name?: string
+      input?: { skill?: unknown }
+    }[]) {
+      if (block?.type !== 'tool_use' || block.name !== 'Skill' || !block.id) continue
+      const name =
+        typeof block.input?.skill === 'string' && block.input.skill ? block.input.skill : undefined
+      out.push({ ...base, eventId: block.id, kind: 'skill', name })
     }
-    return out;
+    return out
   }
 
-  if (text && obj.type === "user" && obj.isMeta && obj.sourceToolUseID) {
+  if (text && obj.type === 'user' && obj.isMeta && obj.sourceToolUseID) {
     // The marker must open the message's own text: it can sit in any other field of an unrelated meta line.
-    const body = messageText(obj.message?.content);
-    if (!body.startsWith(SKILL_TEXT_MARK)) return [];
-    return [{ ...base, eventId: obj.sourceToolUseID, kind: "skill", sizeChars: body.length }];
+    const body = messageText(obj.message?.content)
+    if (!body.startsWith(SKILL_TEXT_MARK)) return []
+    return [{ ...base, eventId: obj.sourceToolUseID, kind: 'skill', sizeChars: body.length }]
   }
-  return [];
+  return []
 }
 
 function parseOffsets(cursor: string | null): Offsets {
-  if (!cursor) return {};
+  if (!cursor) return {}
   try {
-    return JSON.parse(cursor) as Offsets;
+    return JSON.parse(cursor) as Offsets
   } catch {
-    return {};
+    return {}
   }
 }

@@ -1,9 +1,9 @@
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { iumacMachineLabel, iumacUsageJsonlDir, syncIumac } from "../remote.ts";
-import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from "../types.ts";
-import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
+import { existsSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
+import { iumacMachineLabel, iumacUsageJsonlDir, syncIumac } from '../remote.ts'
+import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from '../types.ts'
+import { readNewLines, walkJsonlFiles } from './fs-incremental.ts'
 
 // `astra` (dotfiles' `astra.sh`) is a one-shot OpenAI Responses call —
 // gpt-6-astra, reasoning.mode=pro, effort xhigh — the highest per-call cost in
@@ -38,78 +38,78 @@ import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 // dir also holds other one-shot jsonl logs this
 // collector must not swallow.
 
-const FILENAME = "astra.jsonl";
+const FILENAME = 'astra.jsonl'
 
-const DEFAULT_LOCAL_DIR = join(homedir(), ".local", "share", "usage-tracker");
+const DEFAULT_LOCAL_DIR = join(homedir(), '.local', 'share', 'usage-tracker')
 
 function localDir(): string {
-  return process.env.USAGE_ASTRA_DIR?.trim() || DEFAULT_LOCAL_DIR;
+  return process.env.USAGE_ASTRA_DIR?.trim() || DEFAULT_LOCAL_DIR
 }
 
 interface AstraLine {
-  ts?: string;
-  request_id?: string;
-  model?: string | null;
-  input_tokens?: number;
-  output_tokens?: number;
-  reasoning_tokens?: number;
-  cached_tokens?: number;
-  effort?: string | null;
-  mode?: string | null;
-  outcome?: string | null;
-  duration_ms?: number | null;
+  ts?: string
+  request_id?: string
+  model?: string | null
+  input_tokens?: number
+  output_tokens?: number
+  reasoning_tokens?: number
+  cached_tokens?: number
+  effort?: string | null
+  mode?: string | null
+  outcome?: string | null
+  duration_ms?: number | null
 }
 
 interface FileState {
-  offset: number;
+  offset: number
 }
 
-type Cursor = Record<string, FileState>;
+type Cursor = Record<string, FileState>
 
 export const astraCollector: Collector = {
-  source: "astra",
+  source: 'astra',
   staleAfterHours: null,
-  workspace: "private",
+  workspace: 'private',
 
   available() {
     // Local-root semantics only, deliberately unchanged (same reasoning as
     // claude-code.ts / codex.ts's available()): stay available even when the
     // MacBook is asleep or unreachable — the mirror degrades on its own
     // inside collect(), never here.
-    return existsSync(join(localDir(), FILENAME));
+    return existsSync(join(localDir(), FILENAME))
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor);
-    const records: UsageRecord[] = [];
+    const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor)
+    const records: UsageRecord[] = []
 
     // Refresh the mirror before reading it. Shared with the other collectors
     // in this ingest pass via ctx.syncIumac, so the mirror is swept once per
     // run; `ingest --source astra` alone still syncs, since runIngest always
     // supplies it.
-    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
-    if (!sync.usageJsonlOk) ctx.log.warn("astra: iumac usage-jsonl mirror sync failed");
+    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))()
+    if (!sync.usageJsonlOk) ctx.log.warn('astra: iumac usage-jsonl mirror sync failed')
 
-    const mirrorDir = iumacUsageJsonlDir();
+    const mirrorDir = iumacUsageJsonlDir()
     // Guard against DEFAULT_LOCAL_DIR being an *ancestor* of the mirror root
     // (both default to living under ~/.local/share/usage-tracker) — without
     // this, walking the local root would also recurse into the mirrored
     // astra.jsonl under mirrorDir, race the dedicated mirror walk below for
     // its cursor entry, and stamp that row as local instead of the
     // MacBook's. A USAGE_REMOTE_DIR pointed elsewhere never hits this.
-    await collectRoot(localDir(), cursor, records, null, ctx.log, mirrorDir);
+    await collectRoot(localDir(), cursor, records, null, ctx.log, mirrorDir)
 
     // If the mirror doesn't exist at all (first run, or sync never succeeded
     // once), there's nothing to walk — skip it rather than treat a missing
     // root as an error.
     if (existsSync(mirrorDir)) {
-      const machine = await iumacMachineLabel();
-      await collectRoot(mirrorDir, cursor, records, machine, ctx.log);
+      const machine = await iumacMachineLabel()
+      await collectRoot(mirrorDir, cursor, records, machine, ctx.log)
     }
 
-    return { records, cursor: JSON.stringify(cursor) };
+    return { records, cursor: JSON.stringify(cursor) }
   },
-};
+}
 
 /** Walk every astra.jsonl under `root`, advancing the shared cursor in place. */
 async function collectRoot(
@@ -121,89 +121,89 @@ async function collectRoot(
   skipPrefix?: string,
 ): Promise<void> {
   for (const file of await walkJsonlFiles(root)) {
-    if (basename(file) !== FILENAME) continue;
-    if (skipPrefix && file.startsWith(skipPrefix)) continue;
+    if (basename(file) !== FILENAME) continue
+    if (skipPrefix && file.startsWith(skipPrefix)) continue
 
-    const state = cursor[file] ?? { offset: 0 };
-    const size = statSync(file).size;
-    const chunk = await readNewLines(file, state.offset, size);
-    if (!chunk) continue;
+    const state = cursor[file] ?? { offset: 0 }
+    const size = statSync(file).size
+    const chunk = await readNewLines(file, state.offset, size)
+    if (!chunk) continue
 
     for (const line of chunk.lines) {
-      const rec = parseLine(line, machine, log);
-      if (rec) records.push(rec);
+      const rec = parseLine(line, machine, log)
+      if (rec) records.push(rec)
     }
-    cursor[file] = { offset: chunk.offset };
+    cursor[file] = { offset: chunk.offset }
   }
 }
 
 function parseLine(line: string, machine: string | null, log: Logger): UsageRecord | null {
-  if (!line) return null;
-  let obj: AstraLine;
+  if (!line) return null
+  let obj: AstraLine
   try {
-    obj = JSON.parse(line) as AstraLine;
+    obj = JSON.parse(line) as AstraLine
   } catch {
-    return null;
+    return null
   }
   if (!obj.request_id) {
-    log.warn(`astra: dropping row with no request_id: ${line.slice(0, 120)}`);
-    return null;
+    log.warn(`astra: dropping row with no request_id: ${line.slice(0, 120)}`)
+    return null
   }
 
-  const cacheRead = num(obj.cached_tokens);
-  const rawInput = num(obj.input_tokens);
-  const input = Math.max(0, rawInput - cacheRead);
+  const cacheRead = num(obj.cached_tokens)
+  const rawInput = num(obj.input_tokens)
+  const input = Math.max(0, rawInput - cacheRead)
   if (rawInput - cacheRead < 0) {
-    log.warn(`astra: ${obj.request_id} cached_tokens exceeds input_tokens — clamped`);
+    log.warn(`astra: ${obj.request_id} cached_tokens exceeds input_tokens — clamped`)
   }
 
   return {
     sourceId: obj.request_id,
-    grain: "message",
+    grain: 'message',
     ts: obj.ts ?? new Date().toISOString(),
     model: obj.model ?? null,
-    project: "astra",
+    project: 'astra',
     subTool: obj.mode ?? null,
     inputTokens: input,
     outputTokens: num(obj.output_tokens),
     cacheReadTokens: cacheRead,
     cacheWriteTokens: 0,
     reasoningTokens: num(obj.reasoning_tokens),
-    durationMs: typeof obj.duration_ms === "number" ? obj.duration_ms : null,
-    outcome: obj.outcome === "error" ? "error" : "ok",
+    durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : null,
+    outcome: obj.outcome === 'error' ? 'error' : 'ok',
     machine,
     raw: {
       effort: obj.effort ?? null,
       outcome: obj.outcome ?? null,
     },
-  };
+  }
 }
 
 /** Token counts feed arithmetic and pricing — coerce anything non-numeric to 0
  * rather than letting a corrupt row write NaN into the ledger. */
 function num(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
 }
 
 function parseCursor(cursor: string | null): Cursor {
-  if (!cursor) return {};
-  let parsed: unknown;
+  if (!cursor) return {}
+  let parsed: unknown
   try {
-    parsed = JSON.parse(cursor);
+    parsed = JSON.parse(cursor)
   } catch {
-    return {};
+    return {}
   }
-  if (!parsed || typeof parsed !== "object") return {};
+  if (!parsed || typeof parsed !== 'object') return {}
 
   // Migrate the pre-two-root cursor shape ({"offset": N}), from when this
   // collector was a single-file offset walker.
   // Treat that N as the local astra.jsonl file's starting offset so the
   // upgrade doesn't re-read its whole history — rows dedup on request_id
   // either way, but that's a pointless full re-read to avoid in three lines.
-  const legacyOffset = (parsed as { offset?: unknown }).offset;
-  if (typeof legacyOffset === "number") {
-    return { [join(localDir(), FILENAME)]: { offset: legacyOffset } };
+  const legacyOffset = (parsed as { offset?: unknown }).offset
+  if (typeof legacyOffset === 'number') {
+    return { [join(localDir(), FILENAME)]: { offset: legacyOffset } }
   }
 
-  return parsed as Cursor;
+  return parsed as Cursor
 }

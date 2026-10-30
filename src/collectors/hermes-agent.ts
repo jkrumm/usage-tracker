@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync } from 'node:fs'
 import type {
   Collector,
   CollectContext,
@@ -6,7 +6,7 @@ import type {
   Logger,
   UsageRecord,
   Workspace,
-} from "../types.ts";
+} from '../types.ts'
 
 // Hermes and Feuer both run the NousResearch hermes-agent runtime, so they share
 // the same schema. We used to read the `sessions` table, which holds only the
@@ -24,44 +24,44 @@ import type {
 // (session start/end time, the invocation channel, the end reason).
 
 interface SessionModelUsageRow {
-  session_id: string;
-  model: string;
-  task: string; // '' means the main agent loop
-  smu_billing_provider: string | null;
-  smu_billing_base_url: string | null;
-  smu_billing_mode: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  cache_read_tokens: number | null;
-  cache_write_tokens: number | null;
-  reasoning_tokens: number | null;
-  smu_estimated_cost_usd: number | null;
-  smu_actual_cost_usd: number | null;
-  smu_cost_status: string | null;
+  session_id: string
+  model: string
+  task: string // '' means the main agent loop
+  smu_billing_provider: string | null
+  smu_billing_base_url: string | null
+  smu_billing_mode: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  cache_write_tokens: number | null
+  reasoning_tokens: number | null
+  smu_estimated_cost_usd: number | null
+  smu_actual_cost_usd: number | null
+  smu_cost_status: string | null
   // joined from sessions
-  session_source: string | null;
-  started_at: number; // unix seconds (REAL)
-  ended_at: number | null;
-  end_reason: string | null;
-  message_count: number | null;
-  tool_call_count: number | null;
+  session_source: string | null
+  started_at: number // unix seconds (REAL)
+  ended_at: number | null
+  end_reason: string | null
+  message_count: number | null
+  tool_call_count: number | null
 }
 
 export function hermesAgentCollector(opts: {
-  source: string;
-  dbPath: string;
-  container?: string;
+  source: string
+  dbPath: string
+  container?: string
   /** Workspace this collector emits — the daemon is pinned, not the records. */
-  workspace: Workspace;
+  workspace: Workspace
   /** Hours of silence before the source counts as stale; null = dormant. */
-  staleAfterHours: number | null;
+  staleAfterHours: number | null
   /**
    * Repo this daemon lives in. The Hermes `session.source` column is an
    * invocation channel (`cron`/`cli`/…); we route that to `subTool` and pin
    * `project` to the repo so the dashboard's project breakdown shows
    * `hermes-agent` / `prometheus-feuer-agent` instead of `cron`.
    */
-  project: string;
+  project: string
 }): Collector {
   return {
     source: opts.source,
@@ -69,17 +69,17 @@ export function hermesAgentCollector(opts: {
     workspace: opts.workspace,
 
     available() {
-      if (opts.container) return true;
-      return existsSync(opts.dbPath);
+      if (opts.container) return true
+      return existsSync(opts.dbPath)
     },
 
     async collect(_ctx: CollectContext): Promise<CollectResult> {
       if (opts.container) {
-        return collectFromContainer(opts.container, _ctx, opts.project);
+        return collectFromContainer(opts.container, _ctx, opts.project)
       }
-      return collectFromHostFile(opts.dbPath, _ctx, opts.project);
+      return collectFromHostFile(opts.dbPath, _ctx, opts.project)
     },
-  };
+  }
 }
 
 // Both daemons store the same schema, but bun:sqlite can't open the DB: it
@@ -89,16 +89,16 @@ export function hermesAgentCollector(opts: {
 // bind-mount, or `python3` inside the container when FEUER_CONTAINER pins one.
 // Both emit a JSON array of joined rows that we map identically.
 const SESSION_MODEL_USAGE_QUERY =
-  "SELECT smu.session_id AS session_id, smu.model AS model, smu.task AS task, " +
-  "smu.billing_provider AS smu_billing_provider, smu.billing_base_url AS smu_billing_base_url, " +
-  "smu.billing_mode AS smu_billing_mode, smu.input_tokens AS input_tokens, " +
-  "smu.output_tokens AS output_tokens, smu.cache_read_tokens AS cache_read_tokens, " +
-  "smu.cache_write_tokens AS cache_write_tokens, smu.reasoning_tokens AS reasoning_tokens, " +
-  "smu.estimated_cost_usd AS smu_estimated_cost_usd, smu.actual_cost_usd AS smu_actual_cost_usd, " +
-  "smu.cost_status AS smu_cost_status, s.source AS session_source, s.started_at AS started_at, " +
-  "s.ended_at AS ended_at, s.end_reason AS end_reason, s.message_count AS message_count, " +
-  "s.tool_call_count AS tool_call_count " +
-  "FROM session_model_usage smu JOIN sessions s ON s.id = smu.session_id";
+  'SELECT smu.session_id AS session_id, smu.model AS model, smu.task AS task, ' +
+  'smu.billing_provider AS smu_billing_provider, smu.billing_base_url AS smu_billing_base_url, ' +
+  'smu.billing_mode AS smu_billing_mode, smu.input_tokens AS input_tokens, ' +
+  'smu.output_tokens AS output_tokens, smu.cache_read_tokens AS cache_read_tokens, ' +
+  'smu.cache_write_tokens AS cache_write_tokens, smu.reasoning_tokens AS reasoning_tokens, ' +
+  'smu.estimated_cost_usd AS smu_estimated_cost_usd, smu.actual_cost_usd AS smu_actual_cost_usd, ' +
+  'smu.cost_status AS smu_cost_status, s.source AS session_source, s.started_at AS started_at, ' +
+  's.ended_at AS ended_at, s.end_reason AS end_reason, s.message_count AS message_count, ' +
+  's.tool_call_count AS tool_call_count ' +
+  'FROM session_model_usage smu JOIN sessions s ON s.id = smu.session_id'
 
 // Feuer runs an OLDER build of the same runtime whose schema predates
 // `session_model_usage` — verified 2026-09-10: its state.db has `sessions`
@@ -110,15 +110,15 @@ const SESSION_MODEL_USAGE_QUERY =
 // still comes out unique (a legacy session contributes exactly one row).
 const LEGACY_SESSIONS_QUERY =
   "SELECT s.id AS session_id, s.model AS model, '' AS task, " +
-  "s.billing_provider AS smu_billing_provider, s.billing_base_url AS smu_billing_base_url, " +
-  "s.billing_mode AS smu_billing_mode, s.input_tokens AS input_tokens, " +
-  "s.output_tokens AS output_tokens, s.cache_read_tokens AS cache_read_tokens, " +
-  "s.cache_write_tokens AS cache_write_tokens, s.reasoning_tokens AS reasoning_tokens, " +
-  "s.estimated_cost_usd AS smu_estimated_cost_usd, s.actual_cost_usd AS smu_actual_cost_usd, " +
-  "s.cost_status AS smu_cost_status, s.source AS session_source, s.started_at AS started_at, " +
-  "s.ended_at AS ended_at, s.end_reason AS end_reason, s.message_count AS message_count, " +
-  "s.tool_call_count AS tool_call_count " +
-  "FROM sessions s";
+  's.billing_provider AS smu_billing_provider, s.billing_base_url AS smu_billing_base_url, ' +
+  's.billing_mode AS smu_billing_mode, s.input_tokens AS input_tokens, ' +
+  's.output_tokens AS output_tokens, s.cache_read_tokens AS cache_read_tokens, ' +
+  's.cache_write_tokens AS cache_write_tokens, s.reasoning_tokens AS reasoning_tokens, ' +
+  's.estimated_cost_usd AS smu_estimated_cost_usd, s.actual_cost_usd AS smu_actual_cost_usd, ' +
+  's.cost_status AS smu_cost_status, s.source AS session_source, s.started_at AS started_at, ' +
+  's.ended_at AS ended_at, s.end_reason AS end_reason, s.message_count AS message_count, ' +
+  's.tool_call_count AS tool_call_count ' +
+  'FROM sessions s'
 
 /**
  * Run the per-model query, falling back to the legacy per-session shape when
@@ -132,9 +132,9 @@ async function runWithLegacyFallback(
   ctx: CollectContext,
   project: string,
 ): Promise<CollectResult> {
-  const primary = await runSessionQuery(argvFor(SESSION_MODEL_USAGE_QUERY), ctx, project, false);
-  if (!primary.note?.includes("session_model_usage")) return primary;
-  return runSessionQuery(argvFor(LEGACY_SESSIONS_QUERY), ctx, project, true);
+  const primary = await runSessionQuery(argvFor(SESSION_MODEL_USAGE_QUERY), ctx, project, false)
+  if (!primary.note?.includes('session_model_usage')) return primary
+  return runSessionQuery(argvFor(LEGACY_SESSIONS_QUERY), ctx, project, true)
 }
 
 function collectFromContainer(
@@ -144,18 +144,18 @@ function collectFromContainer(
 ): Promise<CollectResult> {
   return runWithLegacyFallback(
     (sql) => [
-      "docker",
-      "exec",
+      'docker',
+      'exec',
       container,
-      "python3",
-      "-c",
+      'python3',
+      '-c',
       `import sqlite3, json; db = sqlite3.connect("file:/opt/data/state.db?mode=ro", uri=True); ` +
         `db.row_factory = sqlite3.Row; rows = [dict(r) for r in db.execute(${JSON.stringify(sql)})]; ` +
         `print(json.dumps(rows))`,
     ],
     ctx,
     project,
-  );
+  )
 }
 
 function collectFromHostFile(
@@ -164,10 +164,10 @@ function collectFromHostFile(
   project: string,
 ): Promise<CollectResult> {
   return runWithLegacyFallback(
-    (sql) => ["sqlite3", "-json", `file:${dbPath}?mode=ro`, sql],
+    (sql) => ['sqlite3', '-json', `file:${dbPath}?mode=ro`, sql],
     ctx,
     project,
-  );
+  )
 }
 
 /**
@@ -186,40 +186,52 @@ async function runSessionQuery(
 ): Promise<CollectResult> {
   try {
     const proc = Bun.spawn(argv, {
-      stdout: "pipe",
-      stderr: "pipe",
+      stdout: 'pipe',
+      stderr: 'pipe',
       // LaunchAgents inherit a minimal PATH; ensure both sqlite3 (/usr/bin) and
       // docker (OrbStack/Docker Desktop → /usr/local/bin, Homebrew →
       // /opt/homebrew/bin) resolve regardless of the launch environment.
-      env: { ...process.env, PATH: `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ""}` },
-    });
-    const exitCode = await proc.exited;
-    const stdout = (await new Response(proc.stdout).text()).trim();
+      env: {
+        ...process.env,
+        PATH: `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ''}`,
+      },
+    })
+    const exitCode = await proc.exited
+    const stdout = (await new Response(proc.stdout).text()).trim()
 
     if (exitCode !== 0) {
-      const stderr = (await new Response(proc.stderr).text()).trim();
-      return { records: [], cursor: ctx.cursor, note: `unreadable: exit ${exitCode}${stderr ? ` — ${stderr}` : ""}` };
+      const stderr = (await new Response(proc.stderr).text()).trim()
+      return {
+        records: [],
+        cursor: ctx.cursor,
+        note: `unreadable: exit ${exitCode}${stderr ? ` — ${stderr}` : ''}`,
+      }
     }
 
-    const rows = (stdout ? JSON.parse(stdout) : []) as SessionModelUsageRow[];
+    const rows = (stdout ? JSON.parse(stdout) : []) as SessionModelUsageRow[]
     if (!Array.isArray(rows)) {
-      return { records: [], cursor: ctx.cursor, note: "unreadable: expected JSON array" };
+      return { records: [], cursor: ctx.cursor, note: 'unreadable: expected JSON array' }
     }
 
-    const records = rows.map((r) => toRecord(r, project, legacy, ctx.log));
-    const cursor = rows.length ? String(Math.max(0, ...rows.map((r) => r.started_at))) : ctx.cursor;
-    return { records, cursor };
+    const records = rows.map((r) => toRecord(r, project, legacy, ctx.log))
+    const cursor = rows.length ? String(Math.max(0, ...rows.map((r) => r.started_at))) : ctx.cursor
+    return { records, cursor }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` };
+    const msg = err instanceof Error ? err.message : String(err)
+    return { records: [], cursor: ctx.cursor, note: `unreadable: ${msg}` }
   }
 }
 
-function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log: Logger): UsageRecord {
+function toRecord(
+  r: SessionModelUsageRow,
+  project: string,
+  legacy: boolean,
+  log: Logger,
+): UsageRecord {
   const durationMs =
     r.ended_at != null && r.started_at != null
       ? Math.max(0, Math.round((r.ended_at - r.started_at) * 1000))
-      : null;
+      : null
   // Deliberate re-key: the old collector emitted one row per session, keyed on
   // the bare session id. A session can now fan out into several rows (one per
   // model/task it touched), so the id has to carry all three — a bare session
@@ -233,7 +245,7 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
   // now holds 52 sessions but 4,621 of its rows were ingested from a larger
   // earlier DB, so re-keying it would strand 4,569 unregenerable rows next to
   // 52 new ones. Only the per-model shape gets the composite key.
-  const sourceId = legacy ? r.session_id : `${r.session_id}:${r.task || "main"}:${r.model}`;
+  const sourceId = legacy ? r.session_id : `${r.session_id}:${r.task || 'main'}:${r.model}`
   // subTool already carried the invocation channel (cron/cli/slack, from
   // sessions.source) before this change — the dashboard's only per-record
   // breakdown dimension besides project/model. `task` is a second, orthogonal
@@ -243,7 +255,7 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
   // phases (`review:angle`, `review:synthesis`, …): channel alone for the main
   // loop (unchanged filtering for the common case), `channel:task` once a row
   // is a side task. This keeps cron/slack/cli distinguishable in every row.
-  const subTool = r.task ? `${r.session_source ?? "session"}:${r.task}` : r.session_source;
+  const subTool = r.task ? `${r.session_source ?? 'session'}:${r.task}` : r.session_source
 
   // Hermes reports reasoning_tokens as a detail NESTED inside output_tokens
   // (same convention as OpenAI/codex — see codex.ts's toRecord), not additive
@@ -252,19 +264,19 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
   // out here or reasoning bills twice — this visibly inflated Luna rows before
   // the fix. A negative split means the nesting assumption broke; clamp and
   // warn rather than let tokens go negative or silently double-bill.
-  const rawOutput = r.output_tokens ?? 0;
-  const reasoning = r.reasoning_tokens ?? 0;
-  const output = rawOutput - reasoning;
+  const rawOutput = r.output_tokens ?? 0
+  const reasoning = r.reasoning_tokens ?? 0
+  const output = rawOutput - reasoning
   if (output < 0) {
     log.warn(
       `hermes-agent: ${sourceId} reasoning_tokens (${reasoning}) exceeds output_tokens ` +
         `(${rawOutput}) — clamped, this row under-reports`,
-    );
+    )
   }
 
   return {
     sourceId,
-    grain: "session",
+    grain: 'session',
     ts: new Date(r.started_at * 1000).toISOString(),
     model: r.model,
     project,
@@ -287,5 +299,5 @@ function toRecord(r: SessionModelUsageRow, project: string, legacy: boolean, log
       reportedEstimatedCostUsd: r.smu_estimated_cost_usd,
       reportedActualCostUsd: r.smu_actual_cost_usd,
     },
-  };
+  }
 }

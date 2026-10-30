@@ -14,5 +14,11 @@
     "noUnusedParameters": true,
     "types": ["bun-types"]
   },
-  "include": ["src", "scripts", "tools/iu-portal/parse.ts", "tools/iu-portal/latest.ts", "tools/iu-portal/*.test.ts"]
+  "include": [
+    "src",
+    "scripts",
+    "tools/iu-portal/parse.ts",
+    "tools/iu-portal/latest.ts",
+    "tools/iu-portal/*.test.ts"
+  ]
 }

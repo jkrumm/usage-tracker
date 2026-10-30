@@ -1,7 +1,7 @@
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import { existsSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import type { Collector, CollectContext, CollectResult, UsageRecord } from '../types.ts'
 
 // Reads offset-incrementally from a newline-delimited JSON file produced by the
 // LiteLLM bridge. Each line is one request: { ts, ts_start, ts_end, duration_ms,
@@ -21,87 +21,87 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from "../t
 // time-window based; concurrent sessions are disambiguated by picking the
 // narrowest window that contains the row.
 
-const DEFAULT_PATH = join(homedir(), ".local", "share", "usage-tracker", "litellm.jsonl");
+const DEFAULT_PATH = join(homedir(), '.local', 'share', 'usage-tracker', 'litellm.jsonl')
 const AGENT_GATEWAY_SESSIONS_PATH = join(
   homedir(),
-  ".local",
-  "share",
-  "usage-tracker",
-  "agent-gateway-sessions.jsonl",
-);
+  '.local',
+  'share',
+  'usage-tracker',
+  'agent-gateway-sessions.jsonl',
+)
 
 interface LitellmLine {
-  ts?: string;
-  ts_start?: string | null;
-  ts_end?: string | null;
-  duration_ms?: number | null;
-  request_id?: string;
-  model?: string | null;
-  event?: string;
-  error_type?: string | null;
-  error_code?: string | number | null;
-  status_code?: number | null;
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_tokens?: number;
-  cache_write_tokens?: number;
-  reasoning_tokens?: number;
+  ts?: string
+  ts_start?: string | null
+  ts_end?: string | null
+  duration_ms?: number | null
+  request_id?: string
+  model?: string | null
+  event?: string
+  error_type?: string | null
+  error_code?: string | number | null
+  status_code?: number | null
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+  reasoning_tokens?: number
 }
 
 interface AgentGatewaySession {
-  tool: string;
-  project: string | null;
-  tsStartMs: number;
-  tsEndMs: number;
+  tool: string
+  project: string | null
+  tsStartMs: number
+  tsEndMs: number
   /** End - start in ms; used to pick the narrowest match when windows overlap. */
-  spanMs: number;
+  spanMs: number
 }
 
 interface Cursor {
-  offset: number;
+  offset: number
 }
 
 export const litellmCollector: Collector = {
-  source: "litellm",
+  source: 'litellm',
   staleAfterHours: null,
 
   available() {
-    const path = process.env.LITELLM_USAGE_LOG ?? DEFAULT_PATH;
-    return existsSync(path);
+    const path = process.env.LITELLM_USAGE_LOG ?? DEFAULT_PATH
+    return existsSync(path)
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const path = process.env.LITELLM_USAGE_LOG ?? DEFAULT_PATH;
+    const path = process.env.LITELLM_USAGE_LOG ?? DEFAULT_PATH
     if (!existsSync(path)) {
-      return { records: [], cursor: ctx.cursor };
+      return { records: [], cursor: ctx.cursor }
     }
 
-    const { offset } = parseCursor(ctx);
-    const size = statSync(path).size;
+    const { offset } = parseCursor(ctx)
+    const size = statSync(path).size
     if (size <= offset) {
-      return { records: [], cursor: JSON.stringify({ offset }) };
+      return { records: [], cursor: JSON.stringify({ offset }) }
     }
 
-    const chunk = await Bun.file(path).slice(offset, size).text();
-    const lastNl = chunk.lastIndexOf("\n");
+    const chunk = await Bun.file(path).slice(offset, size).text()
+    const lastNl = chunk.lastIndexOf('\n')
     if (lastNl === -1) {
-      return { records: [], cursor: JSON.stringify({ offset }) };
+      return { records: [], cursor: JSON.stringify({ offset }) }
     }
 
-    const sessions = await loadAgentGatewaySessions();
+    const sessions = await loadAgentGatewaySessions()
 
-    const complete = chunk.slice(0, lastNl);
-    const records: UsageRecord[] = [];
+    const complete = chunk.slice(0, lastNl)
+    const records: UsageRecord[] = []
 
-    for (const line of complete.split("\n")) {
-      const rec = parseLine(line, sessions);
-      if (rec) records.push(rec);
+    for (const line of complete.split('\n')) {
+      const rec = parseLine(line, sessions)
+      if (rec) records.push(rec)
     }
 
-    const newOffset = offset + lastNl + 1;
-    return { records, cursor: JSON.stringify({ offset: newOffset }) };
+    const newOffset = offset + lastNl + 1
+    return { records, cursor: JSON.stringify({ offset: newOffset }) }
   },
-};
+}
 
 /**
  * Load the agent-gateway session attribution log into memory. Sessions are short
@@ -110,61 +110,64 @@ export const litellmCollector: Collector = {
  * have no attribution this run; not an error.
  */
 async function loadAgentGatewaySessions(): Promise<AgentGatewaySession[]> {
-  const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? AGENT_GATEWAY_SESSIONS_PATH;
-  if (!existsSync(path)) return [];
-  const text = await Bun.file(path).text();
-  const sessions: AgentGatewaySession[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    let obj: Record<string, unknown>;
+  const path = process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG ?? AGENT_GATEWAY_SESSIONS_PATH
+  if (!existsSync(path)) return []
+  const text = await Bun.file(path).text()
+  const sessions: AgentGatewaySession[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let obj: Record<string, unknown>
     try {
-      obj = JSON.parse(line) as Record<string, unknown>;
+      obj = JSON.parse(line) as Record<string, unknown>
     } catch {
-      continue;
+      continue
     }
-    const tsStart = typeof obj.tsStart === "string" ? Date.parse(obj.tsStart) : NaN;
-    const tsEnd = typeof obj.tsEnd === "string" ? Date.parse(obj.tsEnd) : NaN;
-    if (!Number.isFinite(tsStart) || !Number.isFinite(tsEnd)) continue;
+    const tsStart = typeof obj.tsStart === 'string' ? Date.parse(obj.tsStart) : NaN
+    const tsEnd = typeof obj.tsEnd === 'string' ? Date.parse(obj.tsEnd) : NaN
+    if (!Number.isFinite(tsStart) || !Number.isFinite(tsEnd)) continue
     sessions.push({
-      tool: typeof obj.tool === "string" ? obj.tool : "unknown",
-      project: typeof obj.project === "string" ? obj.project : null,
+      tool: typeof obj.tool === 'string' ? obj.tool : 'unknown',
+      project: typeof obj.project === 'string' ? obj.project : null,
       tsStartMs: tsStart,
       tsEndMs: tsEnd,
       spanMs: Math.max(0, tsEnd - tsStart),
-    });
+    })
   }
-  return sessions;
+  return sessions
 }
 
-function matchSession(rowTs: string, sessions: AgentGatewaySession[]): AgentGatewaySession | undefined {
-  const rowMs = Date.parse(rowTs);
-  if (!Number.isFinite(rowMs)) return undefined;
-  let best: AgentGatewaySession | undefined;
+function matchSession(
+  rowTs: string,
+  sessions: AgentGatewaySession[],
+): AgentGatewaySession | undefined {
+  const rowMs = Date.parse(rowTs)
+  if (!Number.isFinite(rowMs)) return undefined
+  let best: AgentGatewaySession | undefined
   for (const s of sessions) {
-    if (rowMs < s.tsStartMs || rowMs > s.tsEndMs) continue;
-    if (!best || s.spanMs < best.spanMs) best = s;
+    if (rowMs < s.tsStartMs || rowMs > s.tsEndMs) continue
+    if (!best || s.spanMs < best.spanMs) best = s
   }
-  return best;
+  return best
 }
 
 function parseLine(line: string, sessions: AgentGatewaySession[]): UsageRecord | null {
-  if (!line) return null;
-  let obj: LitellmLine;
+  if (!line) return null
+  let obj: LitellmLine
   try {
-    obj = JSON.parse(line) as LitellmLine;
+    obj = JSON.parse(line) as LitellmLine
   } catch {
-    return null;
+    return null
   }
 
-  const sourceId = obj.request_id ?? String(Bun.hash(line));
-  const ts = obj.ts ?? new Date().toISOString();
-  const match = matchSession(ts, sessions);
-  const durationMs = obj.duration_ms ?? null;
+  const sourceId = obj.request_id ?? String(Bun.hash(line))
+  const ts = obj.ts ?? new Date().toISOString()
+  const match = matchSession(ts, sessions)
+  const durationMs = obj.duration_ms ?? null
 
-  if (obj.event === "error") {
+  if (obj.event === 'error') {
     return {
       sourceId,
-      grain: "message",
+      grain: 'message',
       ts,
       model: obj.model ?? null,
       project: match?.project ?? null,
@@ -175,7 +178,7 @@ function parseLine(line: string, sessions: AgentGatewaySession[]): UsageRecord |
       cacheWriteTokens: 0,
       reasoningTokens: 0,
       durationMs,
-      outcome: "error",
+      outcome: 'error',
       raw: {
         errorType: obj.error_type ?? null,
         errorCode: obj.error_code ?? null,
@@ -183,17 +186,17 @@ function parseLine(line: string, sessions: AgentGatewaySession[]): UsageRecord |
         tsStart: obj.ts_start ?? null,
         tsEnd: obj.ts_end ?? null,
       },
-    };
+    }
   }
 
-  const raw: Record<string, unknown> = {};
-  if (obj.ts_start) raw.tsStart = obj.ts_start;
-  if (obj.ts_end) raw.tsEnd = obj.ts_end;
-  if (durationMs !== null) raw.durationMs = durationMs;
+  const raw: Record<string, unknown> = {}
+  if (obj.ts_start) raw.tsStart = obj.ts_start
+  if (obj.ts_end) raw.tsEnd = obj.ts_end
+  if (durationMs !== null) raw.durationMs = durationMs
 
   return {
     sourceId,
-    grain: "message",
+    grain: 'message',
     ts,
     model: obj.model ?? null,
     project: match?.project ?? null,
@@ -205,14 +208,14 @@ function parseLine(line: string, sessions: AgentGatewaySession[]): UsageRecord |
     reasoningTokens: obj.reasoning_tokens ?? 0,
     durationMs,
     raw: Object.keys(raw).length > 0 ? raw : undefined,
-  };
+  }
 }
 
 function parseCursor(ctx: CollectContext): Cursor {
-  if (!ctx.cursor) return { offset: 0 };
+  if (!ctx.cursor) return { offset: 0 }
   try {
-    return JSON.parse(ctx.cursor) as Cursor;
+    return JSON.parse(ctx.cursor) as Cursor
   } catch {
-    return { offset: 0 };
+    return { offset: 0 }
   }
 }

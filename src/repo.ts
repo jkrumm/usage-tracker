@@ -11,15 +11,15 @@
 // Nothing is renamed: only the directory name is used. Dot-directories (.hermes-wt, .wt) are scratch space,
 // IuRoot/worktrees/<name> names a branch worktree rather than a repo, and temp paths belong to no repo: all null.
 
-const ROOT = /^\/(?:Users|home)\/[^/]+\/(SourceRoot|IuRoot)(?:\/([^/]+))?/;
-const SIBLING_WORKTREE = /^(.+?)-(?:w\d+(?:-trial)?|wt)$/;
+const ROOT = /^\/(?:Users|home)\/[^/]+\/(SourceRoot|IuRoot)(?:\/([^/]+))?/
+const SIBLING_WORKTREE = /^(.+?)-(?:w\d+(?:-trial)?|wt)$/
 
 export function normalizeRepo(project: string | null | undefined): string | null {
-  if (!project) return null;
-  const m = ROOT.exec(project.trim());
-  if (!m) return null;
-  const dir = m[2];
-  if (!dir || dir.startsWith(".")) return null;
-  if (m[1] === "IuRoot") return dir === "worktrees" ? null : `iu/${dir}`;
-  return SIBLING_WORKTREE.exec(dir)?.[1] ?? dir;
+  if (!project) return null
+  const m = ROOT.exec(project.trim())
+  if (!m) return null
+  const dir = m[2]
+  if (!dir || dir.startsWith('.')) return null
+  if (m[1] === 'IuRoot') return dir === 'worktrees' ? null : `iu/${dir}`
+  return SIBLING_WORKTREE.exec(dir)?.[1] ?? dir
 }

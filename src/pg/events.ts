@@ -1,23 +1,23 @@
-import type { SQL } from "bun";
-import type { SessionEvent } from "../types.ts";
-import { eventSessionKey } from "./sessions.ts";
-import { payload } from "./writer.ts";
+import type { SQL } from 'bun'
+import type { SessionEvent } from '../types.ts'
+import { eventSessionKey } from './sessions.ts'
+import { payload } from './writer.ts'
 
 // The Postgres write path for usage.session_events (docs/usage-schema.md §Session events): compactions and skill loads.
 // One event can arrive in two halves (a skill's call, and the line that shows its loaded size, maybe polls apart); both
 // carry the same event id and the conflict clause merges them, in either order.
 
 /** Rows per round trip. */
-const CHUNK = 500;
+const CHUNK = 500
 
 interface Row {
-  event_id: string;
-  source_session_id: string;
-  kind: string;
-  ts: string;
-  name?: string;
-  size_chars?: number;
-  detail?: Record<string, unknown>;
+  event_id: string
+  source_session_id: string
+  kind: string
+  ts: string
+  name?: string
+  size_chars?: number
+  detail?: Record<string, unknown>
 }
 
 function toRow(e: SessionEvent): Row {
@@ -29,7 +29,7 @@ function toRow(e: SessionEvent): Row {
     name: e.name,
     size_chars: e.sizeChars,
     detail: e.detail,
-  };
+  }
 }
 
 /** The same merge the database does on conflict: a present value beats a missing one (the later half wins), the earlier ts wins. */
@@ -40,7 +40,7 @@ function merge(a: Row, b: Row): Row {
     name: b.name ?? a.name,
     size_chars: b.size_chars ?? a.size_chars,
     detail: b.detail ?? a.detail,
-  };
+  }
 }
 
 // Written on conflict only when a merged content column differs, so ingested_at moves on real change (a --full re-scan
@@ -62,21 +62,25 @@ WITH up AS (
         (least(EXCLUDED.ts, t.ts), coalesce(EXCLUDED.name, t.name), coalesce(EXCLUDED.size_chars, t.size_chars), coalesce(EXCLUDED.detail, t.detail))
   RETURNING 1
 )
-SELECT count(*)::int AS written FROM up`;
+SELECT count(*)::int AS written FROM up`
 
 /** Upsert the events of one collector run; returns the rows inserted or changed. Duplicate event ids in the batch are merged first. */
-export async function upsertSessionEvents(sql: SQL, source: string, events: SessionEvent[]): Promise<number> {
-  const byId = new Map<string, Row>();
+export async function upsertSessionEvents(
+  sql: SQL,
+  source: string,
+  events: SessionEvent[],
+): Promise<number> {
+  const byId = new Map<string, Row>()
   for (const e of events) {
-    const row = toRow(e);
-    const prev = byId.get(row.event_id);
-    byId.set(row.event_id, prev ? merge(prev, row) : row);
+    const row = toRow(e)
+    const prev = byId.get(row.event_id)
+    byId.set(row.event_id, prev ? merge(prev, row) : row)
   }
-  const rows = [...byId.values()];
-  let written = 0;
+  const rows = [...byId.values()]
+  let written = 0
   for (let i = 0; i < rows.length; i += CHUNK) {
-    const [counts] = await sql.unsafe(EVENTS_SQL, [payload(rows.slice(i, i + CHUNK)), source]);
-    written += Number(counts.written);
+    const [counts] = await sql.unsafe(EVENTS_SQL, [payload(rows.slice(i, i + CHUNK)), source])
+    written += Number(counts.written)
   }
-  return written;
+  return written
 }

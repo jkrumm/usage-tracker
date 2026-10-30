@@ -1,9 +1,9 @@
-import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { iumacCodexDir, iumacMachineLabel, syncIumac } from "../remote.ts";
-import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from "../types.ts";
-import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
+import { existsSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { iumacCodexDir, iumacMachineLabel, syncIumac } from '../remote.ts'
+import type { Collector, CollectContext, CollectResult, Logger, UsageRecord } from '../types.ts'
+import { readNewLines, walkJsonlFiles } from './fs-incremental.ts'
 
 // The OpenAI Codex CLI (`cx` / `cxa` in dotfiles), pointed at the IU unified
 // endpoint. Codex writes an append-only rollout JSONL per session under
@@ -34,41 +34,41 @@ import { readNewLines, walkJsonlFiles } from "./fs-incremental.ts";
 // from the mirror tagged with the MacBook's machine label, local rows left
 // unset so upsertRecords stamps the local host.
 
-const DEFAULT_DIR = join(homedir(), ".codex", "sessions");
+const DEFAULT_DIR = join(homedir(), '.codex', 'sessions')
 
 function sessionsDir(): string {
-  return process.env.USAGE_CODEX_SESSIONS_DIR?.trim() || DEFAULT_DIR;
+  return process.env.USAGE_CODEX_SESSIONS_DIR?.trim() || DEFAULT_DIR
 }
 
 interface CodexUsage {
-  input_tokens?: number;
-  cached_input_tokens?: number;
-  cache_write_input_tokens?: number;
-  output_tokens?: number;
-  reasoning_output_tokens?: number;
-  total_tokens?: number;
+  input_tokens?: number
+  cached_input_tokens?: number
+  cache_write_input_tokens?: number
+  output_tokens?: number
+  reasoning_output_tokens?: number
+  total_tokens?: number
 }
 
 interface RolloutLine {
-  timestamp?: string;
-  type?: string;
+  timestamp?: string
+  type?: string
   payload?: {
     // session_meta
-    session_id?: string;
-    cwd?: string;
-    cli_version?: string;
+    session_id?: string
+    cwd?: string
+    cli_version?: string
     // turn_context
-    model?: string;
+    model?: string
     // token_usage_record
-    response_id?: string;
-    turn_id?: string;
-    usage?: CodexUsage;
+    response_id?: string
+    turn_id?: string
+    usage?: CodexUsage
     // event_msg envelope — the sub-event kind lives on payload.type here,
     // distinct from the outer line's own `type`.
-    type?: string;
-    id?: string;
-    message?: string;
-  };
+    type?: string
+    id?: string
+    message?: string
+  }
 }
 
 /**
@@ -80,16 +80,16 @@ interface RolloutLine {
  * duration instead of silently reporting null forever.
  */
 interface FileState {
-  offset: number;
-  model?: string | null;
-  project?: string | null;
-  lastTs?: string | null;
+  offset: number
+  model?: string | null
+  project?: string | null
+  lastTs?: string | null
 }
 
-type Cursor = Record<string, FileState>;
+type Cursor = Record<string, FileState>
 
 export const codexCollector: Collector = {
-  source: "codex",
+  source: 'codex',
   staleAfterHours: null,
 
   available() {
@@ -97,12 +97,12 @@ export const codexCollector: Collector = {
     // claude-code.ts's available()): the collector must stay available even
     // when the MacBook is asleep or unreachable — the mirror degrades on its
     // own inside collect(), never here.
-    return existsSync(sessionsDir());
+    return existsSync(sessionsDir())
   },
 
   async collect(ctx: CollectContext): Promise<CollectResult> {
-    const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor);
-    const records: UsageRecord[] = [];
+    const cursor: Cursor = ctx.full ? {} : parseCursor(ctx.cursor)
+    const records: UsageRecord[] = []
 
     // Refresh the mirror before reading it. Shared with the other collectors
     // in this ingest pass via ctx.syncIumac, so the mirror is swept once per
@@ -110,22 +110,22 @@ export const codexCollector: Collector = {
     // supplies it. Never throws; a failed codex leg only logs a warning and
     // local ingest continues (see SyncResult.codexOk in remote.ts for why
     // this never touches `note`/`ok`).
-    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
-    if (!sync.codexOk) ctx.log.warn("codex: iumac codex-sessions mirror sync failed");
+    const sync = await (ctx.syncIumac ?? (() => syncIumac(ctx.log)))()
+    if (!sync.codexOk) ctx.log.warn('codex: iumac codex-sessions mirror sync failed')
 
-    await collectRoot(sessionsDir(), cursor, records, null, ctx.log);
+    await collectRoot(sessionsDir(), cursor, records, null, ctx.log)
 
     // If the mirror doesn't exist at all (first run, or sync never succeeded
     // once), there's nothing to walk — skip it rather than treat a missing
     // root as an error.
     if (existsSync(iumacCodexDir())) {
-      const machine = await iumacMachineLabel();
-      await collectRoot(iumacCodexDir(), cursor, records, machine, ctx.log);
+      const machine = await iumacMachineLabel()
+      await collectRoot(iumacCodexDir(), cursor, records, machine, ctx.log)
     }
 
-    return { records, cursor: JSON.stringify(cursor) };
+    return { records, cursor: JSON.stringify(cursor) }
   },
-};
+}
 
 /** Walk every rollout file under `root`, advancing the shared cursor in place. */
 async function collectRoot(
@@ -136,10 +136,10 @@ async function collectRoot(
   log: Logger,
 ): Promise<void> {
   for (const file of await walkJsonlFiles(root)) {
-    const state = cursor[file] ?? { offset: 0 };
-    const next = await collectFile(file, state, machine, log);
-    cursor[file] = next.state;
-    records.push(...next.records);
+    const state = cursor[file] ?? { offset: 0 }
+    const next = await collectFile(file, state, machine, log)
+    cursor[file] = next.state
+    records.push(...next.records)
   }
 }
 
@@ -150,17 +150,17 @@ async function collectFile(
   machine: string | null,
   log: Logger,
 ): Promise<{ records: UsageRecord[]; state: FileState }> {
-  const chunk = await readNewLines(file, state.offset, statSync(file).size);
-  if (!chunk) return { records: [], state };
+  const chunk = await readNewLines(file, state.offset, statSync(file).size)
+  if (!chunk) return { records: [], state }
 
-  const records: UsageRecord[] = [];
-  let model = state.model ?? null;
-  let project = state.project ?? null;
-  let lastTs = state.lastTs ?? null;
+  const records: UsageRecord[] = []
+  let model = state.model ?? null
+  let project = state.project ?? null
+  let lastTs = state.lastTs ?? null
 
   for (const line of chunk.lines) {
-    const obj = parseLine(line);
-    if (!obj) continue;
+    const obj = parseLine(line)
+    if (!obj) continue
 
     // The gap to whatever line preceded this one, chronologically — the same
     // "time since the last causally-relevant event" idea claude-code.ts uses
@@ -168,30 +168,30 @@ async function collectFile(
     // from an already-offset-consumed chunk (first line after a resume)
     // simply isn't carried forward past this run's FileState.lastTs, so that
     // one record's duration falls back to null.
-    const prevTs = lastTs;
-    if (obj.timestamp) lastTs = obj.timestamp;
+    const prevTs = lastTs
+    if (obj.timestamp) lastTs = obj.timestamp
 
     // A session can switch models mid-thread (`/model`, or `cx` then a
     // profile), so this tracks the latest rather than the first.
-    if (obj.type === "session_meta" || obj.type === "turn_context") {
-      model = obj.payload?.model ?? model;
-      project = obj.payload?.cwd ?? project;
-      continue;
+    if (obj.type === 'session_meta' || obj.type === 'turn_context') {
+      model = obj.payload?.model ?? model
+      project = obj.payload?.cwd ?? project
+      continue
     }
 
-    if (obj.type === "event_msg") {
-      const rec = toErrorRecord(obj, model, project, machine, prevTs);
-      if (rec) records.push(rec);
-      continue;
+    if (obj.type === 'event_msg') {
+      const rec = toErrorRecord(obj, model, project, machine, prevTs)
+      if (rec) records.push(rec)
+      continue
     }
 
-    if (obj.type !== "token_usage_record") continue;
+    if (obj.type !== 'token_usage_record') continue
 
-    const rec = toRecord(obj, model, project, machine, log, prevTs);
-    if (rec) records.push(rec);
+    const rec = toRecord(obj, model, project, machine, log, prevTs)
+    if (rec) records.push(rec)
   }
 
-  return { records, state: { offset: chunk.offset, model, project, lastTs } };
+  return { records, state: { offset: chunk.offset, model, project, lastTs } }
 }
 
 /**
@@ -212,14 +212,15 @@ function toErrorRecord(
   machine: string | null,
   prevTs: string | null,
 ): UsageRecord | null {
-  const kind = obj.payload?.type;
-  if (!kind || !/error|fail|abort/i.test(kind)) return null;
+  const kind = obj.payload?.type
+  if (!kind || !/error|fail|abort/i.test(kind)) return null
 
-  const sourceId = obj.payload?.id ?? obj.payload?.turn_id ?? `event:${Bun.hash(JSON.stringify(obj))}`;
+  const sourceId =
+    obj.payload?.id ?? obj.payload?.turn_id ?? `event:${Bun.hash(JSON.stringify(obj))}`
 
   return {
     sourceId,
-    grain: "message",
+    grain: 'message',
     ts: obj.timestamp ?? new Date().toISOString(),
     model,
     project,
@@ -229,20 +230,20 @@ function toErrorRecord(
     cacheWriteTokens: 0,
     reasoningTokens: 0,
     durationMs: durationSince(prevTs, obj.timestamp),
-    outcome: "error",
+    outcome: 'error',
     machine,
     raw: {
       eventType: kind,
       message: obj.payload?.message ?? null,
       turnId: obj.payload?.turn_id ?? null,
     },
-  };
+  }
 }
 
 function durationSince(prevTs: string | null, ts: string | undefined): number | null {
-  if (!prevTs || !ts) return null;
-  const delta = Date.parse(ts) - Date.parse(prevTs);
-  return Number.isFinite(delta) && delta >= 0 ? delta : null;
+  if (!prevTs || !ts) return null
+  const delta = Date.parse(ts) - Date.parse(prevTs)
+  return Number.isFinite(delta) && delta >= 0 ? delta : null
 }
 
 function toRecord(
@@ -253,16 +254,16 @@ function toRecord(
   log: Logger,
   prevTs: string | null,
 ): UsageRecord | null {
-  const usage = obj.payload?.usage;
+  const usage = obj.payload?.usage
   // response_id is the dedup key; without it the row can't be upserted safely.
-  const responseId = obj.payload?.response_id;
-  if (!usage || !responseId) return null;
+  const responseId = obj.payload?.response_id
+  if (!usage || !responseId) return null
 
-  const rawInput = usage.input_tokens ?? 0;
-  const cacheRead = usage.cached_input_tokens ?? 0;
-  const cacheWrite = usage.cache_write_input_tokens ?? 0;
-  const rawOutput = usage.output_tokens ?? 0;
-  const reasoning = usage.reasoning_output_tokens ?? 0;
+  const rawInput = usage.input_tokens ?? 0
+  const cacheRead = usage.cached_input_tokens ?? 0
+  const cacheWrite = usage.cache_write_input_tokens ?? 0
+  const rawOutput = usage.output_tokens ?? 0
+  const reasoning = usage.reasoning_output_tokens ?? 0
 
   // OpenAI reports cached and cache-write tokens as details *inside*
   // input_tokens, and reasoning tokens as a detail inside output_tokens — the
@@ -275,19 +276,19 @@ function toRecord(
   // A negative subtraction would mean that invariant has broken — a vendor
   // schema change, most likely. Clamping silently would make tokens disappear
   // from the bill with no signal at all, so say so.
-  const input = rawInput - cacheRead - cacheWrite;
-  const output = rawOutput - reasoning;
+  const input = rawInput - cacheRead - cacheWrite
+  const output = rawOutput - reasoning
   if (input < 0 || output < 0) {
     log.warn(
       `codex: ${responseId} nested token counts exceed their parent ` +
         `(input ${rawInput}-${cacheRead}-${cacheWrite}, output ${rawOutput}-${reasoning}) — ` +
         `clamped, this row under-reports`,
-    );
+    )
   }
 
   return {
     sourceId: responseId,
-    grain: "message",
+    grain: 'message',
     ts: obj.timestamp ?? new Date().toISOString(),
     model,
     project,
@@ -307,23 +308,23 @@ function toRecord(
       vendorOutputTokens: rawOutput,
       totalTokens: usage.total_tokens ?? null,
     },
-  };
+  }
 }
 
 function parseLine(line: string): RolloutLine | null {
-  if (!line) return null;
+  if (!line) return null
   try {
-    return JSON.parse(line) as RolloutLine;
+    return JSON.parse(line) as RolloutLine
   } catch {
-    return null;
+    return null
   }
 }
 
 function parseCursor(cursor: string | null): Cursor {
-  if (!cursor) return {};
+  if (!cursor) return {}
   try {
-    return JSON.parse(cursor) as Cursor;
+    return JSON.parse(cursor) as Cursor
   } catch {
-    return {};
+    return {}
   }
 }

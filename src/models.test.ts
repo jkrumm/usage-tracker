@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   classifyBilling,
   entrypointLane,
@@ -18,8 +18,8 @@ import {
   markSessionEnvsPersisted,
   pendingSessionEnvs,
   useStoredSessionEnvs,
-} from "./models.ts";
-import { iumacLogsDir } from "./remote.ts";
+} from './models.ts'
+import { iumacLogsDir } from './remote.ts'
 
 // normalizeModel is the join between a source's raw model string and the
 // price tables (usage.prices through the aliases, usage.price_overrides): miss
@@ -27,117 +27,117 @@ import { iumacLogsDir } from "./remote.ts";
 // rather than failing loudly, so the spend just quietly vanishes from the
 // ledger. These cases pin the shapes each collector actually emits.
 
-describe("normalizeModel", () => {
-  test("passes through an already-canonical id", () => {
-    expect(normalizeModel("claude-sonnet-5")).toBe("claude-sonnet-5");
-    expect(normalizeModel("gpt-5.6-terra")).toBe("gpt-5.6-terra");
-  });
+describe('normalizeModel', () => {
+  test('passes through an already-canonical id', () => {
+    expect(normalizeModel('claude-sonnet-5')).toBe('claude-sonnet-5')
+    expect(normalizeModel('gpt-5.6-terra')).toBe('gpt-5.6-terra')
+  })
 
-  test("is null-safe and trims", () => {
-    expect(normalizeModel(null)).toBeNull();
-    expect(normalizeModel("")).toBeNull();
-    expect(normalizeModel("  claude-sonnet-5  ")).toBe("claude-sonnet-5");
-  });
+  test('is null-safe and trims', () => {
+    expect(normalizeModel(null)).toBeNull()
+    expect(normalizeModel('')).toBeNull()
+    expect(normalizeModel('  claude-sonnet-5  ')).toBe('claude-sonnet-5')
+  })
 
-  test("lowercases", () => {
-    expect(normalizeModel("Kimi-K2.6")).toBe("kimi-k2.6");
-  });
+  test('lowercases', () => {
+    expect(normalizeModel('Kimi-K2.6')).toBe('kimi-k2.6')
+  })
 
   test("unwraps OpenCode's JSON-encoded model", () => {
-    expect(normalizeModel('{"id":"Kimi-K2.6","providerID":"iu"}')).toBe("kimi-k2.6");
-  });
+    expect(normalizeModel('{"id":"Kimi-K2.6","providerID":"iu"}')).toBe('kimi-k2.6')
+  })
 
-  test("falls back to the raw string on malformed JSON", () => {
-    expect(normalizeModel('{"id":')).toBe('{"id":');
-  });
+  test('falls back to the raw string on malformed JSON', () => {
+    expect(normalizeModel('{"id":')).toBe('{"id":')
+  })
 
-  test("strips a provider prefix", () => {
-    expect(normalizeModel("iu/claude-sonnet-5")).toBe("claude-sonnet-5");
-    expect(normalizeModel("MiniMaxAI/MiniMax-M3")).toBe("minimax-m3");
-  });
+  test('strips a provider prefix', () => {
+    expect(normalizeModel('iu/claude-sonnet-5')).toBe('claude-sonnet-5')
+    expect(normalizeModel('MiniMaxAI/MiniMax-M3')).toBe('minimax-m3')
+  })
 
   test("strips the IU gateway's -eu suffix (Hermes's live failover id)", () => {
-    expect(normalizeModel("claude-sonnet-4-6-eu")).toBe("claude-sonnet-4-6");
-  });
+    expect(normalizeModel('claude-sonnet-4-6-eu')).toBe('claude-sonnet-4-6')
+  })
 
   test("strips Anthropic's compact dated variant", () => {
-    expect(normalizeModel("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
-  });
+    expect(normalizeModel('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5')
+  })
 
   test("strips OpenAI's hyphenated dated variant", () => {
     // The shape the vendor reports back for a gpt-5.6-terra request. Before this
     // was handled it normalized to itself and priced as unknown.
-    expect(normalizeModel("gpt-5.6-terra-2026-07-09")).toBe("gpt-5.6-terra");
-    expect(normalizeModel("gpt-image-2-2026-04-21")).toBe("gpt-image-2");
-    expect(normalizeModel("o4-mini-deep-research-2025-06-26")).toBe("o4-mini-deep-research");
-  });
+    expect(normalizeModel('gpt-5.6-terra-2026-07-09')).toBe('gpt-5.6-terra')
+    expect(normalizeModel('gpt-image-2-2026-04-21')).toBe('gpt-image-2')
+    expect(normalizeModel('o4-mini-deep-research-2025-06-26')).toBe('o4-mini-deep-research')
+  })
 
-  test("does not mistake a version tail for a date", () => {
+  test('does not mistake a version tail for a date', () => {
     // Real catalog ids whose trailing digits are versions, not dates — stripping
     // them would collapse distinct models onto one key.
-    expect(normalizeModel("gpt-4-0613")).toBe("gpt-4-0613");
-    expect(normalizeModel("mistral-large-2512")).toBe("mistral-large-2512");
-    expect(normalizeModel("ministral-14b-2512")).toBe("ministral-14b-2512");
-    expect(normalizeModel("gemini-2.5-flash-native-audio-preview-09-2025")).toBe(
-      "gemini-2.5-flash-native-audio-preview-09-2025",
-    );
-  });
+    expect(normalizeModel('gpt-4-0613')).toBe('gpt-4-0613')
+    expect(normalizeModel('mistral-large-2512')).toBe('mistral-large-2512')
+    expect(normalizeModel('ministral-14b-2512')).toBe('ministral-14b-2512')
+    expect(normalizeModel('gemini-2.5-flash-native-audio-preview-09-2025')).toBe(
+      'gemini-2.5-flash-native-audio-preview-09-2025',
+    )
+  })
 
-  test("combines prefix, -eu and date stripping", () => {
-    expect(normalizeModel("iu/claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
-  });
+  test('combines prefix, -eu and date stripping', () => {
+    expect(normalizeModel('iu/claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5')
+  })
 
   test("resolves the IU unified endpoint's Requesty-routed gateway ids onto their price key", () => {
     // The gateway's casing is inconsistent (some ids ship title-cased, some
     // lower-case) — normalizeModel's plain lowercase must still land each one
     // on the key its price (alias or override) is filed under.
     const gatewayIdToKey: Record<string, string> = {
-      "glm-5.3-flash": "glm-5.3-flash",
-      "glm-5.2": "glm-5.2",
-      "GLM-5.1": "glm-5.1",
-      hy3: "hy3",
-      "kimi-k2.7-code": "kimi-k2.7-code",
-      "minimax-m3": "minimax-m3",
-      "MiMo-V2.5-Pro": "mimo-v2.5-pro",
-      "nemotron-3-ultra": "nemotron-3-ultra",
-      "NVIDIA-Nemotron-3-Super-120B-A12B": "nvidia-nemotron-3-super-120b-a12b",
-      "qwen3.7-max": "qwen3.7-max",
-      "DeepSeek-V4-Flash": "deepseek-v4-flash",
-      "DeepSeek-V4-Pro": "deepseek-v4-pro",
-      "DeepSeek-V4.1-Flash": "deepseek-v4.1-flash",
-      "deepseek-v4.1-flash": "deepseek-v4.1-flash",
-    };
-    for (const [gatewayId, key] of Object.entries(gatewayIdToKey)) {
-      expect(normalizeModel(gatewayId)).toBe(key);
+      'glm-5.3-flash': 'glm-5.3-flash',
+      'glm-5.2': 'glm-5.2',
+      'GLM-5.1': 'glm-5.1',
+      hy3: 'hy3',
+      'kimi-k2.7-code': 'kimi-k2.7-code',
+      'minimax-m3': 'minimax-m3',
+      'MiMo-V2.5-Pro': 'mimo-v2.5-pro',
+      'nemotron-3-ultra': 'nemotron-3-ultra',
+      'NVIDIA-Nemotron-3-Super-120B-A12B': 'nvidia-nemotron-3-super-120b-a12b',
+      'qwen3.7-max': 'qwen3.7-max',
+      'DeepSeek-V4-Flash': 'deepseek-v4-flash',
+      'DeepSeek-V4-Pro': 'deepseek-v4-pro',
+      'DeepSeek-V4.1-Flash': 'deepseek-v4.1-flash',
+      'deepseek-v4.1-flash': 'deepseek-v4.1-flash',
     }
-  });
+    for (const [gatewayId, key] of Object.entries(gatewayIdToKey)) {
+      expect(normalizeModel(gatewayId)).toBe(key)
+    }
+  })
 
-  test("deepseek-v4.1-flash does not collapse onto the retired deepseek-v4-flash key", () => {
+  test('deepseek-v4.1-flash does not collapse onto the retired deepseek-v4-flash key', () => {
     // A new model, not a rename: the two must resolve to distinct price keys
     // or historical v4-flash rows silently get re-priced at v4.1's rate.
-    expect(normalizeModel("deepseek-v4.1-flash")).not.toBe(normalizeModel("deepseek-v4-flash"));
-  });
+    expect(normalizeModel('deepseek-v4.1-flash')).not.toBe(normalizeModel('deepseek-v4-flash'))
+  })
 
-  test("maps the bare deepseek-flash alias onto deepseek-v4-flash", () => {
+  test('maps the bare deepseek-flash alias onto deepseek-v4-flash', () => {
     // Claude Code's own small/fast-model slot (ANTHROPIC_DEFAULT_HAIKU_MODEL,
     // pinned by agent-gateway's session-runner.ts to "DeepSeek-V4-Flash") comes back
     // in the transcript as the bare, unversioned "deepseek-flash" — without this
     // mapping it priced at $0 for every row.
-    expect(normalizeModel("deepseek-flash")).toBe("deepseek-v4-flash");
-  });
+    expect(normalizeModel('deepseek-flash')).toBe('deepseek-v4-flash')
+  })
 
-  test("resolves the dated ids of priced models onto their price key", () => {
+  test('resolves the dated ids of priced models onto their price key', () => {
     // The regression that matters: a dated id must reach a rate, not price as null.
     const datedToKey: Record<string, string> = {
-      "gpt-5.6-terra-2026-07-09": "gpt-5.6-terra",
-      "gpt-image-2-2026-04-21": "gpt-image-2",
-      "gpt-image-2.5-sunburst-2026-09-08": "gpt-image-2.5-sunburst",
-      "claude-haiku-4-5-20251001": "claude-haiku-4-5",
-      "claude-sonnet-4-6-eu": "claude-sonnet-4-6",
-    };
-    for (const [dated, key] of Object.entries(datedToKey)) expect(normalizeModel(dated)).toBe(key);
-  });
-});
+      'gpt-5.6-terra-2026-07-09': 'gpt-5.6-terra',
+      'gpt-image-2-2026-04-21': 'gpt-image-2',
+      'gpt-image-2.5-sunburst-2026-09-08': 'gpt-image-2.5-sunburst',
+      'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
+      'claude-sonnet-4-6-eu': 'claude-sonnet-4-6',
+    }
+    for (const [dated, key] of Object.entries(datedToKey)) expect(normalizeModel(dated)).toBe(key)
+  })
+})
 
 // getSessionBaseUrl joins classifyBilling's sessionId lookup against
 // session_env lines scanned from *two* dirs — this machine's own log dir and
@@ -145,112 +145,121 @@ describe("normalizeModel", () => {
 // env-overridable for tests (USAGE_CLAUDE_LOGS_DIR, USAGE_REMOTE_DIR) so
 // nothing here touches the real ~/.claude/logs.
 
-describe("sessionLogDirs / loadSessionBaseUrls merge", () => {
-  let localDir: string;
-  let remoteDir: string;
+describe('sessionLogDirs / loadSessionBaseUrls merge', () => {
+  let localDir: string
+  let remoteDir: string
 
   beforeEach(() => {
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
-    remoteDir = mkdtempSync(join(tmpdir(), "usage-tracker-remote-"));
-    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
-    process.env.USAGE_REMOTE_DIR = remoteDir;
-    resetSessionBaseUrlsCacheForTest();
-  });
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-logs-'))
+    remoteDir = mkdtempSync(join(tmpdir(), 'usage-tracker-remote-'))
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir
+    process.env.USAGE_REMOTE_DIR = remoteDir
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   afterEach(() => {
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    rmSync(localDir, { recursive: true, force: true });
-    rmSync(remoteDir, { recursive: true, force: true });
-    resetSessionBaseUrlsCacheForTest();
-  });
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    rmSync(localDir, { recursive: true, force: true })
+    rmSync(remoteDir, { recursive: true, force: true })
+    resetSessionBaseUrlsCacheForTest()
+  })
 
-  test("scans and merges session_env lines from both the local and mirrored log dirs", () => {
+  test('scans and merges session_env lines from both the local and mirrored log dirs', () => {
     writeFileSync(
-      join(localDir, "2026-08-06.jsonl"),
-      `${JSON.stringify({ event: "session_env", data: { session: "local-session", base_url: null } })}\n`,
-    );
+      join(localDir, '2026-08-06.jsonl'),
+      `${JSON.stringify({ event: 'session_env', data: { session: 'local-session', base_url: null } })}\n`,
+    )
 
-    const mirrorLogsDir = iumacLogsDir();
-    mkdirSync(mirrorLogsDir, { recursive: true });
+    const mirrorLogsDir = iumacLogsDir()
+    mkdirSync(mirrorLogsDir, { recursive: true })
     writeFileSync(
-      join(mirrorLogsDir, "2026-08-06.jsonl"),
+      join(mirrorLogsDir, '2026-08-06.jsonl'),
       `${JSON.stringify({
-        event: "session_env",
-        data: { session: "mirror-session", base_url: "https://iu-endpoint.example" },
+        event: 'session_env',
+        data: { session: 'mirror-session', base_url: 'https://iu-endpoint.example' },
       })}\n`,
-    );
+    )
 
-    expect(getSessionBaseUrl("local-session")).toBeNull();
-    expect(getSessionBaseUrl("mirror-session")).toBe("https://iu-endpoint.example");
-  });
-});
+    expect(getSessionBaseUrl('local-session')).toBeNull()
+    expect(getSessionBaseUrl('mirror-session')).toBe('https://iu-endpoint.example')
+  })
+})
 
 // getSessionLane joins the same session_env line for sub_tool attribution
 // (claude-code.ts applies it) — one scan, two derived facts.
 
-describe("getSessionLane", () => {
-  let localDir: string;
+describe('getSessionLane', () => {
+  let localDir: string
 
   beforeEach(() => {
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
-    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
-    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-logs-'))
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir
+    process.env.USAGE_REMOTE_DIR = join(localDir, 'no-mirror')
     writeFileSync(
-      join(localDir, "2026-09-10.jsonl"),
+      join(localDir, '2026-09-10.jsonl'),
       [
-        { event: "session_env", data: { session: "lane-session", base_url: null, lane: "agent-gateway:review" } },
-        { event: "session_env", data: { session: "no-lane-session", base_url: null } },
+        {
+          event: 'session_env',
+          data: { session: 'lane-session', base_url: null, lane: 'agent-gateway:review' },
+        },
+        { event: 'session_env', data: { session: 'no-lane-session', base_url: null } },
       ]
         .map((l) => JSON.stringify(l))
-        .join("\n") + "\n",
-    );
-    resetSessionBaseUrlsCacheForTest();
-  });
+        .join('\n') + '\n',
+    )
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   afterEach(() => {
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    rmSync(localDir, { recursive: true, force: true });
-    resetSessionBaseUrlsCacheForTest();
-  });
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    rmSync(localDir, { recursive: true, force: true })
+    resetSessionBaseUrlsCacheForTest()
+  })
 
-  test("returns the lane a spawner set via USAGE_LANE", () => {
-    expect(getSessionLane("lane-session")).toBe("agent-gateway:review");
-  });
+  test('returns the lane a spawner set via USAGE_LANE', () => {
+    expect(getSessionLane('lane-session')).toBe('agent-gateway:review')
+  })
 
-  test("returns null when the session_env line has no lane", () => {
-    expect(getSessionLane("no-lane-session")).toBeNull();
-  });
+  test('returns null when the session_env line has no lane', () => {
+    expect(getSessionLane('no-lane-session')).toBeNull()
+  })
 
-  test("returns undefined when no session_env line exists at all", () => {
-    expect(getSessionLane("unknown-session")).toBeUndefined();
-  });
+  test('returns undefined when no session_env line exists at all', () => {
+    expect(getSessionLane('unknown-session')).toBeUndefined()
+  })
 
-  test("resetSessionBaseUrlsCacheForTest clears the shared cache so a new log dir is picked up", () => {
-    expect(getSessionLane("lane-session")).toBe("agent-gateway:review");
+  test('resetSessionBaseUrlsCacheForTest clears the shared cache so a new log dir is picked up', () => {
+    expect(getSessionLane('lane-session')).toBe('agent-gateway:review')
 
-    rmSync(localDir, { recursive: true, force: true });
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
-    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
-    resetSessionBaseUrlsCacheForTest();
+    rmSync(localDir, { recursive: true, force: true })
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-logs-'))
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir
+    resetSessionBaseUrlsCacheForTest()
 
-    expect(getSessionLane("lane-session")).toBeUndefined();
-  });
-});
+    expect(getSessionLane('lane-session')).toBeUndefined()
+  })
+})
 
 // With the stored usage.session_env lines primed, a line outlives the log file
 // it came from — herdr panes run longer than the hook's 3-day retention — and
 // the lines the logs add or change are what ingest still has to persist.
 
-describe("stored session_env lines", () => {
-  let localDir: string;
+describe('stored session_env lines', () => {
+  let localDir: string
 
   const sessionEnvLine = (data: Record<string, unknown>) =>
-    `${JSON.stringify({ event: "session_env", data })}\n`;
+    `${JSON.stringify({ event: 'session_env', data })}\n`
   const stored = (
     session: string,
-    over: Partial<{ base_url: string | null; lane: string | null; account: string | null; factory_role: string | null; factory_session: string | null }> = {},
+    over: Partial<{
+      base_url: string | null
+      lane: string | null
+      account: string | null
+      factory_role: string | null
+      factory_session: string | null
+    }> = {},
   ) => ({
     session,
     base_url: null,
@@ -259,100 +268,140 @@ describe("stored session_env lines", () => {
     factory_role: null,
     factory_session: null,
     ...over,
-  });
+  })
 
   beforeEach(() => {
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
-    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
-    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
-    resetSessionBaseUrlsCacheForTest();
-  });
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-logs-'))
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir
+    process.env.USAGE_REMOTE_DIR = join(localDir, 'no-mirror')
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   afterEach(() => {
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    rmSync(localDir, { recursive: true, force: true });
-    resetSessionBaseUrlsCacheForTest();
-  });
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    rmSync(localDir, { recursive: true, force: true })
+    resetSessionBaseUrlsCacheForTest()
+  })
 
-  test("a stored line still resolves lane, base_url and billing once its log file is gone", () => {
-    useStoredSessionEnvs([stored("wave-1", { base_url: "https://iu.example", lane: "wave" })]);
-    expect(getSessionLane("wave-1")).toBe("wave");
-    expect(getSessionBaseUrl("wave-1")).toBe("https://iu.example");
-    expect(classifyBilling("claude-code", "claude-sonnet-5", "wave-1")).toBe("iu");
-    expect(pendingSessionEnvs()).toEqual([]);
-  });
+  test('a stored line still resolves lane, base_url and billing once its log file is gone', () => {
+    useStoredSessionEnvs([stored('wave-1', { base_url: 'https://iu.example', lane: 'wave' })])
+    expect(getSessionLane('wave-1')).toBe('wave')
+    expect(getSessionBaseUrl('wave-1')).toBe('https://iu.example')
+    expect(classifyBilling('claude-code', 'claude-sonnet-5', 'wave-1')).toBe('iu')
+    expect(pendingSessionEnvs()).toEqual([])
+  })
 
-  test("a stored row with a NULL lane still means the line exists", () => {
-    useStoredSessionEnvs([stored("manual-1")]);
-    expect(getSessionLane("manual-1")).toBeNull();
-    expect(getSessionLane("never-seen")).toBeUndefined();
-  });
+  test('a stored row with a NULL lane still means the line exists', () => {
+    useStoredSessionEnvs([stored('manual-1')])
+    expect(getSessionLane('manual-1')).toBeNull()
+    expect(getSessionLane('never-seen')).toBeUndefined()
+  })
 
-  test("a log entry wins over the stored row for the same session and is pending until persisted", () => {
-    useStoredSessionEnvs([stored("s", { lane: "bg", account: "me" })]);
-    writeFileSync(join(localDir, "2026-10-06.jsonl"), sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
+  test('a log entry wins over the stored row for the same session and is pending until persisted', () => {
+    useStoredSessionEnvs([stored('s', { lane: 'bg', account: 'me' })])
+    writeFileSync(
+      join(localDir, '2026-10-06.jsonl'),
+      sessionEnvLine({ session: 's', base_url: null, lane: 'wave' }),
+    )
 
-    expect(getSessionLane("s")).toBe("wave");
+    expect(getSessionLane('s')).toBe('wave')
     // the line has no account (a hook that predates the field): the stored one is carried forward
-    expect(pendingSessionEnvs()).toEqual([{ session: "s", base_url: null, lane: "wave", account: "me", factory_role: null, factory_session: null }]);
-    markSessionEnvsPersisted([{ session: "s" }]);
-    expect(pendingSessionEnvs()).toEqual([]);
-    expect(getSessionLane("s")).toBe("wave");
-  });
+    expect(pendingSessionEnvs()).toEqual([
+      {
+        session: 's',
+        base_url: null,
+        lane: 'wave',
+        account: 'me',
+        factory_role: null,
+        factory_session: null,
+      },
+    ])
+    markSessionEnvsPersisted([{ session: 's' }])
+    expect(pendingSessionEnvs()).toEqual([])
+    expect(getSessionLane('s')).toBe('wave')
+  })
 
   test("a line's factory role and session are read, carried forward over a line without them, and make a line pending", () => {
-    useStoredSessionEnvs([stored("s", { lane: "wave" })]);
+    useStoredSessionEnvs([stored('s', { lane: 'wave' })])
     writeFileSync(
-      join(localDir, "2026-10-06.jsonl"),
-      sessionEnvLine({ session: "s", base_url: null, lane: "wave", factory_role: "lead", factory_session: "spawn-1" }),
-    );
-    expect(getSessionFactoryRole("s")).toBe("lead");
-    expect(getSessionFactorySession("s")).toBe("spawn-1");
+      join(localDir, '2026-10-06.jsonl'),
+      sessionEnvLine({
+        session: 's',
+        base_url: null,
+        lane: 'wave',
+        factory_role: 'lead',
+        factory_session: 'spawn-1',
+      }),
+    )
+    expect(getSessionFactoryRole('s')).toBe('lead')
+    expect(getSessionFactorySession('s')).toBe('spawn-1')
     expect(pendingSessionEnvs()).toEqual([
-      { session: "s", base_url: null, lane: "wave", account: null, factory_role: "lead", factory_session: "spawn-1" },
-    ]);
+      {
+        session: 's',
+        base_url: null,
+        lane: 'wave',
+        account: null,
+        factory_role: 'lead',
+        factory_session: 'spawn-1',
+      },
+    ])
 
     // a resume line without the fields keeps what is stored, and is not pending
-    resetSessionBaseUrlsCacheForTest();
-    useStoredSessionEnvs([stored("s", { lane: "wave", factory_role: "lead", factory_session: "spawn-1" })]);
-    writeFileSync(join(localDir, "2026-10-06.jsonl"), sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
-    expect(getSessionFactoryRole("s")).toBe("lead");
-    expect(pendingSessionEnvs()).toEqual([]);
-  });
-
-  test("only new or changed lines are pending", () => {
-    useStoredSessionEnvs([stored("same", { base_url: "", lane: "wave" })]);
+    resetSessionBaseUrlsCacheForTest()
+    useStoredSessionEnvs([
+      stored('s', { lane: 'wave', factory_role: 'lead', factory_session: 'spawn-1' }),
+    ])
     writeFileSync(
-      join(localDir, "2026-10-06.jsonl"),
-      sessionEnvLine({ session: "same", base_url: "", lane: "wave" }) + sessionEnvLine({ session: "fresh", base_url: "", lane: "bg", account: "a" }),
-    );
-    expect(pendingSessionEnvs()).toEqual([{ session: "fresh", base_url: "", lane: "bg", account: "iu", factory_role: null, factory_session: null }]);
-  });
+      join(localDir, '2026-10-06.jsonl'),
+      sessionEnvLine({ session: 's', base_url: null, lane: 'wave' }),
+    )
+    expect(getSessionFactoryRole('s')).toBe('lead')
+    expect(pendingSessionEnvs()).toEqual([])
+  })
 
-  test("without stored lines nothing is pending from an empty log and a pruned line is gone", () => {
-    const logFile = join(localDir, "2026-10-06.jsonl");
-    writeFileSync(logFile, sessionEnvLine({ session: "s", base_url: null, lane: "wave" }));
-    expect(getSessionLane("s")).toBe("wave");
-    expect(pendingSessionEnvs()).toHaveLength(1);
+  test('only new or changed lines are pending', () => {
+    useStoredSessionEnvs([stored('same', { base_url: '', lane: 'wave' })])
+    writeFileSync(
+      join(localDir, '2026-10-06.jsonl'),
+      sessionEnvLine({ session: 'same', base_url: '', lane: 'wave' }) +
+        sessionEnvLine({ session: 'fresh', base_url: '', lane: 'bg', account: 'a' }),
+    )
+    expect(pendingSessionEnvs()).toEqual([
+      {
+        session: 'fresh',
+        base_url: '',
+        lane: 'bg',
+        account: 'iu',
+        factory_role: null,
+        factory_session: null,
+      },
+    ])
+  })
 
-    rmSync(logFile);
-    resetSessionBaseUrlsCacheForTest();
-    expect(getSessionLane("s")).toBeUndefined();
-    expect(pendingSessionEnvs()).toEqual([]);
-  });
-});
+  test('without stored lines nothing is pending from an empty log and a pruned line is gone', () => {
+    const logFile = join(localDir, '2026-10-06.jsonl')
+    writeFileSync(logFile, sessionEnvLine({ session: 's', base_url: null, lane: 'wave' }))
+    expect(getSessionLane('s')).toBe('wave')
+    expect(pendingSessionEnvs()).toHaveLength(1)
 
-describe("entrypointLane", () => {
-  test("maps the three observed entrypoints and leaves anything else null", () => {
-    expect(entrypointLane("cli")).toBe("interactive");
-    expect(entrypointLane("sdk-cli")).toBe("headless");
-    expect(entrypointLane("claude-desktop")).toBe("desktop");
-    expect(entrypointLane("vscode")).toBeNull();
-    expect(entrypointLane(undefined)).toBeNull();
-    expect(entrypointLane(null)).toBeNull();
-  });
-});
+    rmSync(logFile)
+    resetSessionBaseUrlsCacheForTest()
+    expect(getSessionLane('s')).toBeUndefined()
+    expect(pendingSessionEnvs()).toEqual([])
+  })
+})
+
+describe('entrypointLane', () => {
+  test('maps the three observed entrypoints and leaves anything else null', () => {
+    expect(entrypointLane('cli')).toBe('interactive')
+    expect(entrypointLane('sdk-cli')).toBe('headless')
+    expect(entrypointLane('claude-desktop')).toBe('desktop')
+    expect(entrypointLane('vscode')).toBeNull()
+    expect(entrypointLane(undefined)).toBeNull()
+    expect(entrypointLane(null)).toBeNull()
+  })
+})
 
 // getAgentGatewayLane is the fallback claude-code.ts's stampLane uses only when a
 // session has no session_env line at all (see the doc comment on
@@ -361,64 +410,66 @@ describe("entrypointLane", () => {
 // pruned or pre-fix line. It joins by time window instead, against agent-gateway's
 // independent attribution log.
 
-describe("getAgentGatewayLane", () => {
-  let dir: string;
+describe('getAgentGatewayLane', () => {
+  let dir: string
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "usage-tracker-agent-gateway-sessions-"));
-    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = join(dir, "agent-gateway-sessions.jsonl");
+    dir = mkdtempSync(join(tmpdir(), 'usage-tracker-agent-gateway-sessions-'))
+    process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG = join(dir, 'agent-gateway-sessions.jsonl')
     writeFileSync(
       process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG,
       [
         {
-          tool: "review:router",
-          project: "/Users/jkrumm/SourceRoot/agent-gateway",
-          tsStart: "2026-09-24T18:22:19.444Z",
-          tsEnd: "2026-09-24T18:22:35.797Z",
+          tool: 'review:router',
+          project: '/Users/jkrumm/SourceRoot/agent-gateway',
+          tsStart: '2026-09-24T18:22:19.444Z',
+          tsEnd: '2026-09-24T18:22:35.797Z',
         },
         // A concurrent, wider window in a different project — picking the
         // narrowest match alone would pick this one over the true match below.
         {
-          tool: "dispatch",
-          project: "/Users/jkrumm/SourceRoot/warden",
-          tsStart: "2026-09-24T18:20:00.000Z",
-          tsEnd: "2026-09-24T18:30:00.000Z",
+          tool: 'dispatch',
+          project: '/Users/jkrumm/SourceRoot/warden',
+          tsStart: '2026-09-24T18:20:00.000Z',
+          tsEnd: '2026-09-24T18:30:00.000Z',
         },
       ]
         .map((l) => JSON.stringify(l))
-        .join("\n") + "\n",
-    );
-    resetAgentGatewayWindowsCacheForTest();
-  });
+        .join('\n') + '\n',
+    )
+    resetAgentGatewayWindowsCacheForTest()
+  })
 
   afterEach(() => {
-    delete process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG;
-    rmSync(dir, { recursive: true, force: true });
-    resetAgentGatewayWindowsCacheForTest();
-  });
+    delete process.env.AGENT_GATEWAY_SESSIONS_USAGE_LOG
+    rmSync(dir, { recursive: true, force: true })
+    resetAgentGatewayWindowsCacheForTest()
+  })
 
-  test("coarsens the matched tool to agent-gateway:<tool>, same as usageLane() would", () => {
-    expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/agent-gateway")).toBe(
-      "agent-gateway:review",
-    );
-  });
+  test('coarsens the matched tool to agent-gateway:<tool>, same as usageLane() would', () => {
+    expect(
+      getAgentGatewayLane('2026-09-24T18:22:30.000Z', '/Users/jkrumm/SourceRoot/agent-gateway'),
+    ).toBe('agent-gateway:review')
+  })
 
   test("prefers the project-matching window over a wider one it's also inside", () => {
     // 18:22:30 falls inside BOTH windows above; the warden one is wider (and
     // would win a narrowest-span-only tie-break), but the project match wins.
-    expect(getAgentGatewayLane("2026-09-24T18:22:30.000Z", "/Users/jkrumm/SourceRoot/warden")).toBe(
-      "agent-gateway:dispatch",
-    );
-  });
+    expect(getAgentGatewayLane('2026-09-24T18:22:30.000Z', '/Users/jkrumm/SourceRoot/warden')).toBe(
+      'agent-gateway:dispatch',
+    )
+  })
 
-  test("returns null outside every window", () => {
-    expect(getAgentGatewayLane("2026-09-24T19:00:00.000Z", "/Users/jkrumm/SourceRoot/agent-gateway")).toBeNull();
-  });
+  test('returns null outside every window', () => {
+    expect(
+      getAgentGatewayLane('2026-09-24T19:00:00.000Z', '/Users/jkrumm/SourceRoot/agent-gateway'),
+    ).toBeNull()
+  })
 
-  test("returns null for a null/missing ts", () => {
-    expect(getAgentGatewayLane(null, "/Users/jkrumm/SourceRoot/agent-gateway")).toBeNull();
-  });
-});
+  test('returns null for a null/missing ts', () => {
+    expect(getAgentGatewayLane(null, '/Users/jkrumm/SourceRoot/agent-gateway')).toBeNull()
+  })
+})
 
 // The claude-code collector used to drop every non-`claude-*` row on the
 // assumption that the LiteLLM bridge had counted it. The bridge is gone; the
@@ -426,74 +477,79 @@ describe("getAgentGatewayLane", () => {
 // id-shape guard is confined to the bridge era and billing comes from the
 // session's real base_url.
 
-describe("isBridgeRouted", () => {
-  test("skips a bridge-shaped id only before the cutoff", () => {
-    expect(isBridgeRouted("glm-5.3-flash", "2026-06-01T00:00:00Z")).toBe(true);
-    expect(isBridgeRouted("claude-sonnet-4-6-eu", "2026-06-01T00:00:00Z")).toBe(true);
-    expect(isBridgeRouted("claude-sonnet-5", "2026-06-01T00:00:00Z")).toBe(false);
-    expect(isBridgeRouted("glm-5.3-flash", LITELLM_BRIDGE_CUTOFF)).toBe(false);
-    expect(isBridgeRouted("glm-5.3-flash", "2026-09-01T03:40:37.841Z")).toBe(false);
-    expect(isBridgeRouted("glm-5.3-flash", undefined)).toBe(false);
-  });
-});
+describe('isBridgeRouted', () => {
+  test('skips a bridge-shaped id only before the cutoff', () => {
+    expect(isBridgeRouted('glm-5.3-flash', '2026-06-01T00:00:00Z')).toBe(true)
+    expect(isBridgeRouted('claude-sonnet-4-6-eu', '2026-06-01T00:00:00Z')).toBe(true)
+    expect(isBridgeRouted('claude-sonnet-5', '2026-06-01T00:00:00Z')).toBe(false)
+    expect(isBridgeRouted('glm-5.3-flash', LITELLM_BRIDGE_CUTOFF)).toBe(false)
+    expect(isBridgeRouted('glm-5.3-flash', '2026-09-01T03:40:37.841Z')).toBe(false)
+    expect(isBridgeRouted('glm-5.3-flash', undefined)).toBe(false)
+  })
+})
 
-describe("classifyBilling", () => {
-  let localDir: string;
+describe('classifyBilling', () => {
+  let localDir: string
 
   beforeEach(() => {
-    localDir = mkdtempSync(join(tmpdir(), "usage-tracker-local-logs-"));
-    process.env.USAGE_CLAUDE_LOGS_DIR = localDir;
-    process.env.USAGE_REMOTE_DIR = join(localDir, "no-mirror");
+    localDir = mkdtempSync(join(tmpdir(), 'usage-tracker-local-logs-'))
+    process.env.USAGE_CLAUDE_LOGS_DIR = localDir
+    process.env.USAGE_REMOTE_DIR = join(localDir, 'no-mirror')
     writeFileSync(
-      join(localDir, "2026-09-07.jsonl"),
+      join(localDir, '2026-09-07.jsonl'),
       [
-        { event: "session_env", data: { session: "max-session", base_url: null } },
-        { event: "session_env", data: { session: "iu-session", base_url: "https://iu-endpoint.example/anthropic" } },
+        { event: 'session_env', data: { session: 'max-session', base_url: null } },
+        {
+          event: 'session_env',
+          data: { session: 'iu-session', base_url: 'https://iu-endpoint.example/anthropic' },
+        },
       ]
         .map((l) => JSON.stringify(l))
-        .join("\n") + "\n",
-    );
-    resetSessionBaseUrlsCacheForTest();
-  });
+        .join('\n') + '\n',
+    )
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   afterEach(() => {
-    delete process.env.USAGE_CLAUDE_LOGS_DIR;
-    delete process.env.USAGE_REMOTE_DIR;
-    rmSync(localDir, { recursive: true, force: true });
-    resetSessionBaseUrlsCacheForTest();
-  });
+    delete process.env.USAGE_CLAUDE_LOGS_DIR
+    delete process.env.USAGE_REMOTE_DIR
+    rmSync(localDir, { recursive: true, force: true })
+    resetSessionBaseUrlsCacheForTest()
+  })
 
   test("claude-code follows the session's base_url regardless of model id", () => {
-    expect(classifyBilling("claude-code", "claude-sonnet-5", "iu-session")).toBe("iu");
-    expect(classifyBilling("claude-code", "glm-5.3-flash", "iu-session")).toBe("iu");
-    expect(classifyBilling("claude-code", "claude-sonnet-5", "max-session")).toBe("max");
-  });
+    expect(classifyBilling('claude-code', 'claude-sonnet-5', 'iu-session')).toBe('iu')
+    expect(classifyBilling('claude-code', 'glm-5.3-flash', 'iu-session')).toBe('iu')
+    expect(classifyBilling('claude-code', 'claude-sonnet-5', 'max-session')).toBe('max')
+  })
 
-  test("without a session_env line only a bare claude-* id can be Max", () => {
-    expect(classifyBilling("claude-code", "claude-sonnet-5", "expired-session")).toBe("max");
-    expect(classifyBilling("claude-code", "glm-5.3-flash", "expired-session")).toBe("iu");
-    expect(classifyBilling("claude-code", "claude-sonnet-4-6-eu", "expired-session")).toBe("iu");
-  });
+  test('without a session_env line only a bare claude-* id can be Max', () => {
+    expect(classifyBilling('claude-code', 'claude-sonnet-5', 'expired-session')).toBe('max')
+    expect(classifyBilling('claude-code', 'glm-5.3-flash', 'expired-session')).toBe('iu')
+    expect(classifyBilling('claude-code', 'claude-sonnet-4-6-eu', 'expired-session')).toBe('iu')
+  })
 
-  test("<synthetic> is not an IU-only id: it follows the session base_url, default max", () => {
-    expect(classifyBilling("claude-code", "<synthetic>", "max-session")).toBe("max");
-    expect(classifyBilling("claude-code", "<synthetic>", "iu-session")).toBe("iu");
-    expect(classifyBilling("claude-code", "<synthetic>", "expired-session")).toBe("max");
-    expect(classifyBilling("claude-code", "<synthetic>", undefined)).toBe("max");
-  });
+  test('<synthetic> is not an IU-only id: it follows the session base_url, default max', () => {
+    expect(classifyBilling('claude-code', '<synthetic>', 'max-session')).toBe('max')
+    expect(classifyBilling('claude-code', '<synthetic>', 'iu-session')).toBe('iu')
+    expect(classifyBilling('claude-code', '<synthetic>', 'expired-session')).toBe('max')
+    expect(classifyBilling('claude-code', '<synthetic>', undefined)).toBe('max')
+  })
 
-  test("every other source bills iu", () => {
-    expect(classifyBilling("hermes", "gpt-5.6-luna")).toBe("iu");
-    expect(classifyBilling("agent-gateway-iu", "gemini-3.5-flash")).toBe("iu");
-  });
+  test('every other source bills iu', () => {
+    expect(classifyBilling('hermes', 'gpt-5.6-luna')).toBe('iu')
+    expect(classifyBilling('agent-gateway-iu', 'gemini-3.5-flash')).toBe('iu')
+  })
 
-  test("agent-gateway-sessions follows its own backend field, not the session log", () => {
-    expect(classifyBilling("agent-gateway-sessions", "claude-sonnet-5[1m]", null, "max")).toBe("max");
-    expect(classifyBilling("agent-gateway-sessions", "gemini-3.5-flash", null, "iu")).toBe("iu");
-  });
+  test('agent-gateway-sessions follows its own backend field, not the session log', () => {
+    expect(classifyBilling('agent-gateway-sessions', 'claude-sonnet-5[1m]', null, 'max')).toBe(
+      'max',
+    )
+    expect(classifyBilling('agent-gateway-sessions', 'gemini-3.5-flash', null, 'iu')).toBe('iu')
+  })
 
-  test("agent-gateway-sessions without a backend falls back to the id heuristic", () => {
-    expect(classifyBilling("agent-gateway-sessions", "claude-sonnet-5", null, null)).toBe("max");
-    expect(classifyBilling("agent-gateway-sessions", "gemini-3.5-flash", null, null)).toBe("iu");
-  });
-});
+  test('agent-gateway-sessions without a backend falls back to the id heuristic', () => {
+    expect(classifyBilling('agent-gateway-sessions', 'claude-sonnet-5', null, null)).toBe('max')
+    expect(classifyBilling('agent-gateway-sessions', 'gemini-3.5-flash', null, null)).toBe('iu')
+  })
+})

@@ -1,10 +1,6 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": [
-    "typescript",
-    "unicorn",
-    "oxc"
-  ],
+  "plugins": ["typescript", "unicorn", "oxc"],
   "categories": {
     "correctness": "off"
   },
@@ -139,16 +135,10 @@
     "prefer-template": "off",
     "no-control-regex": "off"
   },
-  "ignorePatterns": [
-    "node_modules/**",
-    "migrations/**",
-    ".local/**"
-  ],
+  "ignorePatterns": ["node_modules/**", "migrations/**", ".local/**"],
   "overrides": [
     {
-      "files": [
-        "scripts/**"
-      ],
+      "files": ["scripts/**"],
       "rules": {
         "typescript/no-explicit-any": "off"
       }

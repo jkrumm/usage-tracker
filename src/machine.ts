@@ -1,10 +1,10 @@
-import { hostname } from "node:os";
+import { hostname } from 'node:os'
 
 // The DB is local per machine; the eventual Argo sync merges several laptops'
 // DBs into one view. Tagging every row with the host that produced it keeps
 // those rows distinguishable after the merge. Derived once per ingest run.
 
-let cached: string | null = null;
+let cached: string | null = null
 
 /**
  * Stable label for the machine that produced a record. `USAGE_MACHINE` wins;
@@ -12,26 +12,26 @@ let cached: string | null = null;
  * back to the network hostname when that can't be read.
  */
 export function currentMachine(): string {
-  if (cached !== null) return cached;
-  cached = process.env.USAGE_MACHINE?.trim() || derive();
-  return cached;
+  if (cached !== null) return cached
+  cached = process.env.USAGE_MACHINE?.trim() || derive()
+  return cached
 }
 
 function derive(): string {
-  if (process.platform === "darwin") {
-    const model = macModel();
-    if (model) return model;
+  if (process.platform === 'darwin') {
+    const model = macModel()
+    if (model) return model
   }
-  return hostname();
+  return hostname()
 }
 
 function macModel(): string | null {
   try {
-    const proc = Bun.spawnSync(["system_profiler", "SPHardwareDataType"]);
-    if (proc.exitCode !== 0) return null;
-    return parseMacModel(proc.stdout.toString());
+    const proc = Bun.spawnSync(['system_profiler', 'SPHardwareDataType'])
+    if (proc.exitCode !== 0) return null
+    return parseMacModel(proc.stdout.toString())
   } catch {
-    return null;
+    return null
   }
 }
 
@@ -41,11 +41,11 @@ function macModel(): string | null {
  * output instead of re-implementing the regex pair.
  */
 export function parseMacModel(out: string): string | null {
-  const name = /Model Name:\s*(.+)/.exec(out)?.[1]?.trim();
+  const name = /Model Name:\s*(.+)/.exec(out)?.[1]?.trim()
   const chip = /Chip:\s*(.+)/
     .exec(out)?.[1]
     ?.trim()
-    .replace(/^Apple\s+/, "");
-  if (name && chip) return `${name} (${chip})`;
-  return name ?? null;
+    .replace(/^Apple\s+/, '')
+  if (name && chip) return `${name} (${chip})`
+  return name ?? null
 }
