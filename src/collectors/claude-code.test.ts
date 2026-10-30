@@ -686,6 +686,8 @@ describe("claude-code two-root collector", () => {
         join(localDir, "sess-3.jsonl"),
         jsonl(
           { ...boundary, uuid: "cb-bad", timestamp: "not a date" },
+          { ...boundary, uuid: "cb-year0", timestamp: "0000-01-01T00:00:00.000Z" },
+          { ...boundary, uuid: "cb-object", timestamp: { toString: null, valueOf: null } },
           { ...boundary, uuid: "cb-ok" },
           skillCall("toolu_t", "theta", "yesterday-ish"),
           skillCall("toolu_ok", "iota", "2026-10-30T10:30:00.000Z"),

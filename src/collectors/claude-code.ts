@@ -407,6 +407,9 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
 const COMPACTION_MARK = '"compact_boundary"';
 const SKILL_CALL_MARK = '"Skill"'; // not '"name":"Skill"': that would depend on the JSON spacing
 const SKILL_TEXT_MARK = "Base directory for this skill";
+// An event ts outside this range is garbage (Postgres also rejects year 0): the line is no event, the batch is never failed by it.
+const EVENT_TS_MIN = Date.UTC(2000, 0, 1);
+const EVENT_TS_MAX = Date.UTC(2200, 0, 1);
 
 /** The text of a message's content: a bare string, or the text blocks concatenated. */
 function messageText(content: unknown): string {
@@ -438,8 +441,8 @@ function parseEvents(line: string): SessionEvent[] {
   }
   // An unparseable ts would fail the whole batch in Postgres and pin the cursor: such a line is no event. The ts is
   // normalized through Date, so what reaches Postgres is always a valid ISO instant (a date like 02-30 rolls over, never fails).
-  const at = obj.timestamp ? Date.parse(obj.timestamp) : Number.NaN;
-  if (!obj.sessionId || !Number.isFinite(at)) return [];
+  const at = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : Number.NaN;
+  if (!obj.sessionId || !(at >= EVENT_TS_MIN && at <= EVENT_TS_MAX)) return [];
   const base = { sessionId: obj.sessionId, agentId: obj.isSidechain && obj.agentId ? obj.agentId : undefined, ts: new Date(at).toISOString() };
 
   if (compaction && obj.type === "system" && obj.subtype === "compact_boundary") {

@@ -290,6 +290,8 @@ database (20k sessions, 600k records, 60k events, `ANALYZE`d): `session_signals 
 `sessions` first (1,013 rows), then per session one `records_session_idx` bitmap scan and one `session_events_session_idx`
 index scan, so `records` is never scanned whole. The anti join against `record_duplicates` is a hash of the whole (small)
 flag table per session: 75 ms with 600 flagged rows, 291 ms with 6,000 (1 %); the cost follows the flag table, not `records`.
+Live (`shared`, 2026-10-30, 2,278 flagged rows): the same 7-day filter reads 9,895 sessions in 1.3 s. Fine for the weekly report,
+not for a hot path.
 `lane_signals` is a rollup: every filter (`day >= ...`) applies after the aggregate, so each read is one pass over `records`
 (parallel seq scan, anti join and sort, 0.25 s at 600k rows). That is fine for a weekly report, not for a hot path; no new index.
 

@@ -107,17 +107,45 @@ the three commits); the blocking findings that held were fixed, the rest are bel
   with one local id in different sources are separate rows with the same displayed key; points are per account's window
   (`iu` is Max 20x), so a row spanning accounts adds points of different windows, `--account` cuts it.
 
-## Wave 3 — Cost signals: compactions, skills, cache            <!-- status: active -->
-- [ ] The Claude Code collector records compactions per session (the transcript's compaction marker; find it in live
+## Wave 3 — Cost signals: compactions, skills, cache            <!-- status: done -->
+- [x] The Claude Code collector records compactions per session (the transcript's compaction marker; find it in live
   transcripts first) as a count on the session and the record that carries it.
-- [ ] Skill context: each `Skill` tool call (skill name) and its loaded size where the transcript shows it, per session.
+- [x] Skill context: each `Skill` tool call (skill name) and its loaded size where the transcript shows it, per session.
   A table or `lane_detail`, decided in `docs/usage-schema.md`; additive migration.
-- [ ] Cache hit ratio per session and lane (`cache_read / (input + cache_read + cache_write_5m + cache_write_1h)`), as a
+- [x] Cache hit ratio per session and lane (`cache_read / (input + cache_read + cache_write_5m + cache_write_1h)`), as a
   column in the window-share view or a sibling view, not stored.
-- [ ] Re-stamp 30 days for the new fields.
-**Left behind:**
+- [x] Re-stamp 30 days for the new fields.
+**Left behind:** shipped to master (`c18946c`, `f0892b2`, the fix commit, this plan commit), migration `0013` applied, `make deploy`
+done, `make verify` green. `make check`: 404 pass, 0 fail, 0 skip. `agw review` ran three times (uncommitted, the fixed tree, the
+two commits); the blocking findings that held were fixed, the rest are below.
+- **Decision** (`docs/usage-schema.md` §Session events): compactions and skill loads are rows of `usage.session_events`
+  `(source, event_id)`, not record attributes. A `compact_boundary` line has no usage, a record's `raw` is overwritten by the last
+  line of its request, and a skill's size is on a different line than its call (the two halves merge by `tool_use` id, polls apart).
+  Counts are derived, never stored: `usage.session_signals` (per session: token sums, `cache_hit_ratio`, `compactions`,
+  `skill_calls`, `skill_chars`) and `usage.lane_signals` (source x lane x UTC day, ratio from sums). Both read `records_unique`.
+  `argo` can read them like the Wave 2 views.
+- **Transcript facts:** compaction = `type:"system"`, `subtype:"compact_boundary"`, `compactMetadata {trigger, preTokens, postTokens,
+  durationMs}` (kept in `detail`). Skill call = `tool_use` `name:"Skill"`, `input.skill` (args are free text, never stored). Skill size
+  = the following `isMeta` user line with `sourceToolUseID`, whose text starts `Base directory for this skill`; size is characters
+  (tokens ~ chars / 4). 13 % of calls have no such line (size NULL).
+- **Tools:** `make backfill-events` (`restamp-claude-code.ts --events-only`) is the way to backfill events: full scan, records
+  discarded, cursor untouched, no mirror sync, safe beside the LaunchAgent. Run it after `ingest` when the MacBook was offline.
+- **Proof (live, `shared`):** 2,290 events (2026-09-15 on): 2,058 skill calls (1,778 with a size), 232 compactions, none without a
+  session. 30 days, claude-code, by lane: `interactive` 103 compactions / 629 skill loads, `fan_worker` 77 / 145, `wave_mother` 35 / 868
+  (avg 7.7k chars per load), `subagent` 1 / 329; cache hit ratio 0.96-0.99 in every main lane (`other` 0.67). Skills by loaded size:
+  `wave` 483 loads x 11.2k chars, `review` 310 x 5.4k, `investigate` 193 x 6.0k, `epx` 72 x 12.3k, `claude-api` 2 x 114k chars.
+  `session_signals` over 7 days (9,895 sessions) reads in 1.3 s; `lane_signals` is a full pass over `records` (fine weekly).
+- **Known limits (reviewer findings not fixed):** only `Skill` tool calls count (a slash-invoked skill leaves no call; the 64 such
+  loads in the data are subagent preloads); a malformed or out-of-range event line is dropped silently (not logged); a skill marker
+  split across two text blocks would lose its size (never seen); the backfill reads the iumac mirror as the last ingest left it;
+  `lane_signals` has no date pushdown; a size half that arrives without its call stays a nameless skill event until the call is seen.
+- **Found, not fixed (pre-existing, `claude-code.ts` `collectRoot`):** the saved offset is `from + <character index> + 1`, but
+  `Bun.file().slice` takes bytes. On a file with multibyte text the offset undershoots (a test line of 529 characters / 1049 bytes twice
+  gave 1058 against a size of 2098), so every poll re-reads part of what it consumed and the first line is a partial one that fails to
+  parse. No data is lost (idempotent upserts), the cost is wasted re-reads on every multibyte file. A fix is `from +
+  Buffer.byteLength(chunk.slice(0, lastNl + 1))`; stored cursors then jump to exact offsets. Not touched here: outside this wave's ask.
 
-## Wave 4 — The weekly report (U6)            <!-- status: pending -->
+## Wave 4 — The weekly report (U6)            <!-- status: active -->
 - [ ] `usage-tracker report weekly [--week <iso>]`: "where the window went", verdict first. Share of the 5-hour and
   7-day windows by lane, factory role, subagent type and skill; cache hit ratio and compactions by lane; the top ten
   sessions by 7-day share with repo and issue; week-over-week deltas. Then **Findings**: each one a measured claim and the
