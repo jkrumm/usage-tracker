@@ -59,9 +59,9 @@ push step.
 
 ## Validate
 
-`make check` runs `make typecheck` (`bun run tsc --noEmit`) and then
-`bun test` (Bun's runner; `*.test.ts` colocated in `src/`). There is no
-separate linter. The targets are side-effect free — every pipeline suite (ingest, collectors, report, health, writer,
+`make check` runs a frozen-lockfile `bun install`, `oxfmt --check`, `oxlint --type-aware`,
+`tsc --noEmit` and then `bun test` (Bun's runner; `*.test.ts` colocated in `src/`). `bun run format`
+fixes formatting. The targets are side-effect free — every pipeline suite (ingest, collectors, report, health, writer,
 prices) creates and drops a `usage_test_<random>` database as the admin role; the few SQLite tests left read scratch
 files under `mkdtemp` (the sources' own stores). `make check`/`make test` inject
 `USAGE_TEST_PG_URL` from `.env.test.tpl` through `secrets-run`; without it (no secrets-run)

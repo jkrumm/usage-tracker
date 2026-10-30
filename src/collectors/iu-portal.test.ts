@@ -123,7 +123,10 @@ describePg("collectPortal (Postgres)", () => {
 
   test("throttled to one fetch per 4 h", async () => {
     let calls = 0;
-    const fetch = async () => (calls++, ok(daily));
+    const fetch = async () => {
+      calls++;
+      return ok(daily);
+    };
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch });
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW + 3 * H, fetch })).toBe(0);
     await collectPortal(db, { keys: PERSONAL, now: NOW + 4 * H, fetch });
@@ -133,7 +136,10 @@ describePg("collectPortal (Postgres)", () => {
   test("an unreachable MacBook retries next run and never throws; the old data stays", async () => {
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: async () => ok(daily) });
     let calls = 0;
-    const down = async () => (calls++, { code: 255, stdout: "", stderr: "ssh: connect failed" });
+    const down = async () => {
+      calls++;
+      return { code: 255, stdout: "", stderr: "ssh: connect failed" };
+    };
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW + 5 * H, fetch: down })).toBe(0);
     expect(await collectPortal(db, { keys: PERSONAL, now: NOW + 5 * H + 900_000, fetch: down })).toBe(0);
     expect(calls).toBe(2);
@@ -143,7 +149,10 @@ describePg("collectPortal (Postgres)", () => {
 
   test("an expired session backs off for 4 h instead of retrying every run", async () => {
     let calls = 0;
-    const expired = async () => (calls++, { code: 3, stdout: "", stderr: "session expired" });
+    const expired = async () => {
+      calls++;
+      return { code: 3, stdout: "", stderr: "session expired" };
+    };
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: expired });
     await collectPortal(db, { keys: PERSONAL, now: NOW + 900_000, fetch: expired });
     expect(calls).toBe(1);
@@ -157,7 +166,10 @@ describePg("collectPortal (Postgres)", () => {
 
   test("any other failure backs off 1 h, an unreachable MacBook does not", async () => {
     let calls = 0;
-    const broken = async () => (calls++, { code: 1, stdout: "", stderr: "boom" });
+    const broken = async () => {
+      calls++;
+      return { code: 1, stdout: "", stderr: "boom" };
+    };
     await collectPortal(db, { keys: PERSONAL, now: NOW, fetch: broken });
     await collectPortal(db, { keys: PERSONAL, now: NOW + 900_000, fetch: broken });
     expect(calls).toBe(1);

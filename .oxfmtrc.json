@@ -1,0 +1,17 @@
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "semi": false,
+  "ignorePatterns": [
+    "**/*.md",
+    "docs/**",
+    "migrations/**",
+    "launchd/**",
+    ".claude/**",
+    "bun.lock",
+    "node_modules/**"
+  ]
+}

@@ -13,11 +13,17 @@
     "stats": "bun run src/cli.ts stats",
     "sources": "bun run src/cli.ts sources",
     "billing-audit": "bun run src/cli.ts billing-audit",
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "oxlint-tsgolint": "7.0.2005",
     "typescript": "7.0.2"
   },
   "packageManager": "bun@1.4.3"

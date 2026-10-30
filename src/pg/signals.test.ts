@@ -124,7 +124,7 @@ describePg("usage.session_signals and usage.lane_signals", () => {
   const lane = async () => {
     const rows = (await sql`SELECT lane, day::text AS day, input_tokens, cache_read_tokens, cache_hit_ratio, compactions, skill_calls, skill_chars
                             FROM usage.lane_signals WHERE source = 'claude-code' ORDER BY day, lane`) as Record<string, unknown>[];
-    return new Map(rows.map((r) => [`${r.lane} ${r.day}`, r]));
+    return new Map(rows.map((r) => [`${String(r.lane)} ${String(r.day)}`, r]));
   };
 
   test("lane_signals groups records by the record's lane and UTC day, the ratio from the sums", async () => {

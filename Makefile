@@ -1,4 +1,4 @@
-.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -72,8 +72,24 @@ typecheck: ## Type-check with tsc
 test: ## Run the test suite (Postgres suites need secrets-run or USAGE_TEST_PG_URL)
 	$(RUN_TESTS)
 
-check: typecheck ## All local validation: type-check, then run the test suite
-	$(RUN_TESTS)
+format: ## Format with oxfmt
+	bunx --no-install oxfmt --write .
+
+lint: ## Lint with oxlint (type-aware)
+	bunx --no-install oxlint --type-aware .
+
+check: ## All local validation: frozen install, oxfmt, oxlint --type-aware, tsc, test suite
+	@echo "==> install (bun install --frozen-lockfile)"
+	@bun install --frozen-lockfile
+	@echo "==> format (oxfmt --check)"
+	@bunx --no-install oxfmt --check .
+	@echo "==> lint (oxlint --type-aware)"
+	@bunx --no-install oxlint --type-aware .
+	@echo "==> typecheck (tsc --noEmit)"
+	@bunx --no-install tsc --noEmit
+	@echo "==> test"
+	@$(RUN_TESTS)
+	@echo "==> check passed"
 
 backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive into usage.records; INSERT-ONLY unless OVERWRITE=all|<sources> (refuses while the ingest agent is loaded, FORCE=1 overrides); DRYRUN=1, REUSE=1 keeps the dump, NOPROOF=1
 	bun run scripts/backfill-argo.ts $(if $(DRYRUN),--dry-run) $(if $(REUSE),--reuse-dump) $(if $(NOPROOF),--no-proof) $(if $(OVERWRITE),--overwrite $(OVERWRITE)) $(if $(FORCE),--force)
