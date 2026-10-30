@@ -158,6 +158,8 @@ two commits); the blocking findings that held were fixed, the rest are below.
 - [ ] email-gateway's model spend enters `usage` (`argo/docs/usage-reconciliation.md`): its calls write `usage.records`
   through agw's outbox, or route through agw. Pick the smaller change after reading both; email-gateway runs on the VPS,
   so name the path its rows take to `shared`. If it needs a network grant, stop and write it into **Left behind**.
+- [ ] The Claude Code collector's saved offset counts bytes (Wave 3's Left behind, `collectRoot`: a character index fed to
+  `Bun.file().slice`), with a test on a multibyte file; stored cursors move to exact offsets without losing a line.
 - [ ] One report run by hand for the last full week; its findings listed in **Left behind**.
 **Left behind:**
 
