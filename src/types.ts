@@ -65,9 +65,9 @@ export interface UsageRecord {
    * from tokens — the retired research-gateway's `sonar` rows (billed per call, not per
    * token) and agent-gateway-iu's gateway `usage.cost` (more accurate than this
    * table's list-price proxy for its Bedrock/Azure-routed models). When set,
-   * upsertRecords stores it with `cost_source = "reported"` and reprice.ts
+   * upsertRecords stores it with `cost_source = "reported"` and reprice
    * never rewrites it; when omitted the row is priced from the token counts as
-   * usual. Do not set this for a source whose cost the pricing table can
+   * usual. Do not set this for a source whose cost the price tables can
    * compute — opencode and modelpick keep their raw vendor cost in `raw` for
    * inspection only.
    */

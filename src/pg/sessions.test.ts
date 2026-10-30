@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { IGNORE_REPORTED_COST as SQLITE_IGNORE, PRICING } from "../pricing.ts";
 import { aggregateSessions, parentSessionKey, sessionKey, type SessionInput } from "./sessions.ts";
-import { IGNORE_REPORTED_COST, mapBilling, REASONING_FREE_BEFORE } from "./writer.ts";
+import { mapBilling } from "./writer.ts";
 
 const rec = (sourceId: string, grain: "message" | "session", raw?: Record<string, unknown>) => ({ sourceId, grain, raw });
 
@@ -102,16 +101,5 @@ describe("writer constants", () => {
     expect(mapBilling("iu")).toBe("api_key");
     expect(mapBilling("anthropic-api")).toBe("api_key");
     expect(mapBilling("unknown")).toBe("unknown");
-  });
-
-  // Delete with src/pricing.ts: these two tables move to the Postgres path only.
-  test("the IU-specific rules agree with the SQLite pricing table until it is deleted", () => {
-    expect([...IGNORE_REPORTED_COST].sort()).toEqual([...SQLITE_IGNORE].sort());
-    const sqlite = Object.fromEntries(
-      Object.entries(PRICING)
-        .filter(([, rate]) => rate.reasoningFreeBefore)
-        .map(([model, rate]) => [model, rate.reasoningFreeBefore]),
-    );
-    expect(REASONING_FREE_BEFORE).toEqual(sqlite as Record<string, string>);
   });
 });

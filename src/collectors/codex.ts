@@ -267,7 +267,7 @@ function toRecord(
   // OpenAI reports cached and cache-write tokens as details *inside*
   // input_tokens, and reasoning tokens as a detail inside output_tokens — the
   // opposite of Anthropic, where they are additive. This table's contract is
-  // the additive one (pricing.ts bills input + output + cacheRead + cacheWrite
+  // the additive one (usage.compute_cost bills input + output + cacheRead + cacheWrite
   // + reasoning), so both are split back out here. The five fields then sum to
   // the vendor's own total_tokens, which is what keeps the spend landing once
   // instead of twice.

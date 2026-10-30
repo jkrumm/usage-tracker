@@ -388,7 +388,7 @@ export function normalizeModel(raw: string | null): string | null {
   // `compression` task (same alias, same gateway); one row's window lines up
   // exactly with a live `review:router` agent-gateway-sessions.jsonl entry whose own
   // `model` field is "DeepSeek-V4-Flash". Without this it silently priced at
-  // $0 (no PRICING entry for the bare alias).
+  // NULL (no price for the bare alias).
   if (m === "deepseek-flash") m = "deepseek-v4-flash";
   return m;
 }

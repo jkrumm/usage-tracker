@@ -17,12 +17,12 @@ import {
   pendingSessionEnvs,
   useStoredSessionEnvs,
 } from "./models.ts";
-import { PRICING } from "./pricing.ts";
 import { iumacLogsDir } from "./remote.ts";
 
 // normalizeModel is the join between a source's raw model string and the
-// PRICING table: miss here and the record silently prices as unknown (usd:
-// null) rather than failing loudly, so the spend just quietly vanishes from the
+// price tables (usage.prices through the aliases, usage.price_overrides): miss
+// here and the record silently prices as unknown (NULL, cost_source 'none')
+// rather than failing loudly, so the spend just quietly vanishes from the
 // ledger. These cases pin the shapes each collector actually emits.
 
 describe("normalizeModel", () => {
@@ -85,10 +85,10 @@ describe("normalizeModel", () => {
     expect(normalizeModel("iu/claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5");
   });
 
-  test("resolves the IU unified endpoint's Requesty-routed gateway ids onto their PRICING key", () => {
+  test("resolves the IU unified endpoint's Requesty-routed gateway ids onto their price key", () => {
     // The gateway's casing is inconsistent (some ids ship title-cased, some
     // lower-case) — normalizeModel's plain lowercase must still land each one
-    // on the exact PRICING key added for it.
+    // on the key its price (alias or override) is filed under.
     const gatewayIdToKey: Record<string, string> = {
       "glm-5.3-flash": "glm-5.3-flash",
       "glm-5.2": "glm-5.2",
@@ -107,15 +107,13 @@ describe("normalizeModel", () => {
     };
     for (const [gatewayId, key] of Object.entries(gatewayIdToKey)) {
       expect(normalizeModel(gatewayId)).toBe(key);
-      expect(PRICING[key]).toBeDefined();
     }
   });
 
   test("deepseek-v4.1-flash does not collapse onto the retired deepseek-v4-flash key", () => {
-    // A new model, not a rename: the two must resolve to distinct PRICING
-    // entries or historical v4-flash rows silently get re-priced at v4.1's rate.
+    // A new model, not a rename: the two must resolve to distinct price keys
+    // or historical v4-flash rows silently get re-priced at v4.1's rate.
     expect(normalizeModel("deepseek-v4.1-flash")).not.toBe(normalizeModel("deepseek-v4-flash"));
-    expect(PRICING["deepseek-v4.1-flash"]).not.toEqual(PRICING["deepseek-v4-flash"]);
   });
 
   test("maps the bare deepseek-flash alias onto deepseek-v4-flash", () => {
@@ -124,22 +122,18 @@ describe("normalizeModel", () => {
     // in the transcript as the bare, unversioned "deepseek-flash" — without this
     // mapping it priced at $0 for every row.
     expect(normalizeModel("deepseek-flash")).toBe("deepseek-v4-flash");
-    expect(PRICING["deepseek-v4-flash"]).toBeDefined();
   });
 
-  test("resolves the dated ids of priced models onto a real PRICING key", () => {
+  test("resolves the dated ids of priced models onto their price key", () => {
     // The regression that matters: a dated id must reach a rate, not price as null.
-    for (const dated of [
-      "gpt-5.6-terra-2026-07-09",
-      "gpt-image-2-2026-04-21",
-      "gpt-image-2.5-sunburst-2026-09-08",
-      "claude-haiku-4-5-20251001",
-      "claude-sonnet-4-6-eu",
-    ]) {
-      const key = normalizeModel(dated);
-      expect(key).not.toBeNull();
-      expect(PRICING[key as string]).toBeDefined();
-    }
+    const datedToKey: Record<string, string> = {
+      "gpt-5.6-terra-2026-07-09": "gpt-5.6-terra",
+      "gpt-image-2-2026-04-21": "gpt-image-2",
+      "gpt-image-2.5-sunburst-2026-09-08": "gpt-image-2.5-sunburst",
+      "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+      "claude-sonnet-4-6-eu": "claude-sonnet-4-6",
+    };
+    for (const [dated, key] of Object.entries(datedToKey)) expect(normalizeModel(dated)).toBe(key);
   });
 });
 

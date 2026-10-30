@@ -109,11 +109,11 @@ function toRecord(r: BenchRunRow): UsageRecord {
       taskId: r.task_id,
       attempt: r.attempt,
       terminalReason: r.terminal_reason,
-      // The harness's own cost figure — kept for comparison only. pricing.ts
-      // is this tracker's single source of truth for cost (collectors never
-      // price, see its module comment), so bench_cost_usd never feeds
-      // cost_usd; computeCost derives that from the token fields above like
-      // every other source.
+      // The harness's own cost figure — kept for comparison only. The usage
+      // schema's usage.compute_cost is this tracker's single source of truth
+      // for cost (collectors never price), so bench_cost_usd never feeds
+      // cost_usd; it derives that from the token fields above like every
+      // other source.
       bench_cost_usd: r.cost_usd,
     },
   };
