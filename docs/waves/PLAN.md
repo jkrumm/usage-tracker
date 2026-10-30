@@ -145,25 +145,59 @@ two commits); the blocking findings that held were fixed, the rest are below.
   parse. No data is lost (idempotent upserts), the cost is wasted re-reads on every multibyte file. A fix is `from +
   Buffer.byteLength(chunk.slice(0, lastNl + 1))`; stored cursors then jump to exact offsets. Not touched here: outside this wave's ask.
 
-## Wave 4 — The weekly report (U6)            <!-- status: active -->
-- [ ] `usage-tracker report weekly [--week <iso>]`: "where the window went", verdict first. Share of the 5-hour and
+## Wave 4 — The weekly report (U6)            <!-- status: done -->
+- [x] `usage-tracker report weekly [--week <iso>]`: "where the window went", verdict first. Share of the 5-hour and
   7-day windows by lane, factory role, subagent type and skill; cache hit ratio and compactions by lane; the top ten
   sessions by 7-day share with repo and issue; week-over-week deltas. Then **Findings**: each one a measured claim and the
   one change it proposes (a subagent's effort, a skill's size, a role's tier or effort), numbered with a stable id so the
   next week can report its effect. Markdown on stdout; `--format json` for A2.
-- [ ] The report is written to `~/.local/share/usage-tracker/reports/<iso-week>.md` every Monday 07:00 by a LaunchAgent
+- [x] The report is written to `~/.local/share/usage-tracker/reports/<iso-week>.md` every Monday 07:00 by a LaunchAgent
   (the `prices` agent's pattern, `launchd/`), and delivered to the owner through Hermes as a `no_agent` cron job that
   prints the file (hermes-agent `cron/`, the `quota-nudge.py` pattern). The report never contains secrets, hostnames or
   account e-mails.
-- [ ] email-gateway's model spend enters `usage` (`argo/docs/usage-reconciliation.md`): its calls write `usage.records`
+- [x] email-gateway's model spend enters `usage` (`argo/docs/usage-reconciliation.md`): its calls write `usage.records`
   through agw's outbox, or route through agw. Pick the smaller change after reading both; email-gateway runs on the VPS,
   so name the path its rows take to `shared`. If it needs a network grant, stop and write it into **Left behind**.
-- [ ] The Claude Code collector's saved offset counts bytes (Wave 3's Left behind, `collectRoot`: a character index fed to
+- [x] The Claude Code collector's saved offset counts bytes (Wave 3's Left behind, `collectRoot`: a character index fed to
   `Bun.file().slice`), with a test on a multibyte file; stored cursors move to exact offsets without losing a line.
-- [ ] One report run by hand for the last full week; its findings listed in **Left behind**.
-**Left behind:**
+- [x] One report run by hand for the last full week; its findings listed in **Left behind**.
+**Left behind:** shipped to master (`6bb27d0`, `bf92a93`, `2485df4`, this plan commit; hermes-agent `67a0779`; email-gateway and argo doc commits), no migration,
+`make deploy` and `make install-report-agent` done, `make verify` green. `make check`: 438 pass, 0 fail, 0 skip. `agw review` ran three times
+(uncommitted tree each time, after each round of fixes); the blocking findings that held were fixed, the rest are below.
+- **The report** (`src/weekly.ts`, `docs/usage-schema.md` §Weekly report): `usage-tracker report weekly [--week 2026-Www] [--format md|json] [--top N] [--out <dir>]`,
+  `make report [WEEK=] [FORMAT=] [OUT=1]`. Sections: verdict, window share by lane / role / subagent type (this week, previous, delta), skill loads, cache ratio
+  and compactions by lane, top sessions by 7d share, findings, coverage. **Findings** have the id `<rule>:<subject>` (`skill-size:`, `subagent-effort:`,
+  `role-tier:`, `compaction-rate:`, `cache-ratio:`), thresholds in `FINDING_THRESHOLDS`; both weeks are recomputed by the same pure rules, so the effect of a
+  change is `prev -> now` under the same id, and nothing is stored. A finding the previous week lacked is `new`; one that disappeared is `Resolved`; one whose
+  rule could not be measured in either week (no quota readings for that window, no Claude Code records) is `unmeasured` / `unknown`, never "resolved".
+  Session counts and per-session means include sessions with no attributed share (0 points).
+- **Delivery:** LaunchAgent `com.jkrumm.usage-tracker-report` (`launchd/install-report-agent.sh`, Monday 07:00, `jobrun --every 604800`) writes
+  `~/.local/share/usage-tracker/reports/<iso-week>.{md,json}` (0700/0600); Hermes job `825d9e57be32` ("Usage weekly report", no-agent, Mon 07:30, `slack:C0ASRUD7K1U`)
+  prints the file (`hermes-agent/scripts/usage-weekly-report.py`; a missing file prints one line saying so). Proven: `launchctl kickstart` wrote `2026-W43.{md,json}`,
+  the Hermes script printed it. The first scheduled run is Monday 2026-11-02 (report for 2026-W44; W43 is its previous week).
+- **email-gateway:** a collector `email-gateway` reads the gateway's `llm.*` OTel spans from the VPS ClickStack over `ssh vps` (no email-gateway change, no network grant).
+  Path to `shared`: ClickStack on the VPS -> `ssh vps docker exec clickstack clickhouse-client` from the mini -> `usage.records` (`billing=api_key`, key `personal`).
+  `staleAfterHours: null` (a few calls a month; a failed read is a collector error and `ingest` exits 1). **Mistake caught live:** the 15-min agent runs from the working
+  tree, so the collector ingested two spans that Argo's backfill already holds (105 rows end 2026-10-24 09:45); I deleted those two rows and added `HISTORY_FLOOR_MS`
+  (every read starts after 2026-10-24 10:00Z). `pplx-decider-v1-27b` stays unpriced (4 rows). 2 calls in 30 days: the spend is negligible, the wiring is what matters.
+- **Byte offset:** `collectRoot` reads bytes and splits on `0x0A`. Live after deploy: 9,285 of 9,290 cursor files sit exactly at the file size, 5 (open transcripts) behind, none past the end.
+  Old cursors were short of the true offset, so no line was lost.
+- **Findings of the by-hand run (`make report WEEK=2026-W43`, the last full week, window data only from 2026-10-24 so it has no previous week):**
+  `skill-size:wave` (108 loads x 11.8k chars, 318k tokens in the week; propose trimming below 8k chars in dotfiles); `subagent-effort:implementer` (249 sessions, 16.6 7d points,
+  rank 1 of 5, 0.067/session), `subagent-effort:verifier` (46, 2.2, 0.048), `subagent-effort:general-purpose` (179, 1.7, 0.0096); each proposes lowering the definition's effort by one level.
+  Subagents are the largest lane (42 % of the attributed 7d points). **Weak signal for Wave 5:** the subagent rule fires on rank, not on impact, and verifier / general-purpose
+  cost under 0.05 points a session; only `implementer` and `skill-size:wave` are worth a change. No role finding yet: no session carries a factory role in W43.
+- **Wave 5 inherits:** findings have stable ids but no record of the change that answers them. Decide in `docs/usage-schema.md` whether that is a `findings` table or a tracked file
+  the report reads (the report would print `change <ref> landed <date>` next to the id). An effort change lands in the subagent definition (dotfiles); the factory role table is the program lead's.
+- **Known limits (reviewer findings not fixed):** skill names and repo / subagent labels are shown as they are in the database (skill names pass an allowlist regex, which cannot tell a
+  token-shaped name from a real one; no such name exists); the compaction rate's denominator is the sessions active in the week, not also those attributed from before it; a legacy cursor
+  replaying a few lines of a file's tail can null a duration whose parent line sits before the offset (the old code did this on every poll, once now); a span reaching ClickStack more than a day
+  after a newer one is missed; a nonnumeric token attribute reads as 0; two report files are renamed one after the other, so a crash between the renames mixes generations;
+  `make deploy` does not install the report agent (a new host runs both installers).
+- **Pre-existing, not mine:** hermes-agent `scripts/check-cron-registry.py` reports five jobs absent from or contradicting `docs/scheduled-jobs.md` (claude-release-watch, Fleet babysitter,
+  quota-nudge, Morning briefing / Evening report paused vs registered live); its untracked `scripts/model-release-watch.py` is not committed.
 
-## Wave 5 — The first findings become changes            <!-- status: pending -->
+## Wave 5 — The first findings become changes            <!-- status: active -->
 - [ ] For each finding of Wave 4's report: the change, in the repo it belongs to (a skill's size in dotfiles, a
   subagent's effort in its definition, an agw route). A role's tier or effort in `software-factory/config/roles.json` is
   written into **Left behind** for the program lead, not changed here.
