@@ -106,17 +106,25 @@ async function main(): Promise<number> {
       // Silent sources fail the run too, so jobrun/jobs-grade (and through it
       // the dev-host heartbeat) sees a moved or dead store.
       const only = flag(rest, "--source");
-      const stale = await staleSources(
-        sql,
-        only ? collectors.filter((c) => c.source === only) : [...collectors, ...iuPortalFreshnessAll],
-      );
+      // The summary line is written even when Postgres is gone by now: that is a failed run, not a lost one.
+      let stale: Awaited<ReturnType<typeof staleSources>> = [];
+      let staleError = false;
+      try {
+        stale = await staleSources(
+          sql,
+          only ? collectors.filter((c) => c.source === only) : [...collectors, ...iuPortalFreshnessAll],
+        );
+      } catch (err) {
+        staleError = true;
+        process.stderr.write(`staleness check failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
       if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`);
       process.stdout.write(`\ndb: postgres usage schema\n${formatRunSummary(summary)}\n`);
       if (summary.unpriced.length > 0) {
         const breakdown = summary.unpriced.map((m) => `${m.model}=${m.rows}`).join(" ");
         process.stdout.write(`unpriced by model: ${breakdown}\n`);
       }
-      return failed || stale.length > 0 ? 1 : 0;
+      return failed || staleError || stale.length > 0 ? 1 : 0;
     }
 
     if (cmd === "health") {

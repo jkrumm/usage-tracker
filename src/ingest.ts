@@ -54,6 +54,11 @@ export interface IngestOptions {
  * source is skipped, and a thrown error is caught and recorded so one broken
  * source never aborts the others. Cursors and run bookkeeping live in
  * usage.collector_state.
+ *
+ * Known limitation: a collector's cursor is saved after its whole batch is written, not per batch. A run killed at
+ * jobrun's 600 s deadline mid-collector therefore restarts that collector's scan from the old cursor on the next tick
+ * (the upsert is idempotent, so nothing is lost or doubled, the scan is only repeated). A per-batch cursor is a later
+ * improvement.
  */
 export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<IngestSummary> {
   const registry = opts.collectors ?? allCollectors;
@@ -100,7 +105,12 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
     }
   }
 
-  const unpriced = await unpricedByModel(sql);
+  let unpriced: UnpricedModel[] = [];
+  try {
+    unpriced = await unpricedByModel(sql);
+  } catch (err) {
+    log.error(`unpriced: ${err instanceof Error ? err.message : String(err)}`);
+  }
   return { results, unpriced, quota, picks, portal };
 }
 
@@ -172,8 +182,13 @@ async function runOne(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error(`${c.source}: ${msg}`);
-    // The stored cursor stays: the next run retries from the same watermark.
-    await saveState(sql, c.source, { status: "error", note: msg });
+    // The stored cursor stays: the next run retries from the same watermark. When Postgres itself is the failure the
+    // bookkeeping write fails too; that must not escape and abort the collectors after this one.
+    try {
+      await saveState(sql, c.source, { status: "error", note: msg });
+    } catch (stateErr) {
+      log.error(`${c.source}: could not record the error: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
+    }
     return { source: c.source, status: "error", processed: 0, newRows: 0, note: msg };
   }
 }

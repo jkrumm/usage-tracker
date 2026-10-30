@@ -148,6 +148,60 @@ describePg("runIngest (Postgres)", () => {
     expect(formatRunSummary(summary)).toMatch(/status=error boom=error fake-b=\+1\/1 quota=\+0 picks=\+0 portal=\+0 unpriced=\d+$/);
   });
 
+  test("a state store that fails with the collector does not abort the other collectors or the run summary", async () => {
+    const boom: Collector = {
+      source: "boom-db",
+      staleAfterHours: null,
+      available: () => true,
+      async collect() {
+        throw new Error("connection terminated");
+      },
+    };
+    // Postgres "dropped" for the bookkeeping of one source only: every write of its collector_state row fails.
+    await sql.unsafe(`
+      CREATE FUNCTION pg_temp_state_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'state store down'; END $$;
+      CREATE TRIGGER state_fail BEFORE INSERT OR UPDATE ON usage.collector_state
+        FOR EACH ROW WHEN (NEW.source = 'boom-db') EXECUTE FUNCTION pg_temp_state_fail()`);
+    try {
+      const summary = await runIngest(sql, { collectors: [boom, fake("after-boom", [rec("ab1")], "c")] });
+      expect(summary.results.map((r) => [r.source, r.status])).toEqual([["boom-db", "error"], ["after-boom", "ok"]]);
+      expect(await state("after-boom")).toMatchObject({ last_status: "ok", cursor: "c", total: 1 });
+      expect(formatRunSummary(summary)).toMatch(/status=error boom-db=error after-boom=\+1\/1 quota=\+0 picks=\+0 portal=\+0 unpriced=\d+$/);
+    } finally {
+      await sql.unsafe("DROP TRIGGER state_fail ON usage.collector_state; DROP FUNCTION pg_temp_state_fail()");
+    }
+  });
+
+  test("the portal pass still runs after a collector whose state could not be saved", async () => {
+    const boom: Collector = {
+      source: "boom-db",
+      staleAfterHours: null,
+      available: () => true,
+      async collect() {
+        throw new Error("connection terminated");
+      },
+    };
+    await sql.unsafe(`
+      CREATE FUNCTION pg_temp_state_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'state store down'; END $$;
+      CREATE TRIGGER state_fail BEFORE INSERT OR UPDATE ON usage.collector_state
+        FOR EACH ROW WHEN (NEW.source = 'boom-db') EXECUTE FUNCTION pg_temp_state_fail()`);
+    let fetched = 0;
+    try {
+      await runIngest(sql, {
+        collectors: [boom],
+        accounts: false,
+        portal: true,
+        portalFetch: async () => {
+          fetched++;
+          return { code: 1, stdout: "", stderr: "stub" };
+        },
+      });
+    } finally {
+      await sql.unsafe("DROP TRIGGER state_fail ON usage.collector_state; DROP FUNCTION pg_temp_state_fail()");
+    }
+    expect(fetched).toBeGreaterThan(0);
+  });
+
   test("a note without records is skipped, an unavailable collector never runs", async () => {
     const quiet: Collector = {
       source: "quiet",
