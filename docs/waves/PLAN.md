@@ -65,22 +65,49 @@ second over the whole range); its blocking findings were fixed where they held a
   newer stored role in memory (pre-existing `loadSessionEnvs` design, `seen_at` of the stored row is not loaded); the iumac mirror
   was unreachable during the restamp, so MacBook transcripts were re-stamped from the mirror as last synced.
 
-## Wave 2 — Window share (U5)            <!-- status: active -->
-- [ ] The view `usage.session_window_share` per `docs/usage-schema.md` §Window share: consecutive `quota_samples` per
+## Wave 2 — Window share (U5)            <!-- status: done -->
+- [x] The view `usage.session_window_share` per `docs/usage-schema.md` §Window share: consecutive `quota_samples` per
   account, a moved `*_resets_at` starts a fresh interval, each interval's `five_hour_pct` and `seven_day_pct` delta split
   over the sessions with `records` on that account in the interval by `cost_usd`. A migration, with a test on a fixture
   whose expected shares are computed by hand. An index for `records(account, ts)` if the plan needs it (`EXPLAIN` in the
   test or the doc).
-- [ ] Proof: for each account over the last 7 days the shares sum to the observed window movement within a stated
+- [x] Proof: for each account over the last 7 days the shares sum to the observed window movement within a stated
   tolerance; the residual (window moved, no records: the MacBook mirror's lag, sessions on a machine not collected) is
   reported, not hidden.
-- [ ] `usage-tracker window --by session|lane|role|subagent_type|issue|repo [--days N]`: share of the 5-hour and 7-day
+- [x] `usage-tracker window --by session|lane|role|subagent_type|issue|repo [--days N]`: share of the 5-hour and 7-day
   windows, top N, `--format json|plain` like the other commands.
-- [ ] The FL4 measurement: median and p90 7-day share per spawn by factory role and effort over the data so far, written
+- [x] The FL4 measurement: median and p90 7-day share per spawn by factory role and effort over the data so far, written
   to `docs/reports/<date>-role-window-share.md`. This replaces the never-measured per-spawn estimate the factory once had.
-**Left behind:**
+**Left behind:** shipped to master (`11f64be`, `3c6337c`, `bf77701`, this plan commit), migrations `0011` + `0012` applied, `make deploy`
+done, `make verify` green. `make check`: 388 pass, 0 fail, 0 skip. `agw review` ran three times (uncommitted, the fixed tree,
+the three commits); the blocking findings that held were fixed, the rest are below.
+- **What exists:** views `usage.window_intervals` (per account and window, each interval's `delta_pct` plus the records inside),
+  `usage.window_attribution` (interval x session, `share_pct`) and `usage.session_window_share` (account x session, the sum);
+  `usage-tracker window --by session|lane|role|subagent_type|issue|repo|account [--days N] [--top N] [--account id] [--format
+  json|plain]` (`make window BY=lane`), which also prints moved / attributed / residual per window. `argo` has SELECT on the
+  views (default privileges), so A2 can read them. Rule, limits and the `EXPLAIN` (the lookup uses `records_account_ts_idx`, 7
+  days in ~0.75 s, no new index): `docs/usage-schema.md` §Window share. 0012 supersedes 0011's view bodies (0011 was applied
+  for ten minutes before the review; the checksum rule kept it in place).
+- **Proof (live, `shared`, last 7 days, three accounts):** shares sum to the movement minus the residual by construction
+  (per interval they equal `delta_pct`). Residual = points in intervals with no priced Max record: 5 h 26.0 of 2,360 (1.1 %),
+  7 d 10.0 of 377 (2.7 %); per account at most 2.1 % (5 h) and 5.8 % (7 d, `me2`). Consistency check: dollars per 5 h point are
+  stable per account (`me` 1.40, `me2` 1.33, p10-p90 0.95-1.94; `iu` 4.5-5.1, a Max 20x account). The 7 d meter moves in whole
+  points, so per-session 7 d shares are noisy and only means over many sessions are trustworthy.
+- **FL4 (`docs/reports/2026-10-30-role-window-share.md`):** the factory role cannot be measured yet (6 sessions carry one, all too
+  recent), so the table is by lane x model x effort (the lane is the role's stand-in). Model beats effort: Opus spawns cost 2-5x a
+  Sonnet spawn in the same lane; a wave mother's 7 d p90 is 2.2-7.7 points and its 5 h p90 13.5-47.7; fan workers' mean is 0.2
+  (Sonnet) / 0.9 (Opus); Haiku interactive is 0. Effort cannot be separated from the model in this data (Sonnet runs `high`, Opus
+  `medium`; the one cell with both is 6 spawns). Re-run the report's SQL with `GROUP BY role` after a week of factory runs; the
+  role-table decision is the program lead's.
+- **Known limits (reviewer findings not fixed):** `quota_samples.sampled_at` dates both windows of a reading with the fresher
+  one's age, so a window observed earlier is dated late (data limit, documented); a stale reading that moves `resets_at`
+  backward counts its pct as a fresh window (also not guarded in 0011); the interval total uses `sum(cost_usd)` over all
+  Max records while attribution takes `cost_usd > 0` (no negative cost exists, a check could be added if one appears);
+  `--days` keeps intervals that end inside the period, so the first can reach one sampling gap before the cutoff; sessions
+  with one local id in different sources are separate rows with the same displayed key; points are per account's window
+  (`iu` is Max 20x), so a row spanning accounts adds points of different windows, `--account` cuts it.
 
-## Wave 3 — Cost signals: compactions, skills, cache            <!-- status: pending -->
+## Wave 3 — Cost signals: compactions, skills, cache            <!-- status: active -->
 - [ ] The Claude Code collector records compactions per session (the transcript's compaction marker; find it in live
   transcripts first) as a count on the session and the record that carries it.
 - [ ] Skill context: each `Skill` tool call (skill name) and its loaded size where the transcript shows it, per session.
