@@ -22,9 +22,9 @@
   },
   {
     "finding": "skill-size:wave",
-    "status": "handed-off",
+    "status": "landed",
     "date": "2026-10-30",
-    "ref": null,
-    "summary": "answered by the program lead's retirement of the wave skill's size (dotfiles skills/wave/SKILL.md is rewritten there); the lead adds the landed entry with its commit"
+    "ref": "dotfiles@98f7690",
+    "summary": "wave skill rewritten for the factory's waiting pattern, 12,911 -> 7,988 characters (F1 retirement, dotfiles PR #53, first commit 6b89343)"
   }
 ]
