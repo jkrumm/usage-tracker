@@ -31,6 +31,7 @@ const GROUP_EXPR: Record<GroupBy, string> = {
 
 export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[];
 
+// Reads usage.records_unique: the gateway mirror copies (docs/usage-schema.md, Duplicates) are not counted twice.
 export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number }): Promise<StatRow[]> {
   const expr = GROUP_EXPR[opts.by];
   if (!expr) throw new Error(`--by must be one of: ${GROUP_BY_DIMS.join(", ")}`);
@@ -53,7 +54,7 @@ export async function stats(sql: SQL, opts: { by: GroupBy; sinceDays?: number })
             coalesce(sum(cache_write_5m_tokens + cache_write_1h_tokens), 0)::float8 AS "cacheWrite",
             coalesce(sum(reasoning_tokens), 0)::float8           AS reasoning,
             sum(cost_usd)::float8                                AS "costUsd"
-     FROM usage.records
+     FROM usage.records_unique
      WHERE outcome = 'ok' AND ($1::int IS NULL OR ts >= now() - make_interval(days => $1::int))
      GROUP BY 1
      ORDER BY "costUsd" DESC NULLS LAST, records DESC`,

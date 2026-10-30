@@ -7,6 +7,7 @@ import { DEFAULT_IU_KEY, iuKeyDef, type IuKey } from "./iu-keys.ts";
 // measured by IU's portal (usage.iu_portal_cost). usage.records.cost_usd for billing='api_key' is our own
 // estimate and stays: this report compares the two so a wrong rate card, a
 // missing collector or an IU-side charge shows up. It never replaces either.
+// Tracked spend reads usage.records_unique: the gateway mirror copies of docs/usage-schema.md are not counted twice.
 // Days are UTC calendar days on both sides (the portal's calendar is assumed UTC).
 
 const BURN_DAYS = 7;
@@ -77,7 +78,7 @@ export async function buildBudget(sql: SQL, now = Date.now(), iuKey: IuKey = DEF
   const portalRows = await portalCells(sql, iuKey, windowStart, today);
   const trackedRows = (await sql`
     SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, coalesce(model, '?') AS key, sum(coalesce(cost_usd, 0))::float8 AS usd
-    FROM usage.records
+    FROM usage.records_unique
     WHERE billing = 'api_key' AND api_key = ${iuKey}
       AND ts >= (${windowStart}::date::timestamp AT TIME ZONE 'UTC') AND ts < ((${today}::date + 1)::timestamp AT TIME ZONE 'UTC')
     GROUP BY 1, 2`) as DayKeyUsd[];
@@ -216,7 +217,7 @@ export async function buildExplain(sql: SQL, query: string, now = Date.now(), iu
     SELECT to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, source, count(*)::int AS n,
            sum(input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens)::float8 AS tok,
            sum(coalesce(cost_usd, 0))::float8 AS usd
-    FROM usage.records
+    FROM usage.records_unique
     WHERE billing = 'api_key' AND api_key = ${iuKey}
       AND ts >= (${from}::date::timestamp AT TIME ZONE 'UTC') AND ts < ((${today}::date + 1)::timestamp AT TIME ZONE 'UTC')
       AND regexp_replace(lower(coalesce(model, '')), '[^a-z0-9]', '', 'g') = ${want}
