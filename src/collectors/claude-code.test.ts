@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetSessionBaseUrlsCacheForTest, resetAgentGatewayWindowsCacheForTest } from "../models.ts";
@@ -91,6 +91,53 @@ describe("claude-code two-root collector", () => {
     expect(offsets[localFile]).toBeGreaterThan(0);
     expect(offsets[mirrorFile]).toBeGreaterThan(0);
     expect(offsets[localFile]).not.toBe(offsets[mirrorFile]);
+  });
+
+  describe("saved offset counts bytes", () => {
+    // A request whose text is multibyte: 3 bytes per "€", so characters < bytes.
+    const multibyteLine = (requestId: string) =>
+      `${JSON.stringify({
+        type: "assistant",
+        requestId,
+        sessionId: "session-1",
+        timestamp: new Date().toISOString(),
+        message: { id: `msg-${requestId}`, model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: "text", text: "€".repeat(50) }] },
+      })}\n`;
+    const none = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
+    const offsetOf = (cursor: string | null | undefined, file: string) => (JSON.parse(cursor ?? "{}") as Record<string, number>)[file];
+
+    test("the offset equals the file size in bytes, so the next poll re-reads nothing and a later line is read whole", async () => {
+      setSyncOverrideForTest(none);
+      const file = join(localDir, "multibyte.jsonl");
+      writeFileSync(file, multibyteLine("m1") + multibyteLine("m2"));
+      expect(Buffer.byteLength(multibyteLine("m1"))).toBeGreaterThan(multibyteLine("m1").length);
+
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      expect(first.records.map((r) => r.sourceId).sort()).toEqual(["m1", "m2"]);
+      expect(offsetOf(first.cursor, file)).toBe(statSync(file).size);
+
+      const idle = await claudeCodeCollector.collect({ cursor: first.cursor ?? null, full: false, log });
+      expect(idle.records).toEqual([]);
+
+      appendFileSync(file, multibyteLine("m3"));
+      const next = await claudeCodeCollector.collect({ cursor: first.cursor ?? null, full: false, log });
+      expect(next.records.map((r) => r.sourceId)).toEqual(["m3"]);
+      expect(offsetOf(next.cursor, file)).toBe(statSync(file).size);
+    });
+
+    test("a cursor saved by the old character-index code (short of the true offset) loses no line and moves to the exact offset", async () => {
+      setSyncOverrideForTest(none);
+      const file = join(localDir, "legacy.jsonl");
+      const l1 = multibyteLine("l1");
+      writeFileSync(file, l1);
+      // What the old code stored: from + character index of the last newline + 1 = the line's length in characters.
+      const legacy = JSON.stringify({ [file]: l1.length });
+      appendFileSync(file, multibyteLine("l2"));
+
+      const result = await claudeCodeCollector.collect({ cursor: legacy, full: false, log });
+      expect(result.records.map((r) => r.sourceId)).toContain("l2");
+      expect(offsetOf(result.cursor, file)).toBe(statSync(file).size);
+    });
   });
 
   test("a failed sync still reports the local root's records with the note surfaced", async () => {

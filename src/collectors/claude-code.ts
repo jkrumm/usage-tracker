@@ -186,11 +186,13 @@ async function collectRoot(
     const from = offsets[file] ?? 0;
     if (size <= from) continue;
 
-    const chunk = await Bun.file(file).slice(from, size).text();
-    const lastNl = chunk.lastIndexOf("\n");
+    // Bytes, not characters: the offset is fed back to Bun.file().slice, and a line with multibyte text is longer in
+    // bytes than in characters (a character index undershot and made every poll re-read part of what it had consumed).
+    const chunk = new Uint8Array(await Bun.file(file).slice(from, size).arrayBuffer());
+    const lastNl = chunk.lastIndexOf(0x0a);
     if (lastNl === -1) continue; // no complete line yet; revisit next run
 
-    const complete = chunk.slice(0, lastNl);
+    const complete = new TextDecoder().decode(chunk.subarray(0, lastNl));
     const lines = complete.split("\n");
     // parentUuid chains a line to whatever causally preceded it (the user
     // message that triggered a turn, or — for a turn that streamed several
