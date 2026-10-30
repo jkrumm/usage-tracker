@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadChanges, parseChanges, type ChangeRecord } from "./changes.ts";
 import { migratedDb } from "./pg/fixture.ts";
 import { describePg } from "./pg/testing.ts";
 import {
@@ -9,6 +10,7 @@ import {
   formatWeekly,
   isoWeekOf,
   lastFullIsoWeek,
+  noteOf,
   parseIsoWeek,
   trackFindings,
   weeklyReport,
@@ -60,6 +62,35 @@ test("the default week is the last one that has fully passed", () => {
 //   quota account z: flat readings (5/5) in W38 and W39 only: readings without movement.
 //   events: skill wave 10k/12k/14k chars (W42: 3 x 9k), small 3 x 1k, rare 1 x 20k (W42: old 4 x 10k); compactions: 2 in s1, 1 in s3.
 //   hostile skill names: example.com 3 x 30k, 10.0.0.1 / op://x/y / a@b.c 1 x 5k each -> one (other) row: 6 loads, 105k chars.
+const landed = (finding: string, date: string): ChangeRecord => ({ finding, status: "landed", date, ref: "dotfiles@0b0e61d", summary: "effort high -> medium" });
+
+test("finding changes: strict parsing, a missing file is no changes, and the repo's own file is valid", () => {
+  expect(parseChanges(JSON.stringify([{ finding: "skill-size:wave", status: "landed", date: "2026-11-02", ref: "dotfiles@abc1234", summary: " trim " }]))).toEqual([
+    { finding: "skill-size:wave", status: "landed", date: "2026-11-02", ref: "dotfiles@abc1234", summary: "trim" },
+  ]);
+  const bad = (entry: object) => () => parseChanges(JSON.stringify([{ finding: "skill-size:wave", status: "declined", date: "2026-11-02", summary: "x", ...entry }]));
+  expect(bad({ finding: "wave" })).toThrow("finding must look like");
+  expect(bad({ status: "done" })).toThrow("status must be one of");
+  expect(bad({ date: "2026-13-40" })).toThrow("date must be");
+  expect(bad({ ref: "abc" })).toThrow("ref must look like");
+  expect(bad({ status: "landed" })).toThrow("a landed change needs a ref");
+  expect(bad({ summary: " " })).toThrow("summary is required");
+  expect(() => parseChanges(JSON.stringify([landed("a-b:c", "2026-11-02"), landed("a-b:c", "2026-11-02")]))).toThrow("duplicate entry");
+  expect(() => parseChanges("{}")).toThrow("must hold a JSON array");
+  expect(loadChanges("/nonexistent/finding-changes.json")).toEqual([]);
+  expect(loadChanges().length).toBeGreaterThan(0); // docs/finding-changes.json
+});
+
+test("a change is placed against the covered week: not yet, partial in either compared week, full", () => {
+  const w44 = parseIsoWeek("2026-W44").from; // compares W44 with W43
+  const at = (date: string) => noteOf(landed("x-y:z", date), w44);
+  expect(at("2026-11-02")).toMatchObject({ week: "2026-W45", exposure: "not-yet" });
+  expect(at("2026-10-30")).toMatchObject({ week: "2026-W44", exposure: "partial" });
+  expect(at("2026-10-20")).toMatchObject({ week: "2026-W43", exposure: "partial" });
+  expect(at("2026-10-18")).toMatchObject({ week: "2026-W42", exposure: "full" });
+  expect(noteOf({ ...landed("x-y:z", "2026-10-18"), status: "declined", ref: null }, w44).exposure).toBeNull();
+});
+
 describePg("weekly report", () => {
   const db = migratedDb();
   const T = Date.parse("2026-10-19T00:00:00Z");
@@ -275,6 +306,30 @@ describePg("weekly report", () => {
       expect(f.claim).toMatch(/\d/);
       expect(f.proposal.length).toBeGreaterThan(10);
     }
+  });
+
+  test("recorded changes print next to the finding they answer, in the report and the JSON", async () => {
+    const cache = landed("cache-ratio:worker", "2026-10-14");
+    const old = landed("skill-size:old", "2026-10-20"); // resolved this week
+    const changes: ChangeRecord[] = [
+      cache,
+      old,
+      { finding: "subagent-effort:Explore", status: "declined", date: "2026-10-30", ref: null, summary: "below the impact bar" },
+      { finding: "skill-size:gone", status: "handed-off", date: "2026-10-30", ref: null, summary: "the lead lands it" },
+    ];
+    const r = await weeklyReport(await db.sql(), { week: "2026-W43", thresholds: th, changes });
+    const byId = Object.fromEntries(r.findings.map((f) => [f.id, f]));
+    expect(byId["cache-ratio:worker"]?.changes).toEqual([{ ...cache, week: "2026-W42", exposure: "partial" }]);
+    expect(byId["skill-size:wave"]?.changes).toEqual([]);
+    expect(r.resolved[0]?.changes).toEqual([{ ...old, week: "2026-W43", exposure: "partial" }]);
+    expect(byId["subagent-effort:Explore"]?.changes[0]).toMatchObject({ status: "declined", exposure: null });
+    expect(r.otherChanges.map((c) => c.finding)).toEqual(["skill-size:gone"]);
+    const md = formatWeekly(r);
+    expect(md).toContain("  - Change: landed 2026-10-14 (dotfiles@0b0e61d): effort high -> medium (landed in 2026-W42, so 2026-W42 ran partly under it");
+    expect(md).toContain("  - Change: declined 2026-10-30: below the impact bar");
+    expect(md).toContain("### Changes without a listed finding");
+    expect(md).toContain("- **skill-size:gone**");
+    expect((await week()).otherChanges).toEqual([]); // no records given: the report is a function of the database
   });
 
   test("finding ids are stable across weeks: recurring with the effect, new, and resolved with the last value", async () => {

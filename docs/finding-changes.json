@@ -1,0 +1,30 @@
+[
+  {
+    "finding": "subagent-effort:implementer",
+    "status": "landed",
+    "date": "2026-10-30",
+    "ref": "dotfiles@0b0e61d",
+    "summary": "implementer subagent default effort high -> medium (agents/implementer.md)"
+  },
+  {
+    "finding": "subagent-effort:verifier",
+    "status": "declined",
+    "date": "2026-10-30",
+    "ref": null,
+    "summary": "0.048 7d points per session over 46 sessions is below the impact bar; the rule fires on rank, not impact"
+  },
+  {
+    "finding": "subagent-effort:general-purpose",
+    "status": "declined",
+    "date": "2026-10-30",
+    "ref": null,
+    "summary": "0.0096 7d points per session over 179 sessions is below the impact bar; the rule fires on rank, not impact"
+  },
+  {
+    "finding": "skill-size:wave",
+    "status": "handed-off",
+    "date": "2026-10-30",
+    "ref": null,
+    "summary": "answered by the program lead's retirement of the wave skill's size (dotfiles skills/wave/SKILL.md is rewritten there); the lead adds the landed entry with its commit"
+  }
+]

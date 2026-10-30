@@ -33,7 +33,7 @@ push step.
   numbered **findings** with a stable id `<rule>:<subject>` and their effect against the previous week); `make report`.
   Rules, thresholds and ranges: `docs/usage-schema.md` §Weekly report. `launchd/install-report-agent.sh` runs it Mondays
   07:00 and writes `~/.local/share/usage-tracker/reports/<iso-week>.{md,json}`; Hermes (`usage-weekly-report.py`, 07:30) delivers
-  the file. See the "Weekly report" gotcha.
+  the file. `src/changes.ts` + `docs/finding-changes.json` record which change answers which finding id. See the "Weekly report" gotcha.
 - `src/collectors/email-gateway.ts` — email-gateway's model calls, read from its `llm.*` OTel spans in the VPS ClickStack over
   `ssh vps` (`docs/collectors.md`).
 - `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and `resolveIuKey`,
@@ -228,8 +228,9 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   is kept. `bun run src/cli.ts quota [--days 7]` (`make quota`) prints the series and lane × picked × reason counts.
 - **Weekly report** (`docs/usage-schema.md` §Weekly report). A pure function of the schema and an ISO week (Monday 00:00 UTC to
   the next); the default is the last full week, which on Monday 07:00 Europe/Berlin is the week that just ended. Findings
-  are recomputed for both the week and the one before it, so effect tracking stores nothing (Wave 5 decides whether a
-  `findings` table is needed for changes recorded against an id). The report carries no secrets, hostnames or e-mails
+  are recomputed for both the week and the one before it, so effect tracking stores nothing. The change that answers a
+  finding is a tracked entry in `docs/finding-changes.json` (`src/changes.ts`, strict parse; add one in the commit that
+  lands the change, `docs/usage-schema.md` §Finding changes), printed under its finding. The report carries no secrets, hostnames or e-mails
   (skill names are untrusted free text and pass an allowlist). Window data only exists from 2026-10-24 (first quota
   reading), so 2026-W43 is partial and has no previous week. A missed run is not retried: Hermes prints a one-line
   "no report file" for the week, and `make report WEEK=<iso> OUT=1` regenerates it.

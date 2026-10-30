@@ -21,6 +21,7 @@ import {
 import { connect } from "./pg/connect.ts";
 import { runPgCommand } from "./pg/cli.ts";
 import { formatReprice, reprice } from "./reprice.ts";
+import { loadChanges } from "./changes.ts";
 import { formatWeekly, parseIsoWeek, weeklyReport, writeWeekly } from "./weekly.ts";
 import { formatWindow, WINDOW_BY_DIMS, windowShare, type WindowBy } from "./window.ts";
 
@@ -264,7 +265,7 @@ async function main(): Promise<number> {
         process.stderr.write(`--format must be md or json, got "${format}"\n`);
         return 2;
       }
-      const report = await weeklyReport(sql, { week: weekRaw, top });
+      const report = await weeklyReport(sql, { week: weekRaw, top, changes: loadChanges() });
       const outDir = flag(rest, "--out");
       if (outDir !== undefined) for (const path of writeWeekly(outDir, report)) process.stderr.write(`${path}\n`);
       process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : formatWeekly(report));

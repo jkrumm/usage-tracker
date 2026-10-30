@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SQL } from "bun";
+import type { ChangeExposure, ChangeNote, ChangeRecord } from "./changes.ts";
 
 // `report weekly`: where the Max windows went in one ISO week, verdict first, findings with stable ids that are
 // recomputed for the previous week so every finding carries its effect. Rules and ranges: docs/usage-schema.md §Weekly report.
@@ -142,6 +143,9 @@ export interface ResolvedFinding {
   metric: { name: string; value: number; unit: string };
 }
 
+/** A finding with the recorded changes that answer it (docs/usage-schema.md §Finding changes). */
+export type Answered<T> = T & { changes: ChangeNote[] };
+
 /** The point fields are null when the week has no readings of THIS window (unknown, not zero movement). */
 /** A reading of a window is a `quota_samples` row with that window's pct AND resets_at (the `window_intervals` predicate). */
 export interface WindowReadings {
@@ -182,10 +186,12 @@ export interface WeeklyReport {
     cache: CacheRow[];
     topSessions: TopSession[];
   };
-  findings: Finding[];
-  resolved: ResolvedFinding[];
+  findings: Answered<Finding>[];
+  resolved: Answered<ResolvedFinding>[];
   /** Findings of the previous week that cannot be judged because this week was not measured for their rule (no Claude Code records, or no 7d readings for a window rule). */
-  unknown: ResolvedFinding[];
+  unknown: Answered<ResolvedFinding>[];
+  /** Recorded changes whose finding is not listed above (declined, handed off, or a finding gone for longer than a week). */
+  otherChanges: ChangeNote[];
   coverage: CoverageRow[];
 }
 
@@ -577,6 +583,8 @@ export interface WeeklyOptions {
   /** Rows per table, the top-sessions table included (default 10). */
   top?: number;
   thresholds?: FindingThresholds;
+  /** Recorded changes per finding id (`loadChanges()` in the CLI); default none, so the report is a function of the database alone. */
+  changes?: ChangeRecord[];
 }
 
 const topSessionRow = (s: SessionShare): TopSession => {
@@ -594,6 +602,15 @@ const topSessionRow = (s: SessionShare): TopSession => {
     sevenDayPts: round(s.seven),
   };
 };
+
+/** A record placed against the covered week (`weekFrom` = its Monday): `full` = both compared weeks ran under the change, `partial` = it landed in one of them. */
+export function noteOf(c: ChangeRecord, weekFrom: Date): ChangeNote {
+  const at = new Date(`${c.date}T00:00:00Z`);
+  const prevFrom = new Date(weekFrom.getTime() - 7 * DAY_MS);
+  const nextFrom = new Date(weekFrom.getTime() + 7 * DAY_MS);
+  const exposure: ChangeExposure | null = c.status !== "landed" ? null : at >= nextFrom ? "not-yet" : isoWeekOf(at).from < prevFrom ? "full" : "partial";
+  return { ...c, week: isoWeekOf(at).label, exposure };
+}
 
 const pctChange = (now: number, prev: number) => (prev > 0 ? round(((now - prev) / prev) * 100, 1) : null);
 const signed = (n: number, digits = 1) => `${n >= 0 ? "+" : ""}${n.toFixed(digits)}`;
@@ -665,6 +682,16 @@ export async function weeklyReport(sql: SQL, opts: WeeklyOptions = {}): Promise<
     cur: { claude: curClaude, sevenDay: cw.sevenDay },
     prev: { claude: prevClaude, sevenDay: pw.sevenDay },
   });
+
+  const records = opts.changes ?? [];
+  const byDate = (a: ChangeRecord, b: ChangeRecord) => a.date.localeCompare(b.date) || a.finding.localeCompare(b.finding);
+  const answered = <T extends { id: string }>(items: T[]): Answered<T>[] =>
+    items.map((f) => ({ ...f, changes: records.filter((c) => c.finding === f.id).sort(byDate).map((c) => noteOf(c, week.from)) }));
+  const listed = new Set([...findings, ...resolved, ...unknown].map((f) => f.id));
+  const otherChanges = records
+    .filter((c) => !listed.has(c.finding))
+    .sort(byDate)
+    .map((c) => noteOf(c, week.from));
 
   const coverage: CoverageRow[] = (["five_hour", "seven_day"] as const).map((win) => {
     const k = win === "five_hour" ? "five" : "seven";
@@ -758,9 +785,10 @@ export async function weeklyReport(sql: SQL, opts: WeeklyOptions = {}): Promise<
     hasClaudeData: curClaude,
     verdict: { lines, topLane, weekOverWeek },
     tables: { lane, role, subagentType, skills, cache, topSessions },
-    findings,
-    resolved,
-    unknown,
+    findings: answered(findings),
+    resolved: answered(resolved),
+    unknown: answered(unknown),
+    otherChanges,
     coverage,
   };
 }
@@ -804,6 +832,18 @@ export function formatWeekly(report: WeeklyReport): string {
       "Points are points of one account's window; a row spanning accounts adds points of different windows. The 7-day meter moves in whole points, so a single session's 7d share is noisy; sums over lanes, roles and types are the reliable figures.",
     ];
   };
+  const changeLine = (c: ChangeNote) => {
+    const what = c.status === "landed" ? `landed ${c.date}${c.ref === null ? "" : ` (${c.ref})`}` : `${c.status} ${c.date}`;
+    const when =
+      c.exposure === "full"
+        ? `both compared weeks ran under it`
+        : c.exposure === "partial"
+          ? `landed in ${c.week}, so ${c.week === report.week ? "this week ran" : `${report.previous.week} ran`} partly under it: the effect shows in full from the next week`
+          : c.exposure === "not-yet"
+            ? `lands after ${report.week}, no effect yet`
+            : null;
+    return `  - Change: ${what}: ${clean(c.summary)}${when === null ? "" : ` (${when})`}`;
+  };
   const findingsMd = (): string[] => {
     const lines = ["## Findings", ""];
     if (report.findings.length === 0) lines.push("(none)");
@@ -815,20 +855,24 @@ export function formatWeekly(report: WeeklyReport): string {
           : t.status === "unmeasured"
             ? `${report.previous.week} was not measured for this rule, effect unknown (${f.metric.value} ${f.metric.unit})`
             : `${t.prev} -> ${f.metric.value} ${f.metric.unit} (${t.delta >= 0 ? "+" : ""}${t.delta})`;
-      lines.push(`- **${f.id}**: ${f.claim}`, `  - Proposal: ${f.proposal}`, `  - ${f.metric.name}: ${effect}`);
+      lines.push(`- **${f.id}**: ${f.claim}`, `  - Proposal: ${f.proposal}`, `  - ${f.metric.name}: ${effect}`, ...f.changes.map(changeLine));
     }
     if (report.resolved.length > 0) {
       lines.push("", "### Resolved", "");
-      for (const r of report.resolved) lines.push(`- **${r.id}**: gone since ${report.previous.week}; last value ${r.metric.value} ${r.metric.unit} (${r.metric.name})`);
+      for (const r of report.resolved) lines.push(`- **${r.id}**: gone since ${report.previous.week}; last value ${r.metric.value} ${r.metric.unit} (${r.metric.name})`, ...r.changes.map(changeLine));
     }
     if (report.unknown.length > 0) {
       lines.push("", "### Unknown (not measured this week)", "");
-      for (const r of report.unknown) lines.push(`- **${r.id}**: cannot be judged; last value in ${report.previous.week} ${r.metric.value} ${r.metric.unit} (${r.metric.name})`);
+      for (const r of report.unknown) lines.push(`- **${r.id}**: cannot be judged; last value in ${report.previous.week} ${r.metric.value} ${r.metric.unit} (${r.metric.name})`, ...r.changes.map(changeLine));
+    }
+    if (report.otherChanges.length > 0) {
+      lines.push("", "### Changes without a listed finding", "");
+      for (const c of report.otherChanges) lines.push(`- **${c.finding}**`, changeLine(c));
     }
     return lines;
   };
   if (report.empty) {
-    const hasFindings = report.findings.length + report.resolved.length + report.unknown.length > 0;
+    const hasFindings = report.findings.length + report.resolved.length + report.unknown.length + report.otherChanges.length > 0;
     return [...out, "", ...(hasFindings ? [...findingsMd(), ""] : []), ...coverageMd(), ""].join("\n");
   }
 

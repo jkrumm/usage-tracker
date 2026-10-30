@@ -309,7 +309,7 @@ restamp-claude-code` also re-emits events but is for attribution changes only.
 
 `usage-tracker report weekly [--week YYYY-Www] [--top N] [--format md|json] [--out <dir>]` (`src/weekly.ts`; exports
 `weeklyReport(sql, {week})`, `formatWeekly`, `parseIsoWeek`, `findingsFor`, `FINDING_THRESHOLDS`). Read-only, nothing stored: both
-weeks are recomputed on every run (Wave 5 decides whether findings get a table). One `REPEATABLE READ` snapshot covers both weeks.
+weeks are recomputed on every run (the record of changes is a tracked file, §Finding changes). One `REPEATABLE READ` snapshot covers both weeks.
 
 **Range.** An ISO week is Monday 00:00 UTC to the next Monday, `[from, to)`; default = the last full week before now. The previous
 week gives the deltas. `window_attribution` / `window_intervals` are filtered on `to_at` in range (like `window --days`: the first
@@ -362,6 +362,27 @@ anything with an `@` becomes `(address)`, so a report never carries a host, a to
 
 **Limits.** Same as §Window share: the 7-day meter moves in whole points, so single-session shares are noisy and only sums are reliable.
 Quota readings start 2026-10-24, so every week before 2026-W44 is partial and 2026-W43 has no previous week with window data.
+
+### Finding changes
+
+Decision (Wave 5): the change that answers a finding is recorded in the tracked file `docs/finding-changes.json`, not in a table. A
+`findings` table would store what the report recomputes from the data every week (the metric, both weeks) and would need a second
+writer; the only fact that is not derivable is "which change answers which finding", and a reviewable, versioned file holds that.
+`src/changes.ts` parses it strictly (a malformed entry throws with its index, so a typo never silently drops a change); the CLI passes
+`loadChanges()` to `weeklyReport({changes})`, which defaults to none, so a report stays a function of the database alone in tests.
+
+An entry is `{finding, status, date, ref, summary}`: `finding` is the id as the report prints it; `status` is `landed` (a change is in
+place, `ref` = `<repo>@<short sha>` required), `declined` (looked at, no change, `summary` says why) or `handed-off` (another owner lands it,
+the owner adds a `landed` entry when it does); `date` is the UTC day it landed or was decided. At most one entry per finding and day;
+a finding can have several over time (a change, then a replacement). Whoever lands a change adds the entry in the same commit
+sequence as the change, in this repo.
+
+The report prints each entry under its finding (also under Resolved and Unknown): `Change: landed 2026-10-30 (dotfiles@0b0e61d): <summary>`
+plus its exposure to the covered week against the previous one: `full` (both compared weeks ran under it), `partial` (it landed in one of
+them, so the full effect shows from the next week) or `not-yet` (it lands after the covered week); only `landed` has one. Entries whose
+finding is not listed that week (declined, handed off, or a finding long gone) go under **Changes without a listed finding**; the JSON
+carries `changes` on every finding and `otherChanges` at the top. The effect itself is the metric's `prev -> now` under the same id;
+whether it is enough, and a revert or replacement, is judged by the reader (Wave 6), not by the report.
 
 ## Prices (U3)
 
