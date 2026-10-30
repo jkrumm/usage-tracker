@@ -4,7 +4,9 @@ Target of the usage pipeline (software-factory decisions SF8, U1-U5): schema `us
 mini, owned by the role `usage`. Wave 1 created the schema and the price machinery. Wave 2 step 1 added the write path
 (`src/pg/writer.ts`, `src/pg/session-env.ts`, [Write path](#write-path)); step 2 switched `ingest` and the collectors to
 it: cursors and run state live in `collector_state`, the hook-log lines in `session_env`, the quota series, picker
-decisions and IU portal report in their tables. The SQLite staging file and the Argo push are gone.
+decisions and IU portal report in their tables. The SQLite staging file and the Argo push are gone. Step 3 ported `budget` and `reprice` to
+Postgres and retired `src/pricing.ts`: the IU-specific price facts are rows in `price_overrides`
+([below](#iu-specific-knowledge-the-writer-and-price_overrides)).
 
 - **Migrations** live in `migrations/pg/NNNN_name.sql` (plain SQL, forward-only, objects schema-qualified). `make pg-migrate`
   (`bun run src/cli.ts pg-migrate`) applies pending files one transaction each under `pg_advisory_lock`, records them in
@@ -207,30 +209,42 @@ which is what the first-party entry and its off-peak windows say. IU's portal st
 rows; the catalog price is an estimate there.
 
 Not aliased (cost stays NULL or provider-reported): null model (athena-teamchat, cost reported), `v3`, `pplx-decider-v1-27b`,
-`gpt-4o-transcribe` and the other transcribe/TTS/image models, `<synthetic>`, `flash-v2.5`, `decision-1`, `clef`, `gemma4-agent`
-(local, free), `glm-5.1`, `glm-5.2`, `mimo-v2.5-pro`, `nemotron-*`, `qwen3.7-max`, `gemini-3-pro-preview`, `gemini-3.1-flash`,
-`gemini-3-flash`, `gemini-4-argon`, `deepseek-v4p1-flash`, test strings. Aliased models cover 98.3% of rows and 99.9% of recorded
+`gpt-4o-transcribe` and the other transcribe/TTS models, `<synthetic>`, `flash-v2.5`, `decision-1`, `clef`, `gemma4-agent`
+(local, free), `gemini-3.1-flash`, `gemini-3-flash`, `gemini-4-argon`, `deepseek-v4p1-flash`, test strings. `glm-5.1`, `glm-5.2`,
+`mimo-v2.5-pro`, `nemotron-*`, `qwen3.7-max`, `gemini-3-pro-preview` and the `gpt-image-*` models have no catalog key either and are priced by
+overrides. Aliased models cover 98.3% of rows and 99.9% of recorded
 cost.
 
-### IU-specific knowledge: ported to the writer, and still to be expressed as overrides
+### IU-specific knowledge: the writer and `price_overrides`
 
-`reasoningFreeBefore` and `IGNORE_REPORTED_COST` now live in the Postgres writer (see Write path); `src/pricing.ts` stays the
-SQLite path until the pipeline switch deletes it. What follows is what `pricing.ts` encodes and the catalog does not.
+What the retired `src/pricing.ts` encoded that the catalog does not, and where it lives now. `price_overrides` accepts rates,
+tiers and off-peak windows; an override replaces the **whole** schedule (restate tiers and windows it should keep), and
+`supersedes_prices` makes it beat the catalog inside `[valid_from, valid_to)`.
 
-`price_overrides` accepts rates, tiers and off-peak windows, with `supersedes_prices` for a model whose measured IU rate beats
-the catalog. These are the IU-specific facts `pricing.ts` encodes that the catalog does not:
+- **Writer rules** (`src/pg/writer.ts`, not prices): `REASONING_FREE_BEFORE` (IU billed no `gpt-5.6-terra` reasoning tokens
+  before 2026-10-16T08:55Z; the column is written 0 and the count kept in `raw.reasoningTokensUnbilled`, which `reprice` therefore
+  respects) and `IGNORE_REPORTED_COST` (`sonar`: the vendor's cost includes search fees IU does not pass on, so
+  `cost_reported_usd` stays NULL and tokens price it).
+- **Migration `0005_price_overrides_iu.sql`**, derived by comparing every `PRICING` entry with the catalog schedule in force on
+  2026-10-30 (effective rates after the cache fallbacks, tiers, off-peak). Models the catalog prices identically got no row.
+  `valid_from` 2026-01-01 (before the first record), every row carries a `reason` citing the measurement:
+  - IU-measured, superseding: `deepseek-v4-pro` 1.32/3.96/0.044 (the catalog's off-peak windows are not applied: never measured
+    for this model), `deepseek-v4-flash` 0.44/1.32/0.014 (catalog 0.30/1.20/0.006), `hy3` 0.14/0.58/0.035, `kimi-k2.7-code`
+    0.95/4.0/0.19 (OpenRouter 0.56/3.1), and without a catalog key `glm-5.1`, `glm-5.2`, `mimo-v2.5-pro`,
+    `nvidia-nemotron-3-super-120b-a12b`, `nemotron-3-ultra`, `qwen3.7-max`. Cache writes bill as input (column NULL, the
+    fallback agrees); `qwen3.7-max` and the nemotron super model price cache reads at the input rate (no caching observed).
+  - `deepseek-v4.1-flash` 0.30/1.20/0.006 with off-peak 0.15/0.60/0.003 in the window 16:30-00:30 UTC daily (DeepSeek's
+    published one, measured at 17:17Z and ~18:50Z off-peak and 06:46Z peak). It aliases to a catalog entry whose base rates
+    agree but whose windows (weekdays 00-01, 04-06, 10-24 UTC, weekends all day) do not.
+  - List-price carry-overs that fill a gap and yield to a later catalog entry (`supersedes_prices = false`):
+    `gemini-3-pro-preview`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`.
+  - Kept on the catalog (identical effective rates): `kimi-k2.6`, `glm-5.3-flash`, `minimax-m3`, `sonar`, the Claude, Gemini 3.5/3.8 and
+    GPT-5/6 models. Claude Haiku 5.5 differs only in the 1h cache write (catalog 0.20 / tier 1.00, the published figure; the old
+    file billed it at the 5m rate), which is the catalog's to say.
+  - `src/prices/iu-overrides.test.ts` prices known pairs to the micro-dollar against costs computed with the old `computeCost`.
+- **Not ported:** the `FAMILY_PRICING` tier fallback (an unpriced Claude id is NULL until the catalog prices it) and free local models
+  (`gemma4-agent`: an override cannot be 0, so it stays `cost_source = 'none'`). Claude/Gemini via Bedrock/Azure remain list-price
+  proxies of unknown accuracy against IU's EU rate.
 
-- `reasoningFreeBefore` (done in the writer): IU billed no reasoning tokens for `gpt-5.6-terra` before 2026-10-16T08:55Z; the
-  writer zeroes `reasoning_tokens` for such rows and keeps the count in `raw.reasoningTokensUnbilled`.
-- `IGNORE_REPORTED_COST` (`sonar`; done in the writer): the vendor's reported cost includes search fees IU does not pass on; the
-  writer leaves `cost_reported_usd` NULL for it so tokens price it.
-- IU-measured rates that differ from list: `deepseek-v4-pro` 1.32/3.96/0.044, `deepseek-v4-flash` 0.44/1.32/0.014 (the catalog
-  now says 0.30/1.20), `kimi-k2.6` 0.95/4.0/0.16, `kimi-k2.7-code` 0.95/4.0/0.19 (OpenRouter: 0.56/3.1), `glm-5.1`/`glm-5.2`
-  1.4/4.4, `mimo-v2.5-pro`, `nemotron-*`, `qwen3.7-max`, `hy3` 0.14/0.58/0.035, and the convention `cache_write = input` for the
-  Requesty-routed models (here: an unpublished write rate falls back to input, which agrees).
-- DeepSeek off-peak window: `pricing.ts` assumes 16:30-00:30 UTC daily; the catalog says weekdays 00-01, 04-06 and 10-24 UTC plus
-  all weekend. Both agree on the two measurements taken (06:46Z peak, 17:17Z and ~18:50Z off-peak).
-- Claude/Gemini via Bedrock/Azure: list-price proxies of unknown accuracy against IU's EU rate; the family fallback
-  (`FAMILY_PRICING`) is not ported, an unpriced Claude id is NULL until the next sync prices it.
-- `gemma4-agent` and other free local models: an override cannot be 0 (CHECK); keep them `cost_source = 'none'` or write a
-  provider-reported 0.
+`reprice` (`make reprice [MODEL=] [DRYRUN=1]`) re-applies `compute_cost` to stored rows in one `UPDATE ... FROM LATERAL`: rows with
+`cost_reported_usd` are never touched, a priced row whose model has no price today is kept, `ingested_at` is not moved.

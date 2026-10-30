@@ -87,6 +87,8 @@ make sources            # per-collector status, error rate, last run, last note
 make health             # exit 1 when a source's newest row is older than its cadence
 make quota              # Claude account 5h/7d quota series + picker decisions
 make billing-audit      # per-session claude-code billing vs. the live hook log
+make budget             # IU cap per key (rolling 30 days): portal vs tracked  (KEY=<id>, MODEL=<name> for day-by-day)
+make reprice DRYRUN=1   # what a price change would do to stored rows; without DRYRUN it writes (MODEL=<name> narrows)
 make billing-audit SESSION=<id> SINCE=7
 make install-agent      # 15-min incremental ingest via LaunchAgent
 make uninstall-agent    # stop + remove the LaunchAgent

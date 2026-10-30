@@ -9,9 +9,8 @@ push step.
 
 ## Layout
 
-- `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `sources`, `health`, `billing-audit`,
-  `pg-migrate`, `prices-sync`, `prices-seed-history`, `pricing-drift`; `budget` and `reprice` print that they moved
-  and exit 2 (below).
+- `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `budget`, `reprice`, `sources`, `health`,
+  `billing-audit`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
 - `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
   bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
   source's row count), records through `upsertRecords`. Also drives the quota / picks / portal passes.
@@ -34,10 +33,9 @@ push step.
   `usage.prices` table synced daily from LiteLLM (OpenRouter fallback) and the cost resolution that mirrors SQL
   `usage.compute_cost`: `make prices-sync`, `make prices-seed-history` (one-off), `make install-prices-agent` (daily
   04:20, `com.jkrumm.usage-tracker-prices`, separate from the ingest agent).
-- **Kept for the next step, stale:** `src/budget.ts`, `src/reprice.ts`, `src/pricing.ts`, `src/pricing-drift.ts` (and
-  tests) and `src/legacy-sqlite.ts` (the SQLite DDL and portal-state reader `budget`/`reprice` and their tests still
-  need). They are the retired SQLite pricing/budget path; the next step ports or deletes them with the file.
-- `scripts/repo-report.ts` — reports `normalizeRepo` over the archived SQLite data (read-only).
+- `src/budget.ts` — `make budget`: the IU cap report (rolling 30 days per key, portal vs tracked per day and model,
+  `--explain <model>`) over `usage.iu_portal_cost` / `iu_portal_total` and `usage.records` (`billing='api_key'`).
+- `src/reprice.ts` — `make reprice`: one set-based `UPDATE usage.records ... FROM LATERAL usage.compute_cost(...)`.
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
@@ -47,7 +45,7 @@ push step.
 `bun test` (Bun's runner; `*.test.ts` colocated in `src/`). There is no
 separate linter. The targets are side-effect free — every pipeline suite (ingest, collectors, report, health, writer,
 prices) creates and drops a `usage_test_<random>` database as the admin role; the few SQLite tests left read scratch
-files under `mkdtemp` (the sources' own stores, `budget`/`reprice`). `make check`/`make test` inject
+files under `mkdtemp` (the sources' own stores). `make check`/`make test` inject
 `USAGE_TEST_PG_URL` from `.env.test.tpl` through `secrets-run`; without it (no secrets-run)
 those suites skip with the reason in their name (a green run with skips proves nothing: check the count). No test touches the network.
 The Postgres suites use the admin role (`jkrumm`, superuser) on the shared mini server because they must `CREATE`/`DROP`
@@ -93,8 +91,16 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   agree: change both and the shared fixtures in `src/prices/cost.test.ts` together. An unpriced model is NULL /
   `cost_source='none'`, never 0; `prices-sync` exits 1 on a vanished or zeroed catalog price and keeps the previous row.
   **The writer prices nothing**: `upsertRecords` passes tokens and the reported cost to `usage.compute_cost`. Its two IU
-  rules, `IGNORE_REPORTED_COST` (sonar) and `REASONING_FREE_BEFORE` (terra), live in `writer.ts`; the copies in
-  `pricing.ts` go with that file. Sessions: id from `sessionKey` (never invented), lane = earliest non-subagent record.
+  rules, `IGNORE_REPORTED_COST` (sonar) and `REASONING_FREE_BEFORE` (terra: reasoning written as 0, the count kept in
+  `raw.reasoningTokensUnbilled`), live in `writer.ts`. Sessions: id from `sessionKey` (never invented), lane = earliest
+  non-subagent record.
+- **There is no rate card in code.** Prices are `usage.prices` (catalog, `prices-sync`) plus `usage.price_overrides`:
+  migration `0005_price_overrides_iu.sql` holds every IU-measured rate and the DeepSeek v4.1 off-peak window that beat
+  or fill the catalog (the retired `pricing.ts` facts; the reason column cites each measurement). An override replaces
+  the whole schedule (restate tiers / off-peak), `supersedes_prices` makes it beat the catalog. A new IU rate = a new
+  override row with a later `valid_from` in a new migration, never an edit; then `make reprice DRYRUN=1`, then
+  `make reprice`. The old `FAMILY_PRICING` tier fallback is gone: an unpriced Claude id is NULL until the catalog
+  prices it (`make sources` lists them). Free local models (`gemma4-agent`) stay `cost_source='none'`.
 - **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`); `account` is set
   only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
@@ -153,8 +159,11 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - **IU portal cost is the truth; `records.cost_usd` is an estimate.** The employee cap is a ROLLING 30-day window
   (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`), measured by IU's self-service portal.
   Reconciled so far: `sonar` (vendor cost ignored, token-priced), `gpt-5.6-terra` (IU billed no reasoning tokens before
-  2026-10-16 08:55Z). Portal days are the portal's calendar (UTC assumed). `make budget` (rolling30, headroom, portal vs
-  tracked per day and model) is **not ported yet** and exits 2. **Depends on iumac:** the scrape runs on the MacBook
+  2026-10-16 08:55Z), the IU-measured rates in migration 0005. Portal days are the portal's calendar (UTC assumed).
+  `make budget [KEY=<id>] [MODEL=<name>]` is the reconciliation: rolling30, headroom, can-spend-today, 7-day drop-off and
+  burn, portal vs tracked per day and model (flag when `|delta| > max($1, 20%)`), `MODEL` for the day-by-day explain
+  (tokens, implied rate, tracked cost by source). Tracked = `usage.records` with `billing='api_key'` and `api_key` = the
+  key, by UTC day. `reprice` never touches a row with `cost_reported_usd`. **Depends on iumac:** the scrape runs on the MacBook
   (`ssh iumac`, IU-managed Chrome, profile `~/.local/share/iu-portal/profile`, tooling in
   `~/.local/share/iu-portal/tool`, installed by `make iu-portal-setup`). `ingest` fetches at most every 4 h; a sleeping
   MacBook skips quietly, and `health` goes stale after 48 h. **Login runbook:** when the log says `session expired`, run
@@ -184,7 +193,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`, `audio-gateway-vps` (and earlier `research-gateway`).
   **Historical rows stay** — never delete, rewrite or reprice them. What still reads that history: claude-code / opencode /
   litellm re-ingest uses the `agent-gateway:*` lanes and the `agent-gateway-sessions.jsonl` attribution log
-  (`models.ts`), `reprice` skips their vendor-`reported` costs, and `classifyBilling` keeps its `agent-gateway-sessions`
+  (`models.ts`), `reprice` skips their provider-reported costs (`cost_reported_usd`), and `classifyBilling` keeps its `agent-gateway-sessions`
   branch. Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
 - **The SQLite file `~/.local/share/usage-tracker/usage.db` is an archive**, the source of the one-off backfill. Nothing in
   the pipeline opens it; never delete or modify it. Collectors still read their sources' own stores (Hermes, Feuer,
