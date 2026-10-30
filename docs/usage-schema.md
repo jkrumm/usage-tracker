@@ -200,10 +200,46 @@ lines before 2026-10-30 do not), so history before the hook change has no role. 
 
 ## Window share (headline metric, U5)
 
-Between two consecutive `quota_samples` of an account (a sample whose `*_resets_at` moved starts a fresh interval), the change
-in `five_hour_pct` and `seven_day_pct` is attributed to the sessions with `records` on that `account` and a `ts` inside the
-interval, in proportion to their `cost_usd`. A session's window share is the sum of its attributed deltas; the view is not
-built yet, and `records(account, ts)` plus the quota series are its inputs.
+Built in `0011_window_share.sql`, rebuilt per window in `0012_window_share_per_window.sql`, views only (nothing stored):
+
+- `usage.window_intervals` — per account and window (`five_hour` | `seven_day`), each pair of consecutive readings *of that window*
+  (a reading without the window's pct or `resets_at` is no reading of it, so a gap does not lose the movement across it; per
+  `(account, window, sampled_at)` the first complete reading wins, machines collapsed) is an interval `(from_at, to_at]` with `delta_pct`, the points
+  the window moved, plus `records_cost` / `records_n` of the account's Max records inside it. Only intervals with
+  `delta_pct > 0` are listed. **Same window**: `resets_at` within 60 s of the previous reading (the statusline jitters it by a
+  second), `delta = pct - prev pct` floored at 0, `from_at` = the previous reading. **Fresh window** (`resets_at` moved):
+  baseline 0, `delta = pct`, and only records after the window's own start (`resets_at` minus 5 h / 7 d, bounded to the
+  interval, so several resets between readings are handled) can have caused it; the old window's tail between its last
+  reading and its end is unobserved and attributed to nobody. An account's first reading of a window gives no interval.
+- `usage.window_attribution` — each interval's `delta_pct` split over the sessions with priced Max records in it, in
+  proportion to `cost_usd` (`share_pct`, points of the window: 3.2 = 3.2 % of the 5 h or 7 d window). Per interval the shares
+  sum to `delta_pct` exactly. Unpriced records (NULL cost) carry no share.
+- `usage.session_window_share` — a session's share = the sum of its attributed deltas, per window
+  (`five_hour_pct`, `seven_day_pct`), by `(account, session_id)`. A subagent is a session of its own; a tree's share is the
+  sum over a session and its children (`parent_session_id`).
+
+**Residual.** An interval whose `records_cost = 0` moved the window with nothing to blame (the MacBook mirror's lag, a
+machine we do not collect, a model without a price). It stays in `window_intervals`, is in no session's share, and
+`usage-tracker window` prints it per window (moved, attributed, residual). Last 7 days at deploy (2026-10-30): 1.1 % of the
+5 h points and 2.7 % of the 7 d points across the three accounts; per account at most 2.1 % (5 h) and 5.8 % (7 d).
+
+**Limits.** `quota_samples.sampled_at` is `now - min(window ages)` (the collector), so a window observed earlier than its
+sibling in the same reading is dated late and its movement can land on later records; nothing in the table says which. The meters move in whole points: a 7-day tick lands in one 15-minute interval and the sessions in the other
+intervals get 0, so a single session's 7-day share is noisy and only sums over many sessions (means, lanes, repos) are
+trustworthy; the 5 h window ticks more often. Shares are points of *that account's* window and a Max 20x point (`iu`) is
+worth several times the dollars of a 5x point: a row summing accounts adds points of different windows (`--account`
+cuts it). A cost-weighted split assumes a window moves in proportion to the dollars of the records in it; over the last 7 days
+the dollars per 5 h point are stable per account (`me` 1.4, `me2` 1.3, `iu` 4.5–5.1; p10–p90 of 0.95–1.94 for `me`).
+
+**`--days`** keeps the intervals that *end* inside the period, so the first one can reach up to one sampling gap (normally 15 min, longer
+while the MacBook sleeps) before the cutoff; rows and the coverage line use the same filter and agree.
+
+**Plan.** `EXPLAIN` of `window_intervals` over 7 days (969 intervals) uses `records_account_ts_idx` (`Index Scan ... Index
+Cond: account, ts range`) for the per-interval record lookup and runs in about 0.85 s; no new index.
+
+CLI: `usage-tracker window --by session|lane|role|subagent_type|issue|repo|account [--days N] [--top N] [--account <id>]
+[--format json|plain]` (`make window BY=lane`). First measurement by lane, role and effort:
+`docs/reports/2026-10-30-role-window-share.md`.
 
 ## Prices (U3)
 

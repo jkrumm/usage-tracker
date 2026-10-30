@@ -50,7 +50,10 @@ describePg("pg migrations", () => {
       "records_unique",
       "schema_migrations",
       "session_env",
+      "session_window_share",
       "sessions",
+      "window_attribution",
+      "window_intervals",
     ]);
     const [{ n }] = await sql`
       SELECT count(*)::int AS n FROM pg_indexes WHERE schemaname = 'usage' AND tablename = 'records'`;
