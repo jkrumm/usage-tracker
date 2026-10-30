@@ -115,6 +115,8 @@ describePg("usage.compute_cost agrees with the TypeScript twin", () => {
   test("every fixture case", async () => {
     const sql = await db.connect();
     await migrate(sql);
+    // These cases pin the catalog path; the IU overrides migration 0005 ships are tested in iu-overrides.test.ts.
+    await sql`DELETE FROM usage.price_overrides`;
     await syncPrices(sql, fixtureDeps());
     const book = await loadPriceBook(sql);
     for (const c of CASES) {
