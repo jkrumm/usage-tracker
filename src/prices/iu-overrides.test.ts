@@ -3,22 +3,14 @@ import { expect, test } from "bun:test";
 import { migratedDb } from "../pg/fixture.ts";
 import { describePg } from "../pg/testing.ts";
 
-// migrations/pg/0005_price_overrides_iu.sql carries the IU-specific rates of the retired src/pricing.ts. The expected
+// migrations/pg/0005_price_overrides_iu.sql carries the IU-specific rates of the retired src/pricing.ts; 0006 removed its three
+// DeepSeek rows again (the catalog schedule fits the portal better, docs/reconciliation/2026-10-30-portal-actuals.md). The expected
 // costs below were computed with that file's computeCost (before it was deleted) for one fixed token mix and are
 // pinned here to the micro-dollar: 1M input, 200k output, 5M cache read, 300k cache write (100k of it at 1h), 50k reasoning.
 
 const TOKENS = { input: 1_000_000, output: 200_000, cacheRead: 5_000_000, cw5m: 200_000, cw1h: 100_000, reasoning: 50_000 };
 
 const OLD_PRICING_COSTS: Array<[model: string, ts: string, usd: number | null]> = [
-  ["deepseek-v4-pro", "2026-09-02T12:00:00Z", 2.926], // Wed midday: the catalog's off-peak window would halve it
-  ["deepseek-v4-flash", "2026-09-02T12:00:00Z", 0.972],
-  ["deepseek-v4.1-flash", "2026-09-25T06:46:00Z", 0.72], // measured peak
-  ["deepseek-v4.1-flash", "2026-09-25T17:17:00Z", 0.36], // measured off-peak
-  ["deepseek-v4.1-flash", "2026-09-24T16:29:00Z", 0.72], // one minute before the window
-  ["deepseek-v4.1-flash", "2026-09-24T16:30:00Z", 0.36], // window start is inclusive
-  ["deepseek-v4.1-flash", "2026-09-26T00:10:00Z", 0.36], // the window wraps midnight
-  ["deepseek-v4.1-flash", "2026-09-26T00:30:00Z", 0.72], // window end is exclusive
-  ["deepseek-v4.1-flash", "2026-10-10T12:00:00Z", 0.72], // Saturday midday: the catalog says off-peak, IU's window does not
   ["hy3", "2026-08-30T12:00:00Z", 0.502],
   ["kimi-k2.7-code", "2026-09-01T12:00:00Z", 3.185],
   ["glm-5.1", "2026-08-31T12:00:00Z", 4.22],
@@ -71,9 +63,9 @@ describePg("0005 price_overrides_iu", () => {
     expect(listPrice).toEqual(["gemini-3-pro-preview", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]);
   });
 
-  test("an IU-measured override beats a catalog row; a list-price fill yields to one", async () => {
+  test("the DeepSeek models follow the catalog since 0006: no override, off-peak windows included", async () => {
     const sql = await pg.sql();
-    // The catalog as of 2026-10-30: v4-pro/v4-flash with weekday/weekend off-peak windows, v4.1-flash aliased to v4-flash.
+    expect(await sql`SELECT 1 FROM usage.price_overrides WHERE model LIKE 'deepseek-%'`).toHaveLength(0);
     const offPeak = JSON.stringify({
       rates: { input: 0.15, output: 0.6, cache_read: 0.003 },
       windows: [{ weekdays: [1, 2, 3, 4, 5], hours_utc: ["00:00-01:00", "04:00-06:00", "10:00-00:00"] }, { weekdays: [6, 7], hours_utc: ["00:00-00:00"] }],
@@ -84,10 +76,13 @@ describePg("0005 price_overrides_iu", () => {
     await sql`INSERT INTO usage.prices (model_key, valid_from, input, output, cache_read, source)
               VALUES ('gpt-image-2', '2026-01-01T00:00:00Z', 6, 31, 1.5, 'litellm')`;
     try {
-      const sat = await cost(sql, "deepseek-v4.1-flash", "2026-10-10T12:00:00Z"); // catalog: off-peak, override: peak
-      expect(sat).toMatchObject({ source: "override", price_id: null });
-      expect(sat.usd).toBeCloseTo(0.72, 6);
-      // The catalog price wins for the list-price fill (supersedes_prices = false).
+      // Saturday midday is off-peak in the catalog: 0.5 x the peak 0.72 ... for this token mix 1M in, 200k out, 5M read, 300k writes, 50k reasoning
+      const sat = await cost(sql, "deepseek-v4.1-flash", "2026-10-10T12:00:00Z");
+      expect(sat).toMatchObject({ source: "prices" });
+      expect(sat.usd).toBeCloseTo(0.36, 6);
+      const wedPeak = await cost(sql, "deepseek-v4.1-flash", "2026-10-28T06:46:00Z");
+      expect(wedPeak.usd).toBeCloseTo(0.72, 6);
+      // A list-price fill (supersedes_prices = false) yields to a catalog row.
       expect(await cost(sql, "gpt-image-2", "2026-09-01T12:00:00Z")).toMatchObject({ source: "prices" });
     } finally {
       await sql`DELETE FROM usage.price_aliases WHERE model = 'deepseek-v4.1-flash'`;
