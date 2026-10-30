@@ -12,6 +12,8 @@ function str(v: unknown): string | null {
  * The source-local session id of a record, or null (a record without one gets no session; none is invented).
  *
  *   raw.sessionId          claude-code, codex, opencode (message grain), anything that stamps it
+ *   raw.agentId            a claude-code subagent: `<parent sessionId>:<agentId>`, its own session (raw.sessionId stays
+ *                          the parent's for the session_env lookups); the parent link is raw.parentSessionId
  *   agent-workflows        raw.runId (the workflow run is the session), else raw.sessionId
  *   hermes, feuer          the session id inside the composite source id `<session>:<task>:<model>`
  *   any session-grain row  its own source id (opencode sessions, modelpick runs)
@@ -21,15 +23,14 @@ function str(v: unknown): string | null {
 export function sessionKey(source: string, r: Pick<UsageRecord, "sourceId" | "grain" | "raw">): string | null {
   if (source === "agent-workflows") return str(r.raw?.runId) ?? str(r.raw?.sessionId);
   const fromRaw = str(r.raw?.sessionId);
+  const agentId = str(r.raw?.agentId);
+  if (fromRaw && agentId) return `${fromRaw}:${agentId}`;
   if (fromRaw) return fromRaw;
   if (source === "hermes" || source === "feuer") return str(r.sourceId.split(":")[0]);
   return r.grain === "session" ? str(r.sourceId) : null;
 }
 
-/**
- * The session that spawned this one, when the source says so (`raw.parentSessionId`). No collector sets it today:
- * claude-code subagents share their parent's session id, so they never become sessions of their own.
- */
+/** The session that spawned this one, when the source says so (`raw.parentSessionId`): a claude-code subagent's parent. */
 export function parentSessionKey(r: Pick<UsageRecord, "raw">): string | null {
   return str(r.raw?.parentSessionId);
 }

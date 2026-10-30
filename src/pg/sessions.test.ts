@@ -10,6 +10,13 @@ describe("sessionKey", () => {
     expect(sessionKey("opencode", rec("msg_1", "message", { sessionId: "ses_1" }))).toBe("ses_1");
   });
 
+  test("a claude-code subagent is its own session under the parent's id, whose raw.sessionId stays the parent's", () => {
+    expect(sessionKey("claude-code", rec("req_2", "message", { sessionId: "s1", agentId: "a9" }))).toBe("s1:a9");
+    expect(parentSessionKey({ raw: { sessionId: "s1", agentId: "a9", parentSessionId: "s1" } })).toBe("s1");
+    // no parent session id, no session: none is invented from the agent id
+    expect(sessionKey("claude-code", rec("req_3", "message", { agentId: "a9" }))).toBeNull();
+  });
+
   test("agent-workflows rows are sessions per run", () => {
     expect(sessionKey("agent-workflows", rec("c1", "message", { runId: "run-9", sessionId: "s1" }))).toBe("run-9");
     expect(sessionKey("agent-workflows", rec("c1", "message", { sessionId: "s1" }))).toBe("s1");

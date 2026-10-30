@@ -281,6 +281,15 @@ const INSERT_ONLY_SESSION_UPDATE = `DO UPDATE SET
   first_ts = least(s.first_ts, EXCLUDED.first_ts),
   last_ts = greatest(s.last_ts, EXCLUDED.last_ts)`;
 
+// Within the lane the session keeps, its detail is filled from the batch: the stored keys win, a key the stored detail lacks
+// (the factory role of a session whose hook line arrived late, a subagent type) is added, and a stored `unknown` subagent
+// type is replaced by a known one (the sidecar that names it was not mirrored yet).
+const LANE_DETAIL_FILL = `nullif(
+    (coalesce(EXCLUDED.lane_detail, '{}'::jsonb) || coalesce(s.lane_detail, '{}'::jsonb))
+    || CASE WHEN s.lane_detail->>'subagent_type' = 'unknown' AND EXCLUDED.lane_detail ? 'subagent_type'
+            THEN jsonb_build_object('subagent_type', EXCLUDED.lane_detail->>'subagent_type') ELSE '{}'::jsonb END,
+    '{}'::jsonb)`;
+
 const sessionsSql = (insertOnly: boolean): string => `
 INSERT INTO usage.sessions AS s
   (source, source_session_id, lane, lane_detail, account, billing, api_key, machine, model, effort, repo, issue_id, run_id,
@@ -293,7 +302,7 @@ FROM jsonb_to_recordset($1::text::jsonb) AS j(
 ORDER BY j.source_session_id
 ON CONFLICT (source, source_session_id) ${insertOnly ? INSERT_ONLY_SESSION_UPDATE : `DO UPDATE SET
   lane = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane ELSE s.lane END,
-  lane_detail = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane_detail ELSE s.lane_detail END,
+  lane_detail = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane_detail ELSE ${LANE_DETAIL_FILL} END,
   account = ${merge("account")},
   billing = coalesce(CASE WHEN ${EARLIER}
                           THEN coalesce(nullif(EXCLUDED.billing, 'unknown'), nullif(s.billing, 'unknown'))
@@ -319,6 +328,15 @@ FROM jsonb_to_recordset($1::text::jsonb) AS j(source_session_id text, parent_key
 WHERE c.source = $2::text AND c.source_session_id = j.source_session_id
   AND p.source = $2::text AND p.source_session_id = j.parent_key
   AND c.parent_session_id IS DISTINCT FROM p.id`;
+
+// A claude-code subagent session is `<parent>:<agentId>`, so its parent is known from the key even when the batch that
+// wrote the child never mentioned the parent again (the parent's records arrived in a later run). Idempotent.
+const SUBAGENT_PARENTS_SQL = `
+UPDATE usage.sessions c SET parent_session_id = p.id
+FROM usage.sessions p
+WHERE c.source = $1::text AND c.lane = 'subagent' AND c.parent_session_id IS NULL
+  AND position(':' IN c.source_session_id) > 0
+  AND p.source = c.source AND p.source_session_id = split_part(c.source_session_id, ':', 1)`;
 
 /**
  * Upsert a batch of records of one source into usage.records, and their sessions into usage.sessions.
@@ -351,6 +369,7 @@ export async function upsertRecords(
   const batchMachine = currentMachine();
   const now = opts.now ? opts.now.toISOString() : null;
   let newRows = 0;
+  const links = new Map<string, string>();
 
   for (let i = 0; i < unique.length; i += CHUNK) {
     const chunk = unique.slice(i, i + CHUNK);
@@ -370,6 +389,7 @@ export async function upsertRecords(
       if (sessions.length > 0) {
         await tx.unsafe(opts.insertOnly ? SESSIONS_INSERT_ONLY_SQL : SESSIONS_SQL, [payload(sessions.map((s) => ({ ...s, lane_detail: s.lane_detail ?? undefined }))), source]);
         const linked = sessions.filter((s) => s.parent_key);
+        for (const s of linked) links.set(s.source_session_id, s.parent_key as string);
         if (linked.length > 0 && !opts.insertOnly) {
           await tx.unsafe(PARENTS_SQL, [payload(linked.map((s) => ({ source_session_id: s.source_session_id, parent_key: s.parent_key }))), source]);
         }
@@ -379,5 +399,12 @@ export async function upsertRecords(
     });
     newRows += inserted;
   }
+  // A parent whose records sit in a later chunk of this call did not exist yet when its child's chunk linked: resolve
+  // every link of the call once more now that all the sessions are written.
+  if (links.size > 0 && !opts.insertOnly) {
+    const pairs = [...links].map(([source_session_id, parent_key]) => ({ source_session_id, parent_key }));
+    for (let i = 0; i < pairs.length; i += CHUNK) await sql.unsafe(PARENTS_SQL, [payload(pairs.slice(i, i + CHUNK)), source]);
+  }
+  if (source === "claude-code" && !opts.insertOnly) await sql.unsafe(SUBAGENT_PARENTS_SQL, [source]);
   return { processed: records.length, newRows };
 }

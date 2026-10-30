@@ -30,7 +30,7 @@ once per `SessionStart` to `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3
 days) and the writer joins a record's `sessionId` against it — a non-empty
 `base_url` means `billing = 'api_key'` (IU-paid), empty means `max`.
 
-The join runs through `usage.session_env` (`session`, `base_url`, `lane`, `account`, `seen_at`), because herdr
+The join runs through `usage.session_env` (`session`, `base_url`, `lane`, `account`, `factory_role`, `factory_session`, `seen_at`), because herdr
 panes outlive the 3-day retention. `runIngest` primes `models.ts` with the whole table
 (`useStoredSessionEnvs`); the first lookup (`getSessionLane` in the claude-code / opencode collectors) scans the
 local and mirrored log dirs and merges them on top, a log entry winning for the same session (a resume's latest
@@ -62,7 +62,8 @@ is still live: Hermes fails over to it under throttling.
 Backgrounded subagents (the TUI's "Backgrounded agent") don't write into the
 parent's flat transcript file at all — Claude Code gives them their own file
 under `<project-dir>/<sessionId>/subagents/agent-<id>.jsonl`, same `sessionId`
-inside. `listJsonl()` in `src/collectors/claude-code.ts` walks into every
+inside, and `isSidechain`, `agentId` and (mostly) `attributionAgent` on every line; the collector turns those into a session of
+the subagent's own, linked to its parent (`docs/usage-schema.md` §Parent links). `listJsonl()` in `src/collectors/claude-code.ts` walks into every
 session directory's `subagents/` subfolder to pick these up too; skipping this
 silently dropped an entire category of usage (1069 historical files, 207MB,
 across all projects before this was added — backfilled by the next `ingest`

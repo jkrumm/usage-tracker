@@ -405,6 +405,78 @@ describe("claude-code two-root collector", () => {
     });
   });
 
+  describe("attribution: effort, factory role, subagents", () => {
+    const sync = async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true });
+    const line = (extra: Record<string, unknown>) =>
+      `${JSON.stringify({
+        type: "assistant",
+        requestId: "req-1",
+        sessionId: "parent-1",
+        timestamp: new Date().toISOString(),
+        message: { id: "msg-1", model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 5 } },
+        ...extra,
+      })}\n`;
+
+    test("effort comes off the assistant line, perTurnEffort is the fallback, absent stays absent", async () => {
+      writeFileSync(
+        join(localDir, "s.jsonl"),
+        line({ requestId: "a", effort: "xhigh" }) + line({ requestId: "b", perTurnEffort: "low" }) + line({ requestId: "c" }),
+      );
+      setSyncOverrideForTest(sync);
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      const effort = (id: string) => records.find((r) => r.sourceId === id)?.raw?.effort;
+      expect(effort("a")).toBe("xhigh");
+      expect(effort("b")).toBe("low");
+      expect(effort("c")).toBeUndefined();
+    });
+
+    test("the session_env line's factory role and spawn key ride on every record of the session", async () => {
+      writeFileSync(join(localDir, "s.jsonl"), line({}));
+      writeFileSync(
+        join(localLogsDir, "2026-10-30.jsonl"),
+        `${JSON.stringify({ event: "session_env", data: { session: "parent-1", lane: "wave", factory_role: "lead", factory_session: "spawn-9" } })}\n`,
+      );
+      setSyncOverrideForTest(sync);
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      expect(records[0]?.raw).toMatchObject({ factoryRole: "lead", factorySession: "spawn-9" });
+    });
+
+    test("a subagent line carries its type (attributionAgent), agent id and the parent session", async () => {
+      const dir = join(localDir, "proj", "parent-1", "subagents");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "agent-abc.jsonl"), line({ isSidechain: true, agentId: "abc", attributionAgent: "verifier", effort: "medium" }));
+      setSyncOverrideForTest(sync);
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      expect(records[0]?.raw).toMatchObject({
+        sessionId: "parent-1",
+        subagentType: "verifier",
+        agentId: "abc",
+        parentSessionId: "parent-1",
+        effort: "medium",
+      });
+    });
+
+    test("a subagent line without attributionAgent takes the type from the sibling meta.json, else unknown", async () => {
+      const dir = join(localDir, "proj", "parent-1", "subagents");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "agent-m.jsonl"), line({ requestId: "m", isSidechain: true, agentId: "m" }));
+      writeFileSync(join(dir, "agent-m.meta.json"), JSON.stringify({ agentType: "Explore" }));
+      writeFileSync(join(dir, "agent-n.jsonl"), line({ requestId: "n", isSidechain: true, agentId: "n" }));
+      setSyncOverrideForTest(sync);
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      expect(records.find((r) => r.sourceId === "m")?.raw?.subagentType).toBe("Explore");
+      expect(records.find((r) => r.sourceId === "n")?.raw?.subagentType).toBe("unknown");
+    });
+
+    test("a main-transcript line has no subagent fields", async () => {
+      writeFileSync(join(localDir, "s.jsonl"), line({ isSidechain: false }));
+      setSyncOverrideForTest(sync);
+      const { records } = await claudeCodeCollector.collect({ cursor: null, full: true, log });
+      expect(records[0]?.raw).not.toHaveProperty("subagentType");
+      expect(records[0]?.raw).not.toHaveProperty("agentId");
+    });
+  });
+
   test("reads the provider-reported thinking token count off usage.output_tokens_details", async () => {
     const line = `${JSON.stringify({
       type: "assistant",

@@ -81,7 +81,7 @@ make install            # bun install
 make backfill           # first run: full scan of all sources
 make ingest             # incremental (what the LaunchAgent runs)
 make stats              # cost + tokens by source
-make stats BY=model     # by model      (also: billing, day, machine, lane, account, iu_key, repo)
+make stats BY=model     # by model      (also: billing, day, machine, lane, account, iu_key, repo, role, subagent_type, effort)
 make stats BY=day SINCE=7
 make sources            # per-collector status, error rate, last run, last note
 make health             # exit 1 when a source's newest row is older than its cadence

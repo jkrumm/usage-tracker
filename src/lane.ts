@@ -17,6 +17,8 @@ export type Lane = (typeof LANES)[number];
 
 export interface LaneDetail {
   subagent_type?: string;
+  /** The factory role (`FACTORY_ROLE`) of the session or of the session tree a subagent belongs to. */
+  role?: string;
   workflow?: string;
   step?: string;
   route?: string;
@@ -44,6 +46,28 @@ const WORKFLOW_SOURCES = new Set([
 ]);
 /** Sources where a missing sub_tool means a human at a terminal, as claude-code/opencode always were. */
 const INTERACTIVE_BY_DEFAULT = new Set(["claude-code", "opencode", "codex", "astra"]);
+
+/**
+ * The lane of a factory-spawned session, from its FACTORY_ROLE (software-factory `config/roles.json`). The runner sets
+ * USAGE_LANE=wave on every pane whatever the role, so the role beats the lane; the one refinement kept is `fan`
+ * (`rd fan`'s USAGE_LANE), which splits fan-out workers from fleet workers. `mother` and `wave` are the same lane
+ * (the session that runs a chain); `mechanical` has none of its own and is a worker whose role stays in the detail.
+ * A role with no lane (an unknown or future one) returns null and the session keeps its USAGE_LANE / entrypoint lane.
+ */
+export function laneForRole(role: string, usageLane: string | null): Lane | null {
+  switch (role) {
+    case "mother":
+    case "wave":
+      return "wave_mother";
+    case "lead":
+      return "lead";
+    case "worker":
+      return usageLane === "fan" ? "fan_worker" : "worker";
+    case "mechanical":
+      return "worker";
+  }
+  return null;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;
@@ -76,12 +100,23 @@ function workflowDetail(source: string, subTool: string | null): LaneDetail {
  *     from the agent-gateway sources, litellm, ... -> agw_workflow  (workflow = x, step = rest)
  *   source hermes                         -> hermes        (detail.surface = slack | cron | cli | ...)
  *   source iris                           -> iris
- *   raw.subagentType                      -> subagent
+ *   raw.subagentType                      -> subagent      (detail.subagent_type, and detail.role of its tree)
+ *   raw.factoryRole                       -> laneForRole   (detail.role; beats sub_tool, which is USAGE_LANE)
  *   everything else                       -> other
  */
 export function laneFor(subTool: string | null, source: string, raw?: Record<string, unknown> | null): LaneInfo {
+  const role = str(raw?.factoryRole);
   const subagentType = str(raw?.subagentType);
-  if (subagentType) return { lane: "subagent", detail: { subagent_type: subagentType } };
+  if (subagentType) return { lane: "subagent", detail: role ? { subagent_type: subagentType, role } : { subagent_type: subagentType } };
+
+  const roleLane = role ? laneForRole(role, subTool) : null;
+  if (role && roleLane) return { lane: roleLane, detail: { role } };
+  const info = laneWithoutRole(subTool, source, raw);
+  // A role with no lane of its own is still the session's role.
+  return role ? { lane: info.lane, detail: { ...info.detail, role } } : info;
+}
+
+function laneWithoutRole(subTool: string | null, source: string, raw?: Record<string, unknown> | null): LaneInfo {
 
   const workflow = str(raw?.workflow);
   if (workflow || source === "agent-workflows") {

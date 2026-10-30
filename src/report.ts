@@ -4,7 +4,7 @@ import { getSessionBaseUrl } from "./models.ts";
 // Read-side queries for the CLI, over the Postgres usage schema. All output is plain aligned text (stdout) so it
 // pipes cleanly; no box-drawing.
 
-export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "lane" | "account" | "iu_key" | "repo";
+export type GroupBy = "source" | "model" | "billing" | "day" | "machine" | "lane" | "account" | "iu_key" | "repo" | "role" | "subagent_type" | "effort";
 
 interface StatRow {
   key: string;
@@ -27,6 +27,11 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   account: "coalesce(account, '(n/a)')",
   iu_key: "coalesce(api_key, '(n/a)')",
   repo: "coalesce(repo, '(none)')",
+  // lane_detail.role is the factory role of the session (or of the tree a subagent belongs to), lane_detail.subagent_type
+  // the agent type of a subagent record; effort is the request's reasoning effort.
+  role: "coalesce(lane_detail->>'role', '(none)')",
+  subagent_type: "coalesce(lane_detail->>'subagent_type', '(none)')",
+  effort: "coalesce(effort, '(none)')",
 };
 
 export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[];

@@ -1,4 +1,4 @@
-.PHONY: help install backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -31,7 +31,7 @@ backfill: ## Full re-scan of every source (ignores watermarks)
 ingest-iumac: ## Force-refresh the iumac mirror and run claude-code ingest only
 	bun run src/cli.ts ingest --source claude-code
 
-stats: ## Token + cost report (override: make stats BY=model SINCE=7; BY is source|model|billing|day|machine|lane|account|iu_key|repo)
+stats: ## Token + cost report (override: make stats BY=model SINCE=7; BY is source|model|billing|day|machine|lane|account|iu_key|repo|role|subagent_type|effort)
 	bun run src/cli.ts stats $(if $(BY),--by $(BY)) $(if $(SINCE),--since $(SINCE))
 
 reprice: ## Re-cost stored rows against the current prices (MODEL=<name>, DRYRUN=1 reports without writing; provider-reported rows are never touched)
@@ -73,6 +73,9 @@ check: typecheck ## All local validation: type-check, then run the test suite
 
 backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive into usage.records; INSERT-ONLY unless OVERWRITE=all|<sources> (refuses while the ingest agent is loaded, FORCE=1 overrides); DRYRUN=1, REUSE=1 keeps the dump, NOPROOF=1
 	bun run scripts/backfill-argo.ts $(if $(DRYRUN),--dry-run) $(if $(REUSE),--reuse-dump) $(if $(NOPROOF),--no-proof) $(if $(OVERWRITE),--overwrite $(OVERWRITE)) $(if $(FORCE),--force)
+
+restamp-claude-code: ## Re-scan the Claude Code transcripts so existing rows take the current attribution (effort, subagent sessions, role); costs fingerprinted before/after
+	bun run scripts/restamp-claude-code.ts
 
 import-sqlite-state: ## One-off import of the SQLite archive's state tables (cursors, session_env, quota, picks, portal) into usage.*
 	bun run scripts/import-sqlite-state.ts

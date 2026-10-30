@@ -1,7 +1,15 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { entrypointLane, getSessionLane, getAgentGatewayLane, isBridgeRouted, SYNTHETIC_MODEL } from "../models.ts";
+import { basename, dirname, join } from "node:path";
+import {
+  entrypointLane,
+  getAgentGatewayLane,
+  getSessionFactoryRole,
+  getSessionFactorySession,
+  getSessionLane,
+  isBridgeRouted,
+  SYNTHETIC_MODEL,
+} from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
 import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
@@ -56,6 +64,16 @@ interface AssistantLine {
   // "cli" (interactive), "sdk-cli" (`claude -p`, i.e. every agent-gateway worker) or
   // "claude-desktop"; on every transcript line.
   entrypoint?: string;
+  // The reasoning effort the request ran at (`low` ... `max`); `perTurnEffort` repeats it per turn and is the
+  // fallback. Both sit at the top level of the assistant line, main transcript and subagent file alike.
+  effort?: string;
+  perTurnEffort?: string;
+  // Subagent files (`<session>/subagents/agent-<id>.jsonl`, also under `subagents/workflows/`): every line is a
+  // sidechain of the parent session, carries the parent's `sessionId`, its own `agentId` and, on most lines, the
+  // agent type as `attributionAgent` (else the sibling `agent-<id>.meta.json` names it as `agentType`).
+  isSidechain?: boolean;
+  agentId?: string;
+  attributionAgent?: string;
   // Set on the local, non-API line a failed request synthesizes in place of a
   // real assistant response — see the isApiErrorMessage branch in parseLine.
   error?: string;
@@ -168,14 +186,61 @@ async function collectRoot(
     // already-offset-consumed chunk (the first line after a resume) simply
     // isn't in the map, and that one record's duration falls back to null.
     const timestamps = buildTimestampMap(lines);
+    const ctx: LineContext = { machine, timestamps, file };
     for (const line of lines) {
-      const rec = parseLine(line, machine, timestamps);
+      const rec = parseLine(line, ctx);
       if (rec) records.push(rec);
     }
     // Withheld only by the mirror root's bounded-re-read fallback above — the
     // local root always passes advanceOffsets: true.
     if (opts.advanceOffsets) offsets[file] = from + lastNl + 1;
   }
+}
+
+/** What parseLine needs besides the line: the host, the chunk's uuid -> timestamp map, the file (for its meta sidecar). */
+interface LineContext {
+  machine: string | null;
+  timestamps: Map<string, string>;
+  file: string;
+  /** The sidecar's agent type, read once per file on first use (`null` = none). */
+  metaType?: string | null;
+}
+
+/** `agent-<id>.meta.json` next to a subagent file names its `agentType`. */
+function metaAgentType(ctx: LineContext): string | null {
+  if (ctx.metaType !== undefined) return ctx.metaType;
+  ctx.metaType = null;
+  try {
+    const meta = JSON.parse(readFileSync(join(dirname(ctx.file), basename(ctx.file, ".jsonl") + ".meta.json"), "utf8")) as {
+      agentType?: unknown;
+    };
+    if (typeof meta.agentType === "string" && meta.agentType) ctx.metaType = meta.agentType;
+  } catch {
+    // no sidecar (older Claude Code, or a workflow file): the caller falls back to "unknown"
+  }
+  return ctx.metaType;
+}
+
+/**
+ * The attribution every record of a Claude Code transcript carries in `raw`, read by the writer (never computed here):
+ * the effort, the factory role and spawn key from the session's session_env line, and — for a subagent line — the
+ * agent type, its id and the parent session. A subagent keeps the parent's `sessionId` here (session_env, billing and
+ * account are looked up by it); `agentId` is what makes the writer give it a session of its own (`sessionKey`).
+ */
+function attribution(obj: AssistantLine, ctx: LineContext): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const effort = obj.effort ?? obj.perTurnEffort;
+  if (effort) out.effort = effort;
+  const role = getSessionFactoryRole(obj.sessionId);
+  if (role) out.factoryRole = role;
+  const spawn = getSessionFactorySession(obj.sessionId);
+  if (spawn) out.factorySession = spawn;
+  if (obj.isSidechain && obj.agentId && obj.sessionId) {
+    out.subagentType = obj.attributionAgent || metaAgentType(ctx) || "unknown";
+    out.agentId = obj.agentId;
+    out.parentSessionId = obj.sessionId;
+  }
+  return out;
 }
 
 function buildTimestampMap(lines: string[]): Map<string, string> {
@@ -225,11 +290,8 @@ function stampLane(record: UsageRecord, sessionId: string | undefined, entrypoin
   record.subTool = entrypointLane(entrypoint);
 }
 
-function parseLine(
-  line: string,
-  machine: string | null,
-  timestamps: Map<string, string>,
-): UsageRecord | null {
+function parseLine(line: string, ctx: LineContext): UsageRecord | null {
+  const { machine, timestamps } = ctx;
   if (!line) return null;
   let obj: AssistantLine;
   try {
@@ -275,6 +337,7 @@ function parseLine(
         error: obj.error ?? null,
         apiErrorStatus: obj.apiErrorStatus ?? null,
         entrypoint: obj.entrypoint ?? null,
+        ...attribution(obj, ctx),
       },
     };
     stampLane(record, obj.sessionId, obj.entrypoint);
@@ -317,6 +380,7 @@ function parseLine(
       messageId: obj.message?.id,
       serviceTier: usage.service_tier,
       entrypoint: obj.entrypoint ?? null,
+      ...attribution(obj, ctx),
     },
   };
 

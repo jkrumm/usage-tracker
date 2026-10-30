@@ -45,7 +45,7 @@ describePg("report (Postgres)", () => {
   const byKey = async (by: (typeof GROUP_BY_DIMS)[number]) => Object.fromEntries((await stats(sql, { by })).map((r) => [r.key, r.records]));
 
   test("every --by dimension groups successful requests only, on the new column names", async () => {
-    expect(GROUP_BY_DIMS).toEqual(["source", "model", "billing", "day", "machine", "lane", "account", "iu_key", "repo"]);
+    expect(GROUP_BY_DIMS).toEqual(["source", "model", "billing", "day", "machine", "lane", "account", "iu_key", "repo", "role", "subagent_type", "effort"]);
     expect(await byKey("source")).toEqual({ "claude-code": 2, opencode: 2 });
     expect(await byKey("model")).toEqual({ "claude-sonnet-5": 2, "kimi-k2.6": 1, "no-such-model": 1 });
     expect(await byKey("billing")).toEqual({ max: 2, api_key: 2 });
@@ -55,6 +55,17 @@ describePg("report (Postgres)", () => {
     expect(await byKey("account")).toEqual({ iu: 2, "(n/a)": 2 });
     expect(await byKey("iu_key")).toEqual({ personal: 1, "athena-team": 1, "(n/a)": 2 });
     expect(await byKey("repo")).toEqual({ argo: 3, "iu/api": 1 });
+  });
+
+  test("role, subagent_type and effort group the attribution of Claude Code rows; rows without it fall under (none)", async () => {
+    await upsertRecords(sql, "claude-code", [
+      rec("a1", { subTool: "wave", raw: { sessionId: "s-a", effort: "high", factoryRole: "lead" } }),
+      rec("a2", { subTool: "wave", raw: { sessionId: "s-a", effort: "medium", factoryRole: "lead", subagentType: "implementer", agentId: "x", parentSessionId: "s-a" } }),
+      rec("a3", { subTool: "wave", raw: { sessionId: "s-b", effort: "medium", factoryRole: "worker" } }),
+    ]);
+    expect(await byKey("role")).toEqual({ lead: 2, worker: 1, "(none)": 4 });
+    expect(await byKey("subagent_type")).toEqual({ implementer: 1, "(none)": 6 });
+    expect(await byKey("effort")).toEqual({ high: 1, medium: 2, "(none)": 4 });
   });
 
   test("sums tokens (cache writes of both TTLs, no cache reads) and cost per group", async () => {

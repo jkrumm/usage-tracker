@@ -320,6 +320,8 @@ async function rsyncDir(leg: Leg, destDir: string, sub = ""): Promise<LegResult>
     `ssh ${SSH_OPTS.join(" ")}`,
     "--include=*/",
     "--include=*.jsonl",
+    // a Claude Code subagent's agent-<id>.meta.json names its agentType when its lines carry no attributionAgent
+    "--include=*.meta.json",
     "--exclude=*",
     `${host}:${remote}/`,
     `${destDir}/`,

@@ -40,7 +40,7 @@ COMMANDS
     --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
   iu-portal [--key <id>] Fetch the IU portal cost report now, every key unless given (ignores the 4 h throttle)
   stats                  Aggregated token + cost report (successful requests only)
-    --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo
+    --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | role | subagent_type | effort
     --since <N>          Only the last N days
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)

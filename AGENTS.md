@@ -124,13 +124,18 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   to the other passes.
 - **The upsert is idempotent on `(source, source_id)`** and fires only when a content column differs, so `ingested_at`
   moves on real change only even though hermes/feuer re-read their whole tables every run.
+- **claude-code attribution** (`raw` from the collector, mapped in `laneFor` / `sessionKey`; detail in `docs/usage-schema.md` §Parent
+  links): `raw.effort` (the line's `effort`) → `records.effort`; `raw.factoryRole` (the session's `FACTORY_ROLE` from `session_env`)
+  decides the lane (`laneForRole`: it beats `USAGE_LANE`, which the factory runner sets to `wave` on every pane) and lands in
+  `lane_detail.role`; a subagent line (`isSidechain` + `agentId`) is a session of its own `<parent>:<agentId>`, lane `subagent`,
+  `lane_detail.subagent_type`, `parent_session_id` = the parent. `stats --by role|subagent_type|effort`.
 - **claude-code lane precedence** (`stampLane`, `lane` on the record is `laneFor(subTool)`): the session's `USAGE_LANE`
   (from its session_env line), then agent-gateway's time-window fallback — only when no session_env line exists *and* the
   transcript `entrypoint` is `sdk-cli` or absent, since agent-gateway workers are always `claude -p` — then the entrypoint
   lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`). Don't loosen the guard: it stops pruned
   long-lived herdr sessions from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
-  `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; there is no backfill command.
-- **session_env** (`usage.session_env`: `base_url`, `lane`, `account` per hook session id) outlives the hook's 3-day log
+  `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; `make restamp-claude-code` re-scans the transcripts so existing rows take a changed attribution (cost fingerprint checked before/after).
+- **session_env** (`usage.session_env`: `base_url`, `lane`, `account`, `factory_role`, `factory_session` per hook session id) outlives the hook's 3-day log
   retention. `ingest` primes `models.ts` with the table, merges the logs on first lookup and writes new or changed
   lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `seen_at` is the hook line's
   own `ts`; the newest line wins, an older one only fills a NULL lane or account. `billing-audit` compares

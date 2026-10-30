@@ -31,7 +31,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
 | `collector_state` | per-collector cursor and last-run bookkeeping (also `account-picks`, `iu-portal[:<key>]`) | `source` |
-| `session_env` | the claude-code hook's `base_url` / `lane` / `account` per session id | `session` |
+| `session_env` | the claude-code hook's `base_url` / `lane` / `account` / `factory_role` / `factory_session` per session id | `session` |
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
 | `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
 | `record_duplicates` | the later copy of a call two stores recorded (gateway mirror), see [Duplicates](#duplicates) | `PK (record_id)` |
@@ -58,7 +58,7 @@ Writers upsert on that key.
 
 ### sessions
 
-`lane` is the CHECKed set below, `lane_detail jsonb` holds `{subagent_type, workflow, step, route, surface, raw}`.
+`lane` is the CHECKed set below, `lane_detail jsonb` holds `{subagent_type, role, workflow, step, route, surface, raw}`.
 Other columns: `parent_session_id` (self fk, deferrable, so a child may precede its parent inside one transaction),
 `account`, `billing`, `api_key`, `machine`, `model`, `effort`, `repo`, `issue_id`, `run_id`, `first_ts`, `last_ts`.
 A record carries its own `lane`: a subagent request inside an interactive session is lane `subagent` on the record and
@@ -78,16 +78,21 @@ SQLite `sub_tool`:
 | `fan` | `fan_worker` | the `rd fan` worktree session |
 | `fleet` | `worker` | `raw: fleet` (the work-machine fleet) |
 | `lead`, `worker` (claude-code) | `lead`, `worker` | |
+| `raw.factoryRole` `mother`, `wave` / `lead` / `worker` / `mechanical` | `wave_mother` / `lead` / `worker` (`fan_worker` when the sub_tool is `fan`) / `worker` | `role`: the factory role; beats the sub_tool |
 | `agent-gateway:<x>` (claude-code, opencode); any sub_tool of agent-gateway-*, litellm, agent-workflows | `agw_workflow` | `workflow: x`, `step`: the rest of `a:b:c` |
 | research-gateway, audio-gateway(-vps), audio-proxy | `agw_workflow` | `workflow`: the source, `step`: sub_tool |
 | source hermes | `hermes` | `surface`: slack, cron, cli, ... |
 | source iris | `iris` | |
-| `raw.subagentType` | `subagent` | `subagent_type` |
+| `raw.subagentType` | `subagent` | `subagent_type`, and `role` of the tree |
 | `raw.workflow` / `.step` / `.route` | `agw_workflow` | as given |
 | anything else (headless, bg, cron on feuer, chat-turn:*, modelpick strings) | `other` | `raw`: the sub_tool |
 
 Judgment calls: claude-code rows with no lane (230,945, all before the lane hook) are `interactive`, as `entrypointLane`
 treats `cli`; `wave` is the wave mother because `rd wave` exports that lane for the chain session; `fleet` is `worker`.
+The factory runner exports `USAGE_LANE=wave` on every pane whatever its role, so a session's `FACTORY_ROLE` (from its
+`session_env` line, `raw.factoryRole`) decides the lane and the sub_tool only refines `worker` into `fan_worker`. `mechanical`
+has no lane of its own (a `worker`; the role keeps the distinction). Sessions without a role keep the older precedence
+(`USAGE_LANE`, the agw window, the entrypoint). No lane was added, so the `sessions.lane` CHECK is unchanged.
 
 ## Normalization
 
@@ -141,8 +146,8 @@ has the semantics of `db.upsertRecords`, into `records`:
 - **session_env.** The batch's `raw.sessionId`s are looked up in `usage.session_env` (`readSessionEnv`, one query per chunk) and
   passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the hook-log lookup) and `resolveAccount`.
   `upsertSessionEnv` writes the table: `seen_at` is the hook line's own timestamp, the newest line wins (an older one changes
-  nothing but fills a NULL lane or account), `base_url` is replaced as given (NULL and `''` are real values: no gateway, a Max
-  session), a missing lane or account never erases a stored one. The hook-log parsing that fills it is `models.ts` (`useStoredSessionEnvs`, `pendingSessionEnvs`); `ingest` writes the lines
+  nothing but fills a NULL lane, account or factory role/session), `base_url` is replaced as given (NULL and `''` are real values: no gateway, a Max
+  session), a missing lane, account, role or spawn key never erases a stored one. The hook-log parsing that fills it is `models.ts` (`useStoredSessionEnvs`, `pendingSessionEnvs`); `ingest` writes the lines
 the logs added or changed with `upsertSessionEnv` after a collector runs and before its batch is written.
 
 ### Sessions
@@ -166,10 +171,30 @@ that starts at or before the stored `first_ts` takes precedence for attributes (
 gaps, and the lane changes only to a non-subagent lane from an earlier batch or away from `subagent`.
 
 **Parent links:** `parent_session_id` is set from `raw.parentSessionId` when a collector exposes it, resolved to the parent's
-`sessions` row after the batch's sessions exist (so a parent in the same batch works); an unknown parent leaves it NULL until a later
-batch mentions the link again, and a link is never erased. **No collector sets `raw.parentSessionId` today**, so nothing is linked:
-claude-code subagent requests share their parent's `sessionId` (they stay inside the parent session, lane `subagent` on the record),
+`sessions` row after the batch's sessions exist (so a parent in the same batch works); a parent whose records come in a later
+chunk of the same `upsertRecords` call is resolved by a final pass over the call's links; an unknown parent leaves it NULL until
+a later batch mentions the link again, and a link is never erased. Only claude-code sets `raw.parentSessionId` (below);
 Hermes/Feuer sessions have no parent in the data the collector reads, and agent-workflows steps share a run.
+
+**Claude Code attribution (Wave 1 of the cost program).** What the collector puts in `raw`, and what the writer makes of it:
+
+| transcript / hook field | `raw` | lands in |
+|-|-|-|
+| assistant line `effort` (else `perTurnEffort`), top level of main and subagent lines alike | `effort` | `records.effort`, `sessions.effort` (earliest non-subagent record's) |
+| `session_env` line `factory_role` (the factory runner's `FACTORY_ROLE`) | `factoryRole` | the lane via `laneForRole`, `lane_detail.role` |
+| `session_env` line `factory_session` (`FACTORY_SESSION`, the spawn key) | `factorySession` | kept in `raw` and `usage.session_env` only |
+| subagent line (`isSidechain` + `agentId`): `attributionAgent`, else the sibling `agent-<id>.meta.json`'s `agentType`, else `unknown` | `subagentType` | lane `subagent`, `lane_detail.subagent_type` |
+| subagent line: `agentId`, and the parent's `sessionId` | `agentId`, `parentSessionId` | the subagent's own session, `parent_session_id` |
+
+**Decision: a subagent is a session of its own.** `sessionKey` returns `<parent sessionId>:<agentId>` when `raw.agentId` is
+set, with lane `subagent`, `lane_detail {subagent_type, role}` (the role of the tree it belongs to), its own `effort` and
+`parent_session_id` = the parent. Why: the window share is per spawn (U5, FL4), and a subagent that burns the window must not
+vanish into its parent's number or inherit its effort. `raw.sessionId` stays the parent's, so `session_env` (billing, account,
+role) is looked up unchanged; `(source, source_id)` dedup is untouched (the request id). A window share per *tree* is the sum
+over a session and its children (`parent_session_id`). Nested subagents (`spawnDepth` 2) link to the top-level session: the
+transcript does not name the intermediate agent. A session's `effort` is its first request's; the effort of a mid-session
+change is on the records. `lane_detail.role` exists only for sessions whose `session_env` line carries `factory_role` (hook
+lines before 2026-10-30 do not), so history before the hook change has no role.
 
 ## Window share (headline metric, U5)
 

@@ -324,6 +324,84 @@ describePg("usage.records write path", () => {
     expect((await session("claude-code", "orphan")).parent).toBe("later");
   });
 
+  test("a Claude Code subagent is a session of its own under its parent: lane subagent, type, role, effort", async () => {
+    const sql = await ready();
+    await upsertSessionEnv(sql, [{ session: "own-par", lane: "wave", factory_role: "lead", factory_session: "spawn-1", seen_at: T0 }], T0);
+    const main = { sessionId: "own-par", effort: "high", factoryRole: "lead" };
+    const sub = { ...main, subagentType: "implementer", agentId: "a1", parentSessionId: "own-par", effort: "medium" };
+    await upsertRecords(sql, "claude-code", [
+      rec("own_m1", { ts: "2026-10-29T10:00:00Z", subTool: "wave", raw: main }),
+      rec("own_s1", { ts: "2026-10-29T10:01:00Z", subTool: "wave", raw: sub }),
+      rec("own_s2", { ts: "2026-10-29T10:02:00Z", subTool: "wave", raw: sub }),
+    ]);
+    expect(await one("claude-code", "own_m1")).toMatchObject({
+      source_session_id: "own-par", lane: "lead", lane_detail: { role: "lead" }, effort: "high",
+    });
+    expect(await one("claude-code", "own_s1")).toMatchObject({
+      source_session_id: "own-par:a1", lane: "subagent", lane_detail: { subagent_type: "implementer", role: "lead" }, effort: "medium",
+    });
+    expect(await session("claude-code", "own-par")).toMatchObject({ lane: "lead", effort: "high", parent: null });
+    expect(await session("claude-code", "own-par:a1")).toMatchObject({
+      lane: "subagent", lane_detail: { subagent_type: "implementer", role: "lead" }, effort: "medium", parent: "own-par",
+    });
+    // a re-run changes nothing
+    const again = await upsertRecords(sql, "claude-code", [rec("own_s1", { ts: "2026-10-29T10:01:00Z", subTool: "wave", raw: sub })]);
+    expect(again.newRows).toBe(0);
+  });
+
+  test("a subagent's billing and account follow the parent's session_env line", async () => {
+    const sql = await ready();
+    await upsertSessionEnv(sql, [{ session: "env-par", base_url: null, account: "me2", seen_at: T0 }], T0);
+    await upsertRecords(sql, "claude-code", [
+      rec("env_s1", { raw: { sessionId: "env-par", subagentType: "Explore", agentId: "z", parentSessionId: "env-par" } }),
+    ]);
+    expect(await one("claude-code", "env_s1")).toMatchObject({ billing: "max", account: "me2", source_session_id: "env-par:z" });
+  });
+
+  test("a parent whose records come in a later chunk of the same call is still linked", async () => {
+    const sql = await ready();
+    const fill = Array.from({ length: 520 }, (_, i) => rec(`chunk_f${i}`, { raw: { sessionId: "chunk-fill" } }));
+    await upsertRecords(sql, "claude-code", [
+      rec("chunk_c", { raw: { sessionId: "chunk-par", agentId: "c", subagentType: "Explore", parentSessionId: "chunk-par" } }),
+      ...fill,
+      rec("chunk_p", { raw: { sessionId: "chunk-par" } }),
+    ]);
+    expect((await session("claude-code", "chunk-par:c")).parent).toBe("chunk-par");
+  });
+
+  test("session_env keeps the factory role and spawn key: a later line without them never erases them", async () => {
+    const sql = await ready();
+    await upsertSessionEnv(sql, [{ session: "se-f", lane: "wave", factory_role: "worker", factory_session: "spawn-2" }], T0);
+    await upsertSessionEnv(sql, [{ session: "se-f", lane: "wave" }], T1);
+    expect((await readSessionEnv(sql, ["se-f"])).get("se-f")).toMatchObject({ factory_role: "worker", factory_session: "spawn-2" });
+    // an older line fills a role the newer one lacks
+    await upsertSessionEnv(sql, [{ session: "se-g", seen_at: T2 }], T3);
+    await upsertSessionEnv(sql, [{ session: "se-g", factory_role: "lead", seen_at: T0 }], T3);
+    expect((await readSessionEnv(sql, ["se-g"])).get("se-g")).toMatchObject({ factory_role: "lead", seen_at: T2 });
+  });
+
+  test("a session's lane detail is filled by a later batch: a late role, an unknown subagent type made known", async () => {
+    const sql = await ready();
+    const sub = (type: string, role?: string) => ({ sessionId: "fill-par", agentId: "f", parentSessionId: "fill-par", subagentType: type, ...(role ? { factoryRole: role } : {}) });
+    await upsertRecords(sql, "claude-code", [rec("fill_1", { ts: "2026-10-29T10:00:00Z", raw: sub("unknown") })]);
+    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "unknown" });
+    await upsertRecords(sql, "claude-code", [rec("fill_2", { ts: "2026-10-29T10:01:00Z", raw: sub("Explore", "lead") })]);
+    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "Explore", role: "lead" });
+    // a known type is not overwritten by a later, different one
+    await upsertRecords(sql, "claude-code", [rec("fill_3", { ts: "2026-10-29T10:02:00Z", raw: sub("verifier", "lead") })]);
+    expect((await session("claude-code", "fill-par:f")).lane_detail).toEqual({ subagent_type: "Explore", role: "lead" });
+  });
+
+  test("a subagent ingested before its parent is linked once the parent exists, with no further mention of the link", async () => {
+    const sql = await ready();
+    await upsertRecords(sql, "claude-code", [
+      rec("orph_c", { raw: { sessionId: "orph-par", agentId: "o", subagentType: "Explore", parentSessionId: "orph-par" } }),
+    ]);
+    expect((await session("claude-code", "orph-par:o")).parent).toBeNull();
+    await upsertRecords(sql, "claude-code", [rec("orph_p", { raw: { sessionId: "orph-par" } })]);
+    expect((await session("claude-code", "orph-par:o")).parent).toBe("orph-par");
+  });
+
   test("session_env helpers: the newest line wins, a missing lane or account never erases a stored one", async () => {
     const sql = await ready();
     await upsertSessionEnv(sql, [{ session: "se-1", base_url: "https://a.example", lane: "wave", account: "a" }], T0);

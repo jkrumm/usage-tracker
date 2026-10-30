@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LANES, laneFor } from "./lane.ts";
+import { LANES, laneFor, laneForRole } from "./lane.ts";
 
 describe("laneFor", () => {
   test("USAGE_LANE values on claude-code", () => {
@@ -77,5 +77,39 @@ describe("laneFor", () => {
       ["agent-gateway:ab", "claude-code"],
     ];
     for (const [t, s] of samples) expect(LANES).toContain(laneFor(t, s).lane);
+  });
+});
+
+describe("factory role", () => {
+  test("the role beats the lane the runner sets on every pane (USAGE_LANE=wave) and lands in detail.role", () => {
+    expect(laneFor("wave", "claude-code", { factoryRole: "lead" })).toEqual({ lane: "lead", detail: { role: "lead" } });
+    expect(laneFor("wave", "claude-code", { factoryRole: "worker" })).toEqual({ lane: "worker", detail: { role: "worker" } });
+    expect(laneFor("wave", "claude-code", { factoryRole: "mother" }).lane).toBe("wave_mother");
+    expect(laneFor("wave", "claude-code", { factoryRole: "wave" }).lane).toBe("wave_mother");
+    expect(laneFor("wave", "claude-code", { factoryRole: "mechanical" })).toEqual({ lane: "worker", detail: { role: "mechanical" } });
+  });
+
+  test("a worker spawned with USAGE_LANE=fan is a fan_worker", () => {
+    expect(laneFor("fan", "claude-code", { factoryRole: "worker" })).toEqual({ lane: "fan_worker", detail: { role: "worker" } });
+    expect(laneForRole("lead", "fan")).toBe("lead");
+  });
+
+  test("a subagent keeps lane subagent and carries the role of its tree", () => {
+    expect(laneFor("wave", "claude-code", { factoryRole: "lead", subagentType: "implementer" })).toEqual({
+      lane: "subagent",
+      detail: { subagent_type: "implementer", role: "lead" },
+    });
+  });
+
+  test("a role with no lane keeps the session's own lane and still records the role", () => {
+    expect(laneForRole("implementer", null)).toBeNull();
+    expect(laneFor("interactive", "claude-code", { factoryRole: "implementer" })).toEqual({
+      lane: "interactive",
+      detail: { role: "implementer" },
+    });
+  });
+
+  test("without a role nothing changes", () => {
+    expect(laneFor("wave", "claude-code", {})).toEqual({ lane: "wave_mother", detail: null });
   });
 });
