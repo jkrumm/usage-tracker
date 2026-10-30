@@ -31,9 +31,9 @@ try {
 
   const summary = await runIngest(sql, { full: true, only: "claude-code" });
   for (const r of summary.results) console.log(`${r.source}: ${r.status} +${r.newRows} new / ${r.processed} seen${r.note ? ` (${r.note})` : ""}`);
-  // Anything but a clean scan of every root (a skipped local root, a mirror sync that failed and rode along as a note) is an incomplete restamp.
-  if (summary.results.some((r) => r.status !== "ok" || r.note)) {
-    console.error("restamp: the scan was not clean; fix the note above and run again (idempotent)");
+  // A skipped or failed collector is an incomplete restamp. A note (the MacBook asleep: its mirror on disk is still scanned) is a warning.
+  if (summary.results.some((r) => r.status !== "ok")) {
+    console.error("restamp: the scan did not complete; fix the cause above and run again (idempotent)");
     process.exit(1);
   }
 

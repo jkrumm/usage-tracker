@@ -19,25 +19,53 @@ Boundaries: Argo's Usage v2 page is track A2's, not this one; U leaves a view an
 table (`software-factory/config/roles.json`) changes only on this track's measured data (FL4), and the program lead
 lands that change in software-factory, not a wave here. All repos here are direct-to-master.
 
-## Wave 1 — Attribution: lane, role, effort, subagent, parent            <!-- status: active -->
-- [ ] dotfiles `hooks/session-env.ts` also logs `FACTORY_ROLE` and `FACTORY_SESSION` when set (the
+## Wave 1 — Attribution: lane, role, effort, subagent, parent            <!-- status: done -->
+- [x] dotfiles `hooks/session-env.ts` also logs `FACTORY_ROLE` and `FACTORY_SESSION` when set (the
   factory runner sets the first two, `software-factory/packages/server/src/runner.ts`); its test covers the new fields.
   Nothing else in dotfiles changes.
-- [ ] The collector reads them from `usage.session_env`: `FACTORY_ROLE` maps to the lane (`lead`, `wave_mother`, `worker`,
+- [x] The collector reads them from `usage.session_env`: `FACTORY_ROLE` maps to the lane (`lead`, `wave_mother`, `worker`,
   `fan_worker`; extend `src/lane.ts` and the `sessions.lane` CHECK in a new additive migration only if a role has no lane),
   and the role itself goes into `lane_detail.role`. Today's fallbacks (`USAGE_LANE`, the agw window, the entrypoint)
   stay for sessions without a factory role.
-- [ ] Effort and subagent type from the transcripts: live transcripts carry `"effort":"high"`; find where (main record,
+- [x] Effort and subagent type from the transcripts: live transcripts carry `"effort":"high"`; find where (main record,
   subagent file, system record) and fill `records.effort` and `sessions.effort`. `subagents/agent-*.jsonl` records get
   `lane_detail.subagent_type` and the parent link (`raw.parentSessionId`, the rule in `docs/usage-schema.md` §Parent
   links): a subagent becomes its own session with lane `subagent`, linked to its parent, or the record keeps the parent's
   session and carries the type, whichever the schema doc's rules allow without breaking `(source, source_id)` dedup.
   Decide, write the decision into `docs/usage-schema.md`.
-- [ ] Re-stamp the last 30 days in place (the attribution only; costs untouched), insert-only where a row is new.
-- [ ] `stats --by lane|role|subagent_type|effort` in the CLI.
-**Left behind:**
+- [x] Re-stamp the last 30 days in place (the attribution only; costs untouched), insert-only where a row is new.
+- [x] `stats --by lane|role|subagent_type|effort` in the CLI.
+**Left behind:** shipped to master (usage-tracker `58b1aa9`, `1015905`, the fix commit after it; dotfiles `8eb7f5f`), migration
+`0010` applied, `make deploy` done, `make verify` green. `make check`: 376 pass, 0 fail, 0 skip. `agw review` ran twice (the
+second over the whole range); its blocking findings were fixed where they held and the rest are listed below.
+- **Decisions** (written into `docs/usage-schema.md` §Parent links): a subagent is a session of its own `<parent>:<agentId>`, lane
+  `subagent`, `lane_detail {subagent_type, role}`, `parent_session_id` = the parent; `raw.sessionId` stays the parent's so
+  `session_env` lookups are unchanged and `(source, source_id)` dedup is untouched. A tree's share is the sum over a session and
+  its children. Effort is `records.effort` per request and `sessions.effort` = the first request's. `FACTORY_ROLE` beats
+  `USAGE_LANE` (the runner sets `wave` on every pane): mother/wave→`wave_mother`, lead, worker (`fan_worker` under `USAGE_LANE=fan`),
+  mechanical→`worker`; no lane added, so the CHECK is unchanged. Role is also on a subagent's detail (the tree's role).
+- **Data found:** effort is a top-level field of every assistant line (main and subagent). Subagent lines carry `isSidechain`,
+  `agentId`, the parent's `sessionId` and (97.7 %) `attributionAgent`; the rest take `agent-<id>.meta.json`'s `agentType`.
+- **Proof (live, `shared`):** last 30 days, claude-code: effort set on all but 4,597 of 302k records (the lines that carry none);
+  3,387 subagent sessions, all 3,387 linked to a parent, 25 type `unknown`; subagent is the largest lane by cost ($4.7k of
+  $16.5k). `stats --by role|subagent_type|effort` works. `reprice --dry-run` after the restamp: 819,699 rows scanned, everything
+  matches the current prices (the restamp rewrote 318,648 claude-code rows, attribution only; cost totals moved only by
+  the 211 rows the 15-min agent had not ingested yet).
+- **Factory role history:** `session_env.factory_role` exists only from the hook change on (2026-10-30), so history has no
+  role (`stats --by role`: 6 live `wave` sessions so far, everything older `(none)`). Wave 2's FL4 measurement by role has data
+  only from sessions started after this wave; say so in the report or wait for a few days of factory runs. Roles reach `usage`
+  per host when that host's dotfiles are current (the MacBook included).
+- **Tools:** `make restamp-claude-code` (`uninstall-agent` first, `deploy` after; refuses while the agent is loaded) re-scans
+  through the normal writer and recomputes claude-code session spans from their records (2 changed, 5 sessions have no records left).
+  It aborted after the scan on the first run (the MacBook was unreachable and I had made that note fatal): fixed to a warning; the
+  span repair and the cost check were then run by hand.
+- **Known limits (reviewer findings not fixed):** a sidecar `meta.json` or mirror hook log that arrives after its transcript was
+  consumed leaves `unknown` / no role until the next restamp (the mirror rsync now carries `*.meta.json`); a role that reaches a
+  session after its first batch fills `lane_detail.role` but does not move its lane; an older retained hook-log line can shadow a
+  newer stored role in memory (pre-existing `loadSessionEnvs` design, `seen_at` of the stored row is not loaded); the iumac mirror
+  was unreachable during the restamp, so MacBook transcripts were re-stamped from the mirror as last synced.
 
-## Wave 2 — Window share (U5)            <!-- status: pending -->
+## Wave 2 — Window share (U5)            <!-- status: active -->
 - [ ] The view `usage.session_window_share` per `docs/usage-schema.md` §Window share: consecutive `quota_samples` per
   account, a moved `*_resets_at` starts a fresh interval, each interval's `five_hour_pct` and `seven_day_pct` delta split
   over the sessions with `records` on that account in the interval by `cost_usd`. A migration, with a test on a fixture
