@@ -35,9 +35,10 @@ export interface WriteOptions {
   /** Stamped as `ingested_at` of inserted and changed rows; default the database's now(). */
   now?: Date;
   /**
-   * Insert-if-absent: a record whose (source, source_id) exists is left untouched (ON CONFLICT DO NOTHING), and so is an
-   * existing session row. For a backfill that must never overwrite what the source's own writer stored. `newRows` then
-   * counts the inserted rows; the rest of `processed` was skipped.
+   * Insert-if-absent: a record whose (source, source_id) exists is left untouched (ON CONFLICT DO NOTHING). An existing
+   * session keeps its lane and every stored attribute, but its span widens (least/greatest) and a NULL attribute is
+   * filled, so a session split across runs converges. For a backfill that must never overwrite what the source's own
+   * writer stored. `newRows` then counts the inserted rows; the rest of `processed` was skipped.
    */
   insertOnly?: boolean;
 }
@@ -264,6 +265,22 @@ const merge = (col: string): string =>
 // (a session first seen through its subagent requests alone): a subagent record never demotes an interactive session.
 const TAKE_LANE = `(EXCLUDED.lane <> 'subagent' AND (s.lane = 'subagent' OR ${EARLIER}))`;
 
+// Insert-only never touches what a session already says (lane, lane_detail, a stored attribute), but a backfilled record
+// may reach back before the stored span or after it, and a session split across runs must converge on the whole one: the
+// span widens and an attribute that is still NULL is filled.
+const INSERT_ONLY_SESSION_UPDATE = `DO UPDATE SET
+  account = coalesce(s.account, EXCLUDED.account),
+  billing = coalesce(nullif(s.billing, 'unknown'), nullif(EXCLUDED.billing, 'unknown'), 'unknown'),
+  api_key = coalesce(s.api_key, EXCLUDED.api_key),
+  machine = coalesce(s.machine, EXCLUDED.machine),
+  model = coalesce(s.model, EXCLUDED.model),
+  effort = coalesce(s.effort, EXCLUDED.effort),
+  repo = coalesce(s.repo, EXCLUDED.repo),
+  issue_id = coalesce(s.issue_id, EXCLUDED.issue_id),
+  run_id = coalesce(s.run_id, EXCLUDED.run_id),
+  first_ts = least(s.first_ts, EXCLUDED.first_ts),
+  last_ts = greatest(s.last_ts, EXCLUDED.last_ts)`;
+
 const sessionsSql = (insertOnly: boolean): string => `
 INSERT INTO usage.sessions AS s
   (source, source_session_id, lane, lane_detail, account, billing, api_key, machine, model, effort, repo, issue_id, run_id,
@@ -274,7 +291,7 @@ FROM jsonb_to_recordset($1::text::jsonb) AS j(
        source_session_id text, lane text, lane_detail jsonb, account text, billing text, api_key text, machine text,
        model text, effort text, repo text, issue_id text, run_id text, first_ts timestamptz, last_ts timestamptz)
 ORDER BY j.source_session_id
-ON CONFLICT (source, source_session_id) ${insertOnly ? "DO NOTHING" : `DO UPDATE SET
+ON CONFLICT (source, source_session_id) ${insertOnly ? INSERT_ONLY_SESSION_UPDATE : `DO UPDATE SET
   lane = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane ELSE s.lane END,
   lane_detail = CASE WHEN ${TAKE_LANE} THEN EXCLUDED.lane_detail ELSE s.lane_detail END,
   account = ${merge("account")},

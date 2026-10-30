@@ -416,7 +416,11 @@ describePg("usage.records write path", () => {
     expect(after.input_tokens).toBe(stored.input_tokens);
     expect(after.machine).toBe("native-host");
     expect(after.ingested_at).toEqual(T0);
-    expect(await session("agent-workflows", "ins-s")).toEqual(storedSession);
+    // the session keeps its attributes; only the span widened to the earlier backfilled record
+    const widened = await session("agent-workflows", "ins-s");
+    expect({ ...widened, first_ts: null }).toEqual({ ...storedSession, first_ts: null });
+    expect(widened.first_ts).toEqual(new Date("2026-10-01T00:00:00Z"));
+    expect(widened.last_ts).toEqual(storedSession.last_ts);
     // inserted: the absent record joins the existing session, the new one brings its own session
     expect((await one("agent-workflows", "ins_2")).source_session_id).toBe("ins-s");
     expect((await one("agent-workflows", "ins_3")).source_session_id).toBe("ins-new");
@@ -425,6 +429,28 @@ describePg("usage.records write path", () => {
     expect(await upsertRecords(sql, "agent-workflows", backfill, { now: T3, insertOnly: true })).toEqual({ processed: 3, newRows: 0 });
     const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${T3.toISOString()}::timestamptz`;
     expect(n).toBe(0);
+  });
+
+  test("insertOnly widens a session split across runs and fills its NULL attributes, never overwriting a stored one", async () => {
+    const sql = await ready();
+    const at = (iso: string) => ({ ts: iso, raw: { sessionId: "split-s" } });
+    await upsertRecords(sql, "claude-code", [rec("split_2", { ...at("2026-10-10T12:00:00Z"), project: "/Users/jkrumm/SourceRoot/argo" })], { insertOnly: true });
+    expect(await session("claude-code", "split-s")).toMatchObject({ first_ts: new Date("2026-10-10T12:00:00Z"), last_ts: new Date("2026-10-10T12:00:00Z"), repo: "argo", effort: null });
+
+    // earlier and later halves of the same session arrive in separate calls
+    await upsertRecords(sql, "claude-code", [rec("split_1", { ...at("2026-10-10T08:00:00Z"), project: "/Users/jkrumm/SourceRoot/vps", raw: { sessionId: "split-s", effort: "high" } })], { insertOnly: true });
+    await upsertRecords(sql, "claude-code", [rec("split_3", at("2026-10-10T18:00:00Z"))], { insertOnly: true });
+    expect(await session("claude-code", "split-s")).toMatchObject({
+      first_ts: new Date("2026-10-10T08:00:00Z"),
+      last_ts: new Date("2026-10-10T18:00:00Z"),
+      repo: "argo", // a stored attribute is not overwritten
+      effort: "high", // a NULL one is filled
+    });
+
+    // a re-run changes nothing
+    const before = await session("claude-code", "split-s");
+    await upsertRecords(sql, "claude-code", [rec("split_1", at("2026-10-10T08:00:00Z"))], { insertOnly: true });
+    expect(await session("claude-code", "split-s")).toEqual(before);
   });
 
   test("U+0000 is stripped from values and keys, and a text that merely spells it out survives", async () => {

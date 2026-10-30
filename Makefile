@@ -71,8 +71,8 @@ test: ## Run the test suite (Postgres suites need secrets-run or USAGE_TEST_PG_U
 check: typecheck ## All local validation: type-check, then run the test suite
 	$(RUN_TESTS)
 
-backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive into usage.records (DRYRUN=1, REUSE=1 keeps the dump, NOPROOF=1, INSERT_ONLY=all|<sources>)
-	bun run scripts/backfill-argo.ts $(if $(DRYRUN),--dry-run) $(if $(REUSE),--reuse-dump) $(if $(NOPROOF),--no-proof) $(if $(INSERT_ONLY),--insert-only $(INSERT_ONLY))
+backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive into usage.records; INSERT-ONLY unless OVERWRITE=all|<sources> (refuses while the ingest agent is loaded, FORCE=1 overrides); DRYRUN=1, REUSE=1 keeps the dump, NOPROOF=1
+	bun run scripts/backfill-argo.ts $(if $(DRYRUN),--dry-run) $(if $(REUSE),--reuse-dump) $(if $(NOPROOF),--no-proof) $(if $(OVERWRITE),--overwrite $(OVERWRITE)) $(if $(FORCE),--force)
 
 import-sqlite-state: ## One-off import of the SQLite archive's state tables (cursors, session_env, quota, picks, portal) into usage.*
 	bun run scripts/import-sqlite-state.ts

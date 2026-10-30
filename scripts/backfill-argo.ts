@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { chooseRow, monthOf, toRecord, type Chosen, type StoredRow } from "../src/backfill.ts";
 import { connect } from "../src/pg/connect.ts";
-import { sessionKey } from "../src/pg/sessions.ts";
 import { upsertRecords, type WriterRecord } from "../src/pg/writer.ts";
 import { buildProof, Measures, type Item, type RunLog, type SourceCounts, type Union } from "./backfill-proof.ts";
 
@@ -15,10 +14,15 @@ import { buildProof, Measures, type Item, type RunLog, type SourceCounts, type U
 //   (b) the local SQLite archive, opened read-only.
 // Union by (source, source_id): the SQLite row wins (exact cost, 1h split, IU key), else Argo's. Pure mapping and the
 // dedup rule live in src/backfill.ts. Historical billing / account / iu_key go through the writer as stored. Nothing is
-// ever deleted: a re-run upserts, and a second run writes 0 changed rows. Proof document: scripts/backfill-proof.ts.
+// ever deleted. The default is INSERT-ONLY for every source: a row that exists is left alone (the live pipeline owns it),
+// a session widens its span and fills NULL attributes, so a re-run only adds what is missing. Overwriting is the
+// exception: `--overwrite <source,source|all>` rewrites those sources' rows whose content differs (the initial load, or a
+// repair of one source), and refuses to run while the ingest LaunchAgent is loaded unless `--force` / FORCE=1, because the
+// live pipeline rewrites the same keys. After the write loop it runs usage.flag_gateway_duplicates() (idempotent).
+// Proof document: scripts/backfill-proof.ts.
 //
 //   bun scripts/backfill-argo.ts [--dry-run] [--reuse-dump] [--no-proof] [--proof <file.md>] [--dir <scratch>]
-//                                [--db <usage.db>] [--insert-only <source,source|all>] [--batch <n>]
+//                                [--db <usage.db>] [--overwrite <source,source|all>] [--force] [--batch <n>]
 
 const arg = (name: string): string | undefined => {
   const i = process.argv.indexOf(`--${name}`);
@@ -31,10 +35,11 @@ const SQLITE = arg("db") ?? process.env.USAGE_DB ?? join(homedir(), ".local/shar
 const DUMP = join(DIR, "argo-usage-record.copy-text");
 const META = join(DIR, "argo-usage-record.meta.json");
 const BATCH = Number(arg("batch") ?? 2000);
-/** Sources whose own writer now owns the rows: the backfill only inserts what is absent and never touches a session row. */
-const INSERT_ONLY = new Set((arg("insert-only") ?? "agent-workflows").split(",").filter(Boolean));
-/** `--insert-only all`: the cutover re-run, once the live pipeline owns every source, adds only what is missing. */
-const insertOnlyFor = (source: string): boolean => INSERT_ONLY.has("all") || INSERT_ONLY.has(source);
+/** Sources whose rows this run may overwrite; every other source is insert-only (the default: none). */
+const OVERWRITE = new Set((arg("overwrite") ?? "").split(",").filter(Boolean));
+const insertOnlyFor = (source: string): boolean => !(OVERWRITE.has("all") || OVERWRITE.has(source));
+const AGENT_LABEL = "com.jkrumm.usage-tracker";
+const FORCE = flag("force") || process.env.FORCE === "1";
 const DRY = flag("dry-run");
 const PROOF = flag("no-proof") ? null : (arg("proof") ?? join(import.meta.dir, `../docs/backfill/${new Date().toISOString().slice(0, 10)}-argo-usage-record.md`));
 
@@ -250,33 +255,24 @@ async function buildUnion(): Promise<Union> {
   return u;
 }
 
-/** Records grouped by session (a record without one is its own group), packed into batches of at most `max` records. */
-function sessionBatches(source: string, records: WriterRecord[], max = 500): WriterRecord[][] {
-  const groups = new Map<string, WriterRecord[]>();
-  for (const r of records) {
-    const key = sessionKey(source, { sourceId: r.sourceId, grain: r.grain, raw: r.raw }) ?? `\0${r.sourceId}`;
-    const g = groups.get(key);
-    if (g) g.push(r);
-    else groups.set(key, [r]);
-  }
-  const batches: WriterRecord[][] = [];
-  let cur: WriterRecord[] = [];
-  for (const g of groups.values()) {
-    if (g.length > max) log(`${source}: a session of ${g.length} records exceeds one writer chunk; its span may stay narrow under insert-only`);
-    if (cur.length > 0 && cur.length + g.length > max) {
-      batches.push(cur);
-      cur = [];
-    }
-    cur.push(...g);
-  }
-  if (cur.length > 0) batches.push(cur);
-  return batches;
-}
-
 const storedGrainOk = (g: string): boolean => ["message", "request", "session", "step"].includes(g);
+
+/** The ingest LaunchAgent is loaded (launchctl print succeeds): it rewrites the keys an overwrite run would. */
+function ingestAgentLoaded(): boolean {
+  if (typeof process.getuid !== "function") return false;
+  const r = Bun.spawnSync(["launchctl", "print", `gui/${process.getuid()}/${AGENT_LABEL}`], { stdout: "ignore", stderr: "ignore" });
+  return r.exitCode === 0;
+}
 
 async function main(): Promise<void> {
   const t0 = Date.now();
+  if (OVERWRITE.size > 0 && !DRY && !FORCE && ingestAgentLoaded()) {
+    console.error(
+      `[backfill] refusing to overwrite (${[...OVERWRITE].join(",")}): the ingest LaunchAgent ${AGENT_LABEL} is loaded and would rewrite the same keys. ` +
+        "Unload it (make uninstall-agent) or pass --force / FORCE=1. The default (insert-only) is always safe.",
+    );
+    process.exit(2);
+  }
   if (!flag("reuse-dump") || !existsSync(DUMP) || !existsSync(META)) await dumpArgo();
   else log(`reusing dump ${DUMP}`);
 
@@ -317,12 +313,9 @@ async function main(): Promise<void> {
             it.chosen.row.raw = null;
             return m.record;
           });
-        // Insert-only never widens a stored session, so a session created by this run must arrive in one call: batches of
-        // whole sessions, at most the writer's chunk of 500 records.
-        const batches = insertOnly ? sessionBatches(source, toRecords(list)) : null;
-        const total = batches ? batches.length : Math.ceil(list.length / BATCH);
+        const total = Math.ceil(list.length / BATCH);
         for (let b = 0; b < total; b++) {
-          const records = batches ? (batches[b] as WriterRecord[]) : toRecords(list.slice(b * BATCH, (b + 1) * BATCH));
+          const records = toRecords(list.slice(b * BATCH, (b + 1) * BATCH));
           const { newRows } = await upsertRecords(sql, source, records, { now: runNow, insertOnly });
           c.inserted += newRows;
           if (insertOnly) c.skippedExisting += records.length - newRows;
@@ -334,7 +327,11 @@ async function main(): Promise<void> {
     }
     const seconds = (Date.now() - t0) / 1000;
     let changed: number | null = null;
+    let flagged: number | null = null;
     if (!DRY) {
+      const [f] = await sql`SELECT usage.flag_gateway_duplicates()::int AS n`;
+      flagged = f.n;
+      log(`gateway mirror duplicates newly flagged: ${flagged}`);
       const [r] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${runNow.toISOString()}::timestamptz`;
       changed = r.n;
     }
@@ -347,6 +344,7 @@ async function main(): Promise<void> {
         union: u.items.length,
         skipped: u.skippedList.length,
         changedRows: changed,
+        flaggedDuplicates: flagged,
         perSource: Object.fromEntries(counts),
         seconds: Math.round(seconds),
       }),
