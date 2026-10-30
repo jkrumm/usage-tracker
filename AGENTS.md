@@ -20,6 +20,9 @@ push step.
   harness). Migrations: `migrations/pg/NNNN_name.sql`, `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
 - `src/models.ts` — model normalization, `classifyBilling`, `resolveAccount`, the hook-log `session_env` lookups
   (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
+- `src/pg/events.ts` — `upsertSessionEvents`: compactions and skill loads (`usage.session_events`, migration 0013; views
+  `session_signals` / `lane_signals` hold the cache hit ratio and the counts), emitted by the claude-code collector in
+  `CollectResult.events`. See the "Session events" gotcha.
 - `src/lane.ts` (`laneFor`), `src/repo.ts` (`normalizeRepo`) — the pure lane and repo mappings the writer calls.
 - `src/report.ts` — `stats`, `sources`, `health` staleness, `unpricedByModel`, `billing-audit` over the `usage` schema.
 - `src/window.ts` — `window`: the share of the Max 5 h / 7 d windows by session, lane, role, subagent type, issue, repo or
@@ -138,6 +141,11 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`). Don't loosen the guard: it stops pruned
   long-lived herdr sessions from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
   `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; `make restamp-claude-code` re-scans the transcripts so existing rows take a changed attribution (cost fingerprint checked before/after).
+- **Session events** (`usage.session_events`, `docs/usage-schema.md` §Session events): compactions (`compact_boundary` lines) and `Skill`
+  tool calls with their loaded size, keyed `(source, event_id)` (boundary uuid / `tool_use` id), never record attributes or
+  `lane_detail`. A skill's call and its size line are two events with one id, merged by `upsertSessionEvents`, so a size
+  arriving in a later poll completes the row; `args` is never stored. Counts and the cache hit ratio are the views
+  `session_signals` / `lane_signals` (ratio from sums), nothing stored. Backfill them with `make backfill-events` (full scan, events only, cursor untouched, safe beside the LaunchAgent); `make restamp-claude-code` is only for attribution changes.
 - **session_env** (`usage.session_env`: `base_url`, `lane`, `account`, `factory_role`, `factory_session` per hook session id) outlives the hook's 3-day log
   retention. `ingest` primes `models.ts` with the table, merges the logs on first lookup and writes new or changed
   lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `seen_at` is the hook line's

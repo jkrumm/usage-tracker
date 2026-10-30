@@ -32,6 +32,9 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `price_overrides` | manual corrections | `id` |
 | `collector_state` | per-collector cursor and last-run bookkeeping (also `account-picks`, `iu-portal[:<key>]`) | `source` |
 | `session_env` | the claude-code hook's `base_url` / `lane` / `account` / `factory_role` / `factory_session` per session id | `session` |
+| `session_events` | compactions and skill loads of a session, see [Session events](#session-events-compactions-and-skills-wave-3) | `PK (source, event_id)` |
+| `session_signals` | view: per session, token sums, cache hit ratio, compactions, skill calls and chars | |
+| `lane_signals` | view: per source, lane and UTC day, the same signals | |
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
 | `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
 | `record_duplicates` | the later copy of a call two stores recorded (gateway mirror), see [Duplicates](#duplicates) | `PK (record_id)` |
@@ -240,6 +243,65 @@ Cond: account, ts range`) for the per-interval record lookup and runs in about 0
 CLI: `usage-tracker window --by session|lane|role|subagent_type|issue|repo|account [--days N] [--top N] [--account <id>]
 [--format json|plain]` (`make window BY=lane`). First measurement by lane, role and effort:
 `docs/reports/2026-10-30-role-window-share.md`.
+
+## Session events: compactions and skills (Wave 3)
+
+Built in `0013_session_events.sql`: one table, two views.
+
+**Decision.** Compactions and skill loads are rows of `usage.session_events`, not record attributes and not `lane_detail`. A
+compaction boundary line carries no usage, so no record exists for it; a record's `raw` is overwritten by the last line of
+its request id, and a Skill call is one of several lines of a request; a skill's size arrives on another line than its call.
+Counts per session are derived by a view, never stored on `sessions` or `records`. The plan's "a count on the session and
+the record that carries it" is met by `session_signals` (the session) and the event's `ts` (which record it sits between).
+
+`session_events`: `PK (source, event_id)`, `source_session_id` (the `sessions` key, `<session>:<agent>` for a subagent, via
+`eventSessionKey`), `kind` (`compaction` | `skill`), `ts`, `name` (skill), `size_chars` (skill), `detail jsonb`
+(compaction: `{trigger, preTokens, postTokens, durationMs}`), `ingested_at`. Indexes `(source, source_session_id)` and
+`(kind, ts)`. No FK to `sessions`: an event can be written before its session's first record. `event_id` is the boundary
+line's `uuid` or the Skill `tool_use` id.
+
+**Claude Code collector** (`src/collectors/claude-code.ts`, `parseEvents`; fields verified on 2.1.3xx transcripts):
+- compaction: a `{type:"system", subtype:"compact_boundary"}` line, `compactMetadata` into `detail`.
+- skill call: an `assistant` line whose `message.content[]` holds a `tool_use` named `Skill`; `name` = `input.skill`.
+  `input.args` is free text and is never read into an event.
+- skill size: the `type:"user"`, `isMeta` line carrying `sourceToolUseID` = the call's id and the text
+  `Base directory for this skill: ...`; `size_chars` = total length of its text blocks (a bare string also works). About
+  13 % of calls have no such line: `size_chars` stays NULL.
+- The call and the size are two events with the same `event_id`; `upsertSessionEvents` (`src/pg/events.ts`) merges them
+  on conflict (`name`, `size_chars`, `detail` take the present value, `ts` the earlier), in either order, so a size line in a
+  later poll completes the row. A row is written only when a merged column differs, so a `--full` re-scan is a no-op and
+  `ingested_at` moves on real change only. Events come from the iumac mirror root too.
+
+**Views.**
+- `usage.session_signals`, one row per `sessions` row: `session_id, source, source_session_id, lane, account, repo, issue_id,
+  effort, parent_session_id, first_ts, last_ts`; `input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
+  cache_write_1h_tokens` summed from its records; `cache_hit_ratio` = `cache_read / (input + cache_read + cache_write_5m +
+  cache_write_1h)`, NULL when the denominator is 0; `compactions`, `skill_calls`, `skill_chars` (0, never NULL, when none;
+  a call without a size adds a call and no chars). A subagent is a session of its own; a tree's figure is the sum over a
+  session and its children.
+- `usage.lane_signals`, grain `(source, lane, day UTC)`: the same token sums and `cache_hit_ratio` recomputed from the sums
+  (never an average of ratios) over the *records* by the record's own lane (a subagent request inside an interactive session
+  counts for `subagent`), plus `compactions`, `skill_calls`, `skill_chars` of the events by the lane of their session and
+  the event's UTC day. Full join: a lane/day with only events appears with zero tokens and a NULL ratio. An event whose
+  session has no row yet is not listed.
+
+**Plan.** Both views read `usage.records_unique`, so the marked gateway-mirror copies count in neither. Synthetic scratch
+database (20k sessions, 600k records, 60k events, `ANALYZE`d): `session_signals WHERE last_ts >= now() - 7 days` filters
+`sessions` first (1,013 rows), then per session one `records_session_idx` bitmap scan and one `session_events_session_idx`
+index scan, so `records` is never scanned whole. The anti join against `record_duplicates` is a hash of the whole (small)
+flag table per session: 75 ms with 600 flagged rows, 291 ms with 6,000 (1 %); the cost follows the flag table, not `records`.
+`lane_signals` is a rollup: every filter (`day >= ...`) applies after the aggregate, so each read is one pass over `records`
+(parallel seq scan, anti join and sort, 0.25 s at 600k rows). That is fine for a weekly report, not for a hot path; no new index.
+
+**Limits.** A compaction counts only if its boundary line reached disk (a session killed mid-compaction leaves none). Only
+`Skill` tool calls are events: a skill the user invoked by slash command appears only as a preload in subagent files and is
+not counted. `size_chars` is characters of the injected text, tokens are about chars / 4; it is the size of the skill's
+first load, not what a later turn re-reads from cache. The bridge-routed and synthetic filters of the record path do not
+apply to events. History before this wave gets its events from `make backfill-events`
+(`scripts/restamp-claude-code.ts --events-only`): a full scan of the transcripts (null cursor) that discards the records,
+writes only `session_events`, never saves the collector's cursor, does not sync the iumac mirror (it reads the mirror as the last ingest left it, at most 15 minutes old; run an `ingest` first when the MacBook was offline) and may run while the ingest LaunchAgent is loaded (the
+upsert is idempotent and merges by id); it prints the events seen, written and the per-kind totals. `make
+restamp-claude-code` also re-emits events but is for attribution changes only.
 
 ## Prices (U3)
 

@@ -12,7 +12,7 @@ import {
 } from "../models.ts";
 import { hasMirroredLogs, iumacMachineLabel, iumacProjectsDir, syncIumac } from "../remote.ts";
 import type { SyncResult } from "../remote.ts";
-import type { Collector, CollectContext, CollectResult, UsageRecord } from "../types.ts";
+import type { Collector, CollectContext, CollectResult, SessionEvent, UsageRecord } from "../types.ts";
 import { walkJsonlFiles } from "./fs-incremental.ts";
 
 // Claude Code writes one JSONL file per session under ~/.claude/projects/.
@@ -26,6 +26,11 @@ import { walkJsonlFiles } from "./fs-incremental.ts";
 // a second collector would collide on collector_state and isn't needed for
 // the cursor either way. Rows from the mirror carry an explicit `machine`;
 // local rows leave it unset so upsertRecords stamps the local host.
+//
+// Besides records the collector emits session events (usage.session_events): a `compact_boundary` system line is a
+// compaction, a `Skill` tool call is a skill load and the `isMeta` user line after it (`sourceToolUseID` = the call's id)
+// carries the loaded text, whose length is the skill's size. The two skill halves are separate events with the same id:
+// they can land in different polls, the database merges them.
 
 /**
  * This machine's own transcripts root. A function, not a frozen constant, so
@@ -79,8 +84,15 @@ interface AssistantLine {
   error?: string;
   isApiErrorMessage?: boolean;
   apiErrorStatus?: number;
+  // The `compact_boundary` system line: no usage, not an assistant line.
+  subtype?: string;
+  compactMetadata?: { trigger?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+  // The injected skill text: an `isMeta` user line whose `sourceToolUseID` is the Skill tool_use id.
+  isMeta?: boolean;
+  sourceToolUseID?: string;
   message?: {
     id?: string;
+    content?: unknown;
     model?: string;
     usage?: {
       input_tokens?: number;
@@ -118,13 +130,14 @@ export const claudeCodeCollector: Collector = {
   async collect(ctx: CollectContext): Promise<CollectResult> {
     const offsets: Offsets = ctx.full ? {} : parseOffsets(ctx.cursor);
     const records: UsageRecord[] = [];
+    const events: SessionEvent[] = [];
 
     // Refresh the mirror before reading it. Never lets a sync failure abort
     // local ingest.
     const sync = await (syncOverrideForTest ?? ctx.syncIumac ?? (() => syncIumac(ctx.log)))();
     if (!sync.ok) ctx.log.warn(`claude-code: ${sync.note}`);
 
-    await collectRoot(localProjectsDir(), offsets, records, null, { advanceOffsets: true });
+    await collectRoot(localProjectsDir(), offsets, records, events, null, { advanceOffsets: true });
 
     // If the mirror doesn't exist at all (first run, or sync never succeeded
     // once), there's nothing to walk — skip it rather than treat a missing
@@ -144,7 +157,7 @@ export const claudeCodeCollector: Collector = {
       // corrected billing — the repo's reconcile-by-upsert property doing
       // the work instead of the collector having to be clever.
       const advanceOffsets = sync.logsOk || hasMirroredLogs();
-      await collectRoot(iumacProjectsDir(), offsets, records, machine, { advanceOffsets });
+      await collectRoot(iumacProjectsDir(), offsets, records, events, machine, { advanceOffsets });
     }
 
     // Unconditional — not gated on records.length === 0. ingest.ts's runOne
@@ -155,7 +168,7 @@ export const claudeCodeCollector: Collector = {
     // any local record came in, which on this machine (which almost always
     // has local usage) meant a persistently broken mirror was silent forever.
     const note = sync.ok ? undefined : sync.note;
-    return { records, cursor: JSON.stringify(offsets), note };
+    return { records, events, cursor: JSON.stringify(offsets), note };
   },
 };
 
@@ -163,6 +176,7 @@ async function collectRoot(
   root: string,
   offsets: Offsets,
   records: UsageRecord[],
+  events: SessionEvent[],
   machine: string | null,
   opts: { advanceOffsets: boolean },
 ): Promise<void> {
@@ -190,6 +204,7 @@ async function collectRoot(
     for (const line of lines) {
       const rec = parseLine(line, ctx);
       if (rec) records.push(rec);
+      events.push(...parseEvents(line));
     }
     // Withheld only by the mirror root's bounded-re-read fallback above — the
     // local root always passes advanceOffsets: true.
@@ -386,6 +401,75 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
 
   stampLane(record, obj.sessionId, obj.entrypoint);
   return record;
+}
+
+// Cheap prefilters: a line is parsed again for events only when it can hold one.
+const COMPACTION_MARK = '"compact_boundary"';
+const SKILL_CALL_MARK = '"Skill"'; // not '"name":"Skill"': that would depend on the JSON spacing
+const SKILL_TEXT_MARK = "Base directory for this skill";
+
+/** The text of a message's content: a bare string, or the text blocks concatenated. */
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let text = "";
+  for (const block of content as { type?: string; text?: unknown }[]) {
+    if (block?.type === "text" && typeof block.text === "string") text += block.text;
+  }
+  return text;
+}
+
+/**
+ * The session events of one transcript line (usually none): a compaction boundary, a Skill tool call (name only, never
+ * its `args`: free text) or the injected skill text (size only, keyed by the call's id). Only `Skill` tool calls count;
+ * a skill the user invoked by slash command has no call to key on.
+ */
+function parseEvents(line: string): SessionEvent[] {
+  if (!line) return [];
+  const compaction = line.includes(COMPACTION_MARK);
+  const call = line.includes(SKILL_CALL_MARK);
+  const text = line.includes(SKILL_TEXT_MARK);
+  if (!compaction && !call && !text) return [];
+  let obj: AssistantLine;
+  try {
+    obj = JSON.parse(line) as AssistantLine;
+  } catch {
+    return [];
+  }
+  // An unparseable ts would fail the whole batch in Postgres and pin the cursor: such a line is no event. The ts is
+  // normalized through Date, so what reaches Postgres is always a valid ISO instant (a date like 02-30 rolls over, never fails).
+  const at = obj.timestamp ? Date.parse(obj.timestamp) : Number.NaN;
+  if (!obj.sessionId || !Number.isFinite(at)) return [];
+  const base = { sessionId: obj.sessionId, agentId: obj.isSidechain && obj.agentId ? obj.agentId : undefined, ts: new Date(at).toISOString() };
+
+  if (compaction && obj.type === "system" && obj.subtype === "compact_boundary") {
+    if (!obj.uuid) return [];
+    const m = obj.compactMetadata;
+    const detail: Record<string, unknown> = {};
+    if (m?.trigger !== undefined) detail.trigger = m.trigger;
+    if (m?.preTokens !== undefined) detail.preTokens = m.preTokens;
+    if (m?.postTokens !== undefined) detail.postTokens = m.postTokens;
+    if (m?.durationMs !== undefined) detail.durationMs = m.durationMs;
+    return [{ ...base, eventId: obj.uuid, kind: "compaction", detail }];
+  }
+
+  if (call && obj.type === "assistant" && Array.isArray(obj.message?.content)) {
+    const out: SessionEvent[] = [];
+    for (const block of obj.message.content as { type?: string; id?: string; name?: string; input?: { skill?: unknown } }[]) {
+      if (block?.type !== "tool_use" || block.name !== "Skill" || !block.id) continue;
+      const name = typeof block.input?.skill === "string" && block.input.skill ? block.input.skill : undefined;
+      out.push({ ...base, eventId: block.id, kind: "skill", name });
+    }
+    return out;
+  }
+
+  if (text && obj.type === "user" && obj.isMeta && obj.sourceToolUseID) {
+    // The marker must open the message's own text: it can sit in any other field of an unrelated meta line.
+    const body = messageText(obj.message?.content);
+    if (!body.startsWith(SKILL_TEXT_MARK)) return [];
+    return [{ ...base, eventId: obj.sourceToolUseID, kind: "skill", sizeChars: body.length }];
+  }
+  return [];
 }
 
 function parseOffsets(cursor: string | null): Offsets {

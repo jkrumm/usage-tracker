@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { astraCollector } from "./collectors/astra.ts";
 import { claudeCodeCollector } from "./collectors/claude-code.ts";
 import { codexCollector } from "./collectors/codex.ts";
-import { formatRunSummary, runIngest } from "./ingest.ts";
+import { backfillEvents, formatRunSummary, runIngest } from "./ingest.ts";
 import { resetAgentGatewayWindowsCacheForTest, resetSessionBaseUrlsCacheForTest } from "./models.ts";
 import { migratedDb } from "./pg/fixture.ts";
 import { describePg } from "./pg/testing.ts";
 import type { SyncResult } from "./remote.ts";
-import type { Collector, UsageRecord } from "./types.ts";
+import type { Collector, SessionEvent, UsageRecord } from "./types.ts";
 
 process.env.USAGE_MACHINE = "Test Machine (Override)";
 
@@ -128,6 +128,44 @@ describePg("runIngest (Postgres)", () => {
     await runIngest(sql, { collectors: [collector], full: true });
     expect(seen.at(-1)).toBeNull();
     expect(Number((await sql`SELECT count(*)::int AS n FROM usage.records`)[0].n)).toBe(2);
+  });
+
+  test("a collector's session events are written after its records and merge across runs", async () => {
+    const withEvents = (events: SessionEvent[]): Collector => ({
+      ...fake("fake-e", [rec("e1")], "c"),
+      async collect() {
+        return { records: [rec("e1")], events, cursor: "c" };
+      },
+    });
+    const call: SessionEvent = { eventId: "toolu_1", sessionId: "s1", kind: "skill", ts: "2026-10-30T10:00:00.000Z", name: "alpha" };
+    await runIngest(sql, { collectors: [withEvents([call])] });
+    await runIngest(sql, { collectors: [withEvents([{ ...call, name: undefined, ts: "2026-10-30T10:00:01.000Z", sizeChars: 99 }])] });
+    const rows = await sql`SELECT source, event_id, name, size_chars FROM usage.session_events`;
+    expect(rows.map((r: Record<string, unknown>) => [r.source, r.event_id, r.name, r.size_chars])).toEqual([["fake-e", "toolu_1", "alpha", 99]]);
+  });
+
+  test("backfillEvents writes only events from a full scan: no records, the cursor and state untouched, a repeat writes nothing", async () => {
+    const seen: Array<{ cursor: string | null; full: boolean }> = [];
+    const events: SessionEvent[] = [
+      { eventId: "toolu_1", sessionId: "s1", kind: "skill", ts: "2026-10-30T10:00:00.000Z", name: "alpha" },
+      { eventId: "toolu_1", sessionId: "s1", kind: "skill", ts: "2026-10-30T10:00:01.000Z", sizeChars: 7 },
+      { eventId: "cb-1", sessionId: "s1", kind: "compaction", ts: "2026-10-30T10:05:00.000Z" },
+    ];
+    const c: Collector = {
+      ...fake("fake-f", [rec("f1")], "new-cursor"),
+      async collect(ctx) {
+        seen.push({ cursor: ctx.cursor, full: ctx.full });
+        return { records: [rec("f1")], events, cursor: "new-cursor" };
+      },
+    };
+    await runIngest(sql, { collectors: [fake("fake-f", [], "kept")] });
+
+    const first = await backfillEvents(sql, c, { syncIumac: async () => ok });
+    expect(first).toEqual({ seen: 2, written: 2, byKind: { skill: 1, compaction: 1 } });
+    expect(seen).toEqual([{ cursor: null, full: true }]);
+    expect(Number((await sql`SELECT count(*)::int AS n FROM usage.records WHERE source = 'fake-f'`)[0].n)).toBe(0);
+    expect(await state("fake-f")).toMatchObject({ cursor: "kept" });
+    expect((await backfillEvents(sql, c, { syncIumac: async () => ok })).written).toBe(0);
   });
 
   test("an erroring collector is recorded, keeps its cursor and does not stop the others", async () => {

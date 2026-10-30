@@ -1,4 +1,4 @@
-.PHONY: help install restamp-claude-code backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -79,6 +79,9 @@ backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive 
 
 restamp-claude-code: ## Re-scan the Claude Code transcripts so existing rows take the current attribution (effort, subagent sessions, role); costs fingerprinted before/after
 	bun run scripts/restamp-claude-code.ts
+
+backfill-events: ## Backfill compactions and skill loads (usage.session_events) from a full transcript scan; writes no records, keeps the cursor, safe beside the LaunchAgent
+	bun run scripts/restamp-claude-code.ts --events-only
 
 import-sqlite-state: ## One-off import of the SQLite archive's state tables (cursors, session_env, quota, picks, portal) into usage.*
 	bun run scripts/import-sqlite-state.ts

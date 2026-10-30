@@ -5,6 +5,7 @@ import { collectPortal, type PortalFetcher } from "./collectors/iu-portal.ts";
 import { collectors as allCollectors } from "./collectors/index.ts";
 import { log } from "./log.ts";
 import { markSessionEnvsPersisted, pendingSessionEnvs, useStoredSessionEnvs } from "./models.ts";
+import { upsertSessionEvents } from "./pg/events.ts";
 import { upsertSessionEnv } from "./pg/session-env.ts";
 import { loadCursor, loadSessionEnvTable, saveState } from "./pg/state.ts";
 import { upsertRecords } from "./pg/writer.ts";
@@ -114,6 +115,32 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
   return { results, unpriced, quota, picks, portal };
 }
 
+export interface EventBackfill {
+  /** Distinct events the full scan emitted (a skill's call and size halves count once). */
+  seen: number;
+  /** Rows inserted or changed in usage.session_events. */
+  written: number;
+  byKind: Record<string, number>;
+}
+
+/**
+ * Backfill session events only: run the collector as a full scan (null cursor), discard its records, never touch its
+ * saved cursor or run state, and upsert just its events. Idempotent and safe beside the ingest LaunchAgent (the events
+ * upsert merges by id and writes only on change), unlike a restamp, which rewrites records and the cursor. It does not
+ * sync the iumac mirror itself (two rsyncs over one directory race, and the agent keeps the mirror within 15 minutes):
+ * the MacBook's history is whatever the last sync left on disk.
+ */
+export async function backfillEvents(sql: SQL, c: Collector, opts: { syncIumac?: () => Promise<SyncResult> } = {}): Promise<EventBackfill> {
+  const result = await c.collect({ cursor: null, full: true, log, syncIumac: opts.syncIumac ?? (async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true })) });
+  const events = result.events ?? [];
+  const kinds = new Map<string, string>();
+  for (const e of events) kinds.set(e.eventId, e.kind);
+  const byKind: Record<string, number> = {};
+  for (const kind of kinds.values()) byKind[kind] = (byKind[kind] ?? 0) + 1;
+  const written = await upsertSessionEvents(sql, c.source, events);
+  return { seen: kinds.size, written, byKind };
+}
+
 /**
  * One line per run, the last thing written to the log — a grep-able human
  * summary, not the liveness signal: the heartbeat reads the log's mtime, which
@@ -175,6 +202,8 @@ async function runOne(
     const { processed, newRows } = await upsertRecords(sql, c.source, result.records, {
       defaultWorkspace: c.workspace ?? null,
     });
+    // After the records: an events failure is recorded like any other and the cursor stays, the records are idempotent.
+    await upsertSessionEvents(sql, c.source, result.events ?? []);
 
     const status = result.note && result.records.length === 0 ? "skipped" : "ok";
     await saveState(sql, c.source, { cursor: result.cursor, status, note: result.note });

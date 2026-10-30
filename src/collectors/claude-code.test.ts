@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetSessionBaseUrlsCacheForTest, resetAgentGatewayWindowsCacheForTest } from "../models.ts";
@@ -597,5 +597,146 @@ describe("claude-code two-root collector", () => {
 
     const record = result.records.find((r) => r.sourceId === "local-req");
     expect(record?.durationMs).toBeNull();
+  });
+
+  describe("session events", () => {
+    const skillBody = (name: string) => `Base directory for this skill: /skills/${name}\n\nUse ${name} carefully.`;
+    const jsonl = (...lines: object[]) => lines.map((l) => `${JSON.stringify(l)}\n`).join("");
+    const skillCall = (id: string, skill: string, ts: string, extra: object = {}) => ({
+      type: "assistant",
+      requestId: `req-${id}`,
+      sessionId: "sess-1",
+      timestamp: ts,
+      message: {
+        id: `msg-${id}`,
+        model: "claude-sonnet-5",
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{ type: "tool_use", id, name: "Skill", input: { skill, args: "free text that must never be stored" } }],
+      },
+      ...extra,
+    });
+    const skillText = (id: string, content: unknown, ts: string, extra: object = {}) => ({
+      type: "user",
+      isMeta: true,
+      sourceToolUseID: id,
+      sessionId: "sess-1",
+      timestamp: ts,
+      message: { role: "user", content },
+      ...extra,
+    });
+    const boundary = {
+      type: "system",
+      subtype: "compact_boundary",
+      uuid: "cb-1",
+      sessionId: "sess-1",
+      isSidechain: false,
+      timestamp: "2026-10-30T10:05:00.000Z",
+      compactMetadata: { trigger: "auto", preTokens: 477695, postTokens: 20548, durationMs: 28093, extra: "ignored" },
+    };
+
+    test("compactions, skill calls and their sizes are emitted; a size line in a later chunk and a subagent file included", async () => {
+      const main = join(localDir, "proj", "sess-1.jsonl");
+      mkdirSync(join(localDir, "proj", "sess-1", "subagents"), { recursive: true });
+      writeFileSync(
+        main,
+        jsonl(
+          JSON.parse(assistantLine("plain")),
+          skillCall("toolu_a", "alpha", "2026-10-30T10:00:00.000Z"),
+          skillText("toolu_a", [{ type: "text", text: skillBody("alpha") }], "2026-10-30T10:00:01.000Z"),
+          boundary,
+          skillCall("toolu_b", "beta", "2026-10-30T10:10:00.000Z"),
+          skillCall("toolu_c", "gamma", "2026-10-30T10:11:00.000Z"),
+        ),
+      );
+      writeFileSync(
+        join(localDir, "proj", "sess-1", "subagents", "agent-ag1.jsonl"),
+        jsonl(
+          skillCall("toolu_d", "delta", "2026-10-30T10:20:00.000Z", { isSidechain: true, agentId: "ag1" }),
+          skillText("toolu_d", skillBody("delta"), "2026-10-30T10:20:01.000Z", { isSidechain: true, agentId: "ag1" }),
+        ),
+      );
+      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      const byId = (events: typeof first.events) => [...(events ?? [])].sort((a, b) => (a.eventId + a.ts < b.eventId + b.ts ? -1 : 1));
+      expect(byId(first.events)).toEqual([
+        { eventId: "cb-1", sessionId: "sess-1", agentId: undefined, kind: "compaction", ts: "2026-10-30T10:05:00.000Z", detail: { trigger: "auto", preTokens: 477695, postTokens: 20548, durationMs: 28093 } },
+        { eventId: "toolu_a", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:00:00.000Z", name: "alpha" },
+        { eventId: "toolu_a", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:00:01.000Z", sizeChars: skillBody("alpha").length },
+        { eventId: "toolu_b", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:10:00.000Z", name: "beta" },
+        { eventId: "toolu_c", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:11:00.000Z", name: "gamma" },
+        { eventId: "toolu_d", sessionId: "sess-1", agentId: "ag1", kind: "skill", ts: "2026-10-30T10:20:00.000Z", name: "delta" },
+        { eventId: "toolu_d", sessionId: "sess-1", agentId: "ag1", kind: "skill", ts: "2026-10-30T10:20:01.000Z", sizeChars: skillBody("delta").length },
+      ]);
+      expect(JSON.stringify(first.events)).not.toContain("free text");
+      expect(JSON.stringify(first.events)).not.toContain("args");
+      // Records are untouched by events: only the plain assistant line and the skill-call lines carry usage.
+      expect(first.records.map((r) => r.sourceId).sort()).toEqual(["plain", "req-toolu_a", "req-toolu_b", "req-toolu_c", "req-toolu_d"]);
+
+      // beta's size line arrives in the next poll; only it is emitted, keyed by the same tool_use id.
+      appendFileSync(main, jsonl(skillText("toolu_b", [{ type: "text", text: "Base directory for this skill: /s/b\n\n" }, { type: "text", text: "second block" }], "2026-10-30T10:10:02.000Z")));
+      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log });
+      expect(second.events).toEqual([
+        { eventId: "toolu_b", sessionId: "sess-1", agentId: undefined, kind: "skill", ts: "2026-10-30T10:10:02.000Z", sizeChars: "Base directory for this skill: /s/b\n\n".length + "second block".length },
+      ]);
+    });
+
+    test("a line with an invalid timestamp is no event; the valid events around it are still emitted", async () => {
+      writeFileSync(
+        join(localDir, "sess-3.jsonl"),
+        jsonl(
+          { ...boundary, uuid: "cb-bad", timestamp: "not a date" },
+          { ...boundary, uuid: "cb-ok" },
+          skillCall("toolu_t", "theta", "yesterday-ish"),
+          skillCall("toolu_ok", "iota", "2026-10-30T10:30:00.000Z"),
+        ),
+      );
+      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      expect(result.events?.map((e) => e.eventId)).toEqual(["cb-ok", "toolu_ok"]);
+    });
+
+    test("a Skill call is found whatever the JSON spacing", async () => {
+      const spaced = JSON.stringify(skillCall("toolu_sp", "kappa", "2026-10-30T10:40:00.000Z")).replace('"name":"Skill"', '"name": "Skill"');
+      expect(spaced).toContain('"name": "Skill"');
+      writeFileSync(join(localDir, "sess-4.jsonl"), `${spaced}\n`);
+      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      expect(result.events?.map((e) => [e.eventId, e.name])).toEqual([["toolu_sp", "kappa"]]);
+    });
+
+    test("a size line is emitted only when the message text itself is skill text", async () => {
+      writeFileSync(
+        join(localDir, "sess-5.jsonl"),
+        jsonl(
+          // the marker sits in another field of an unrelated meta line
+          { ...skillText("toolu_m", "ordinary meta text", "2026-10-30T10:50:00.000Z"), note: "Base directory for this skill: elsewhere" },
+          skillText("toolu_n", [{ type: "text", text: "not a skill" }, { type: "text", text: "Base directory for this skill" }], "2026-10-30T10:50:01.000Z"),
+          skillText("toolu_ok", [{ type: "text", text: "Base directory for this skill: /s" }, { type: "text", text: "body" }], "2026-10-30T10:50:02.000Z"),
+        ),
+      );
+      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      expect(result.events?.map((e) => [e.eventId, e.sizeChars])).toEqual([["toolu_ok", "Base directory for this skill: /s".length + 4]]);
+    });
+
+    test("a non-skill meta line, a boundary-looking user text and a malformed line emit nothing; multibyte lines do not lose the next chunk's events", async () => {
+      const main = join(localDir, "sess-2.jsonl");
+      writeFileSync(
+        main,
+        jsonl(
+          { type: "user", isMeta: true, sourceToolUseID: "toolu_x", sessionId: "sess-2", timestamp: "2026-10-30T10:00:00.000Z", message: { content: "plain meta" } },
+          { type: "user", sessionId: "sess-2", timestamp: "2026-10-30T10:00:01.000Z", message: { content: "the word compact_boundary in \"compact_boundary\" text" } },
+          { type: "assistant", requestId: "mb", sessionId: "sess-2", timestamp: "2026-10-30T10:00:02.000Z", message: { id: "m", model: "claude-sonnet-5", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "text", text: "ÄÖÜ → 日本語 🙂 ".repeat(40) }] } },
+        ) + '{"type":"assistant","name":"Skill" broken\n',
+      );
+      setSyncOverrideForTest(async () => ({ ok: true, logsOk: true, codexOk: true, usageJsonlOk: true }));
+      const first = await claudeCodeCollector.collect({ cursor: null, full: false, log });
+      expect(first.events).toEqual([]);
+
+      appendFileSync(main, jsonl(skillCall("toolu_z", "zeta", "2026-10-30T11:00:00.000Z", { sessionId: "sess-2" })));
+      const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log });
+      expect(second.events?.map((e) => [e.eventId, e.name])).toEqual([["toolu_z", "zeta"]]);
+    });
   });
 });

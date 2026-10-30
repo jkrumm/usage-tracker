@@ -1,14 +1,31 @@
 #!/usr/bin/env bun
-import { runIngest } from "../src/ingest.ts";
+import { claudeCodeCollector } from "../src/collectors/claude-code.ts";
+import { backfillEvents, runIngest } from "../src/ingest.ts";
 import { connect } from "../src/pg/connect.ts";
 
 // Re-stamp the Claude Code attribution (effort, subagent sessions and parent links, factory role, lane) of the rows already
-// in usage.records: a full re-scan of the transcripts through the normal writer, so the rows are rewritten in place. Costs
+// in usage.records, and (re)emit its session events (compactions, skill loads: usage.session_events, idempotent): a full re-scan of the transcripts through the normal writer, so the rows are rewritten in place. Costs
 // are not supposed to move (same tokens, same prices): a fingerprint of every record's id and cost is taken before and
 // after and the run exits 1 when it differs (rows of the run's own time excluded). Afterwards the span of every claude-code session is recomputed from its
 // records, because subagent requests that moved into their own sessions had widened their parent's span.
 //
 //   make uninstall-agent && make restamp-claude-code && make deploy      (idempotent: a failed run is simply run again)
+//
+// `--events-only` (make backfill-events) is the way to backfill compactions and skill loads: a full scan whose records are
+// discarded, only usage.session_events is written, the collector's cursor and run state are not touched, and the ingest
+// LaunchAgent may stay loaded. The full restamp above is for attribution changes only.
+
+if (process.argv.includes("--events-only")) {
+  const sql = connect();
+  try {
+    const r = await backfillEvents(sql, claudeCodeCollector);
+    const kinds = Object.entries(r.byKind).map(([k, n]) => `${k}=${n}`).join(" ");
+    console.log(`events: ${r.seen} seen (${kinds || "none"}), ${r.written} written`);
+  } finally {
+    await sql.close();
+  }
+  process.exit(0);
+}
 
 const AGENT_LABEL = "com.jkrumm.usage-tracker";
 // The ingest agent rewrites the same keys and saves the cursor this run saves: stop it first (`make uninstall-agent`), `make deploy` after.

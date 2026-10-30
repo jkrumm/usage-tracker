@@ -69,6 +69,14 @@ silently dropped an entire category of usage (1069 historical files, 207MB,
 across all projects before this was added — backfilled by the next `ingest`
 run automatically, no `--full` needed since those files had never been seen).
 
+The collector also emits **session events** (`CollectResult.events` -> `usage.session_events`, `src/pg/events.ts`): a
+`compact_boundary` system line is a compaction, a `Skill` tool call is a skill load, and the `isMeta` user line right
+after it (`sourceToolUseID` = the call's `tool_use` id, text `Base directory for this skill: ...`) gives its size in
+characters. The lines are prefiltered by string before any extra parse; `args` is never read. A call and its size line are
+separate events with the same id that merge in the database, so they may land in different polls; a call without a size
+line (about 13 %) keeps `size_chars` NULL. Subagent files carry `isSidechain` + `agentId`, so their events belong to
+`<sessionId>:<agentId>`. Schema, views and limits: `docs/usage-schema.md` §Session events.
+
 Run `billing-audit` (`make billing-audit`) to verify this end to end: it
 groups the claude-code `records` by session, lists every distinct model and billing value
 seen in that session (more than one distinct `billing` per session should
