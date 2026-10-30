@@ -1,8 +1,9 @@
 # Usage schema v2 (Postgres)
 
 Target of the usage pipeline (software-factory decisions SF8, U1-U5): schema `usage` in the `shared` database on the
-mini, owned by the role `usage`. Wave 1 created the schema and the price machinery; the writers still feed SQLite and
-Argo until Wave 2 switches them.
+mini, owned by the role `usage`. Wave 1 created the schema and the price machinery. Wave 2 step 1 added the write path
+(`src/pg/writer.ts`, `src/pg/session-env.ts`, [Write path](#write-path)); **nothing calls it yet**: `ingest`, `sync` and the
+collectors still feed SQLite and Argo until the next step switches them.
 
 - **Migrations** live in `migrations/pg/NNNN_name.sql` (plain SQL, forward-only, objects schema-qualified). `make pg-migrate`
   (`bun run src/cli.ts pg-migrate`) applies pending files one transaction each under `pg_advisory_lock`, records them in
@@ -26,6 +27,10 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `prices` | effective-dated catalog prices per model key | `UNIQUE (model_key, valid_from)` |
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
+| `collector_state` | per-collector cursor and last-run bookkeeping (mirrors SQLite) | `source` |
+| `session_env` | the claude-code hook's `base_url` / `lane` / `account` per session id | `session` |
+| `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
+| `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
 | `schema_migrations` | applied files | `version` |
 
 ### records
@@ -96,6 +101,60 @@ treats `cli`; `wave` is the wave mother because `rd wave` exports that lane for 
 - **cost:** see Prices. Writers pass `cost_reported_usd` only when the provider stated a cost; a Hermes `reportedEstimatedCostUsd: 0`
   with `costStatus: unknown` is not one.
 
+## Write path
+
+`upsertRecords(sql, source, records, { defaultWorkspace?, now? })` in `src/pg/writer.ts` returns `{ processed, newRows }` and
+has the semantics of `db.upsertRecords`, into `records`:
+
+- **Key and idempotence.** `(source, source_id)`; `machine` is `r.machine ?? currentMachine()`. The conflict branch updates only
+  when a content column differs (`IS DISTINCT FROM` over every column but `id`), so `ingested_at` (default the database's
+  `now()`, or `opts.now`) moves on real change only. A duplicate `source_id` inside one call keeps the last, as sequential
+  SQLite upserts did; a `ts` that is not a date is skipped with a warning (`processed` still counts it).
+- **Bulk and concurrent.** Chunks of 500 through `jsonb_to_recordset`, one transaction per chunk (sessions, then records), rows
+  `ORDER BY` key so overlapping writers lock in the same order. Pure `INSERT ... ON CONFLICT`, no read-modify-write: several
+  processes may call it at once. 5,000 rows with sessions take well under 2 s.
+- **Columns.** `model_raw` verbatim; `model = baseModel(normalizeModel(raw))`; `repo = normalizeRepo(project)` with `project_raw`
+  verbatim; `workspace = r.workspace ?? defaultWorkspace`; billing mapped as in Normalization (`api_key` = `resolveIuKey`, `account`
+  = `resolveAccount`, Max rows only); `lane`/`lane_detail` = `laneFor(subTool, source, raw)` on the record; `cache_write_5m =
+  total - 1h` (the 1h count is clamped to the total); `effort`/`issue_id`/`run_id` from `raw.effort`/`raw.issueId`/`raw.runId`.
+- **Cost is SQL's.** `cost_usd`, `cost_source`, `price_id` come from `usage.compute_cost(...)` at write time (the one pricing
+  implementation; the writer prices nothing). `cost_reported_usd` is set only for a finite `authoritativeCostUsd`, and not for
+  `IGNORE_REPORTED_COST` models (`sonar`), which price from tokens. A re-write of an unchanged row re-prices it, so a price
+  sync that lands later changes `cost_usd`/`price_id` (and `ingested_at`) of rows re-ingested afterwards, which is intended.
+- **`reasoningFreeBefore`.** IU billed no `gpt-5.6-terra` reasoning tokens before 2026-10-16T08:55Z (`REASONING_FREE_BEFORE` in
+  `writer.ts`). For such a row the column `reasoning_tokens` is written as 0 and the count is kept in `raw.reasoningTokensUnbilled`,
+  so `compute_cost` bills the reasoning share only from the cutoff on. Rows from the cutoff on keep their count.
+- **session_env.** The batch's `raw.sessionId`s are looked up in `usage.session_env` (`readSessionEnv`, one query per chunk) and
+  passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the SQLite/log-backed lookup) and `resolveAccount`.
+  `upsertSessionEnv` writes the table: the newest line wins for `base_url` and `lane`, a missing account never erases a stored
+  one. The hook-log parsing that fills it is still `models.ts`'s SQLite store; porting it is a later step.
+
+### Sessions
+
+Every record with a session id upserts a `sessions` row and gets `records.session_id`; a record without one gets NULL (no session
+is invented). `sessionKey(source, record)` in `src/pg/sessions.ts` is the identity:
+
+|-|-|
+| `raw.sessionId` | claude-code, codex, opencode messages |
+| `raw.runId` (else `raw.sessionId`) | agent-workflows: the workflow run is the session |
+| the part of `source_id` before the first `:` | hermes, feuer (`<session>:<task>:<model>` rows of one session) |
+| the row's own `source_id` | any other session-grain row (opencode sessions, modelpick runs) |
+| none | litellm, astra, athena-teamchat (and codex error events): no session |
+
+Per session in a batch: `first_ts`/`last_ts` span the records; every attribute (`account`, `billing`, `api_key`, `machine`, `model`,
+`effort`, `repo`, `issue_id`, `run_id`) is the first non-null value in time order, non-subagent records first, so no NULL
+erases a value. **Lane:** the lane of the earliest non-subagent record. A subagent request inside an interactive session keeps the
+session `interactive` (its record is `subagent`); a session seen through subagent records alone is `subagent` until a main
+record arrives. Against a stored session the same rules run inside `ON CONFLICT`: the span widens (`least`/`greatest`), a batch
+that starts at or before the stored `first_ts` takes precedence for attributes (still without erasing), a later one only fills
+gaps, and the lane changes only to a non-subagent lane from an earlier batch or away from `subagent`.
+
+**Parent links:** `parent_session_id` is set from `raw.parentSessionId` when a collector exposes it, resolved to the parent's
+`sessions` row after the batch's sessions exist (so a parent in the same batch works); an unknown parent leaves it NULL until a later
+batch mentions the link again, and a link is never erased. **No collector sets `raw.parentSessionId` today**, so nothing is linked:
+claude-code subagent requests share their parent's `sessionId` (they stay inside the parent session, lane `subagent` on the record),
+Hermes/Feuer sessions have no parent in the data the collector reads, and agent-workflows steps share a run.
+
 ## Window share (headline metric, U5)
 
 Between two consecutive `quota_samples` of an account (a sample whose `*_resets_at` moved starts a fresh interval), the change
@@ -151,15 +210,18 @@ Not aliased (cost stays NULL or provider-reported): null model (athena-teamchat,
 `gemini-3-flash`, `gemini-4-argon`, `deepseek-v4p1-flash`, test strings. Aliased models cover 98.3% of rows and 99.9% of recorded
 cost.
 
-### To be expressed as overrides in Wave 2 (not ported from `src/pricing.ts`)
+### IU-specific knowledge: ported to the writer, and still to be expressed as overrides
+
+`reasoningFreeBefore` and `IGNORE_REPORTED_COST` now live in the Postgres writer (see Write path); `src/pricing.ts` stays the
+SQLite path until the pipeline switch deletes it. What follows is what `pricing.ts` encodes and the catalog does not.
 
 `price_overrides` accepts rates, tiers and off-peak windows, with `supersedes_prices` for a model whose measured IU rate beats
 the catalog. These are the IU-specific facts `pricing.ts` encodes that the catalog does not:
 
-- `reasoningFreeBefore`: IU billed no reasoning tokens for `gpt-5.6-terra` before 2026-10-16T08:55Z (needs a place for
-  "reasoning not billed before T"; either zero `reasoning_tokens` at write time or a new migration).
-- `IGNORE_REPORTED_COST` (`sonar`): the vendor's reported cost includes search fees IU does not pass on; the writer must leave
-  `cost_reported_usd` NULL for it so tokens price it.
+- `reasoningFreeBefore` (done in the writer): IU billed no reasoning tokens for `gpt-5.6-terra` before 2026-10-16T08:55Z; the
+  writer zeroes `reasoning_tokens` for such rows and keeps the count in `raw.reasoningTokensUnbilled`.
+- `IGNORE_REPORTED_COST` (`sonar`; done in the writer): the vendor's reported cost includes search fees IU does not pass on; the
+  writer leaves `cost_reported_usd` NULL for it so tokens price it.
 - IU-measured rates that differ from list: `deepseek-v4-pro` 1.32/3.96/0.044, `deepseek-v4-flash` 0.44/1.32/0.014 (the catalog
   now says 0.30/1.20), `kimi-k2.6` 0.95/4.0/0.16, `kimi-k2.7-code` 0.95/4.0/0.19 (OpenRouter: 0.56/3.1), `glm-5.1`/`glm-5.2`
   1.4/4.4, `mimo-v2.5-pro`, `nemotron-*`, `qwen3.7-max`, `hy3` 0.14/0.58/0.035, and the convention `cache_write = input` for the

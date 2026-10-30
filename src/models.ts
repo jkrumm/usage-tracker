@@ -464,6 +464,9 @@ function isIuOnlyModel(rawModel: string | null): boolean {
  * Claude id defaults to "max" — precision isn't critical here, only not being
  * obviously wrong.
  *
+ * `lookupBaseUrl` replaces the SQLite/log-backed session_env lookup; the Postgres
+ * writer (src/pg/writer.ts) passes one over `usage.session_env`.
+ *
  * The id check runs first and wins outright: Max can never serve a
  * non-Anthropic id, so a model only IU can serve (DeepSeek/GLM/Gemini/GPT/
  * MiniMax/…, or the `-eu` twin) is always "iu" even when the session_env line
@@ -477,10 +480,11 @@ export function classifyBilling(
   rawModel: string | null,
   sessionId?: string | null,
   backend?: string | null,
+  lookupBaseUrl: (sessionId: string | null | undefined) => string | null | undefined = getSessionBaseUrl,
 ): Billing {
   if (source === "claude-code") {
     if (rawModel !== SYNTHETIC_MODEL && isIuOnlyModel(rawModel)) return "iu";
-    const baseUrl = getSessionBaseUrl(sessionId);
+    const baseUrl = lookupBaseUrl(sessionId);
     if (baseUrl !== undefined) return baseUrl ? "iu" : "max";
     return "max";
   }

@@ -34,9 +34,11 @@ unsynced rows to the Argo API, which is where the dashboard lives.
   `src/report.ts` — pipeline, backfills (`reprice`, `relane`) and reporting.
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
 - `migrations/pg/NNNN_name.sql`, `src/pg/` (`connect.ts`, `migrate.ts`, `cli.ts`) — the Postgres `usage` schema (v2) and its
-  forward-only migration runner: `make pg-migrate`. Wave 1 of the Postgres move: the target schema and the price machinery
-  only; ingest, sync and the SQLite pipeline are untouched until Wave 2 switches the writers. Shape and rules:
-  `docs/usage-schema.md`.
+  forward-only migration runner: `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
+- `src/pg/writer.ts` (`upsertRecords`), `src/pg/sessions.ts` (`sessionKey`, `aggregateSessions`), `src/pg/session-env.ts`
+  (`upsertSessionEnv`, `readSessionEnv`) — Wave 2 step 1: the Postgres write path for `usage.records` and `usage.sessions`,
+  additive. **Nothing calls it yet**: `ingest`, `sync`, `pricing.ts` and the collectors are still the SQLite pipeline until the next step
+  rewires them.
 - `src/prices/` (`normalize.ts`, `cost.ts`, `sync.ts`, `history.ts`, `aliases.ts`, `store.ts`) — the effective-dated `usage.prices`
   table synced daily from LiteLLM (OpenRouter fallback) and the cost resolution that mirrors SQL `usage.compute_cost`:
   `make prices-sync`, `make prices-seed-history` (one-off), `make install-prices-agent` (daily 04:20,
@@ -87,8 +89,8 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 
 ## Gotchas
 
-- **The Postgres `usage` schema (v2) is not wired to the pipeline yet** (Wave 1 of the move off SQLite/Argo; software-factory
-  decisions SF8, U1-U5). `docs/usage-schema.md` is the contract: `records` keyed `(source, source_id)` with machine as an
+- **The Postgres `usage` schema (v2) is not wired to the pipeline yet** (Wave 1 built it, Wave 2 step 1 added the write path
+  `src/pg/writer.ts`, still uncalled; software-factory decisions SF8, U1-U5). `docs/usage-schema.md` is the contract: `records` keyed `(source, source_id)` with machine as an
   attribute, five token kinds, `sessions` with the CHECKed lane vocabulary, `quota_samples`/`account_picks`, and
   effective-dated `prices`. Migrations are forward-only and owned here (`make pg-migrate`, `USAGE_PG_URL` or the `usage` role's
   password via `secrets-run`, never `op`); never edit an applied file, add a new one. `usage.compute_cost` (SQL) and
@@ -96,6 +98,11 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   model is NULL / `cost_source='none'`, never 0; `prices-sync` exits 1 on a vanished or zeroed catalog price and keeps the
   previous row. `src/pricing.ts` stays the SQLite pricing path until Wave 2 deletes it; its IU-specific knowledge is listed in
   `docs/usage-schema.md` for the move to overrides.
+  **The writer prices nothing**: `upsertRecords` passes tokens and the reported cost to `usage.compute_cost`. Its two IU rules,
+  `IGNORE_REPORTED_COST` (sonar) and `REASONING_FREE_BEFORE` (terra: reasoning zeroed in the column, the count kept in
+  `raw.reasoningTokensUnbilled`), are duplicated from `pricing.ts` on purpose and pinned equal by a test in `src/pg/sessions.test.ts`
+  that goes with `pricing.ts`. Sessions: id from `sessionKey` (never invented), lane = earliest non-subagent record, no parent links
+  until a collector sets `raw.parentSessionId`; billing/account lookups read `usage.session_env`, not the SQLite store.
 - **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped;
   agent-workflows posts its own rows to Argo (`source='agent-workflows'`), so no collector reads them.
   Removed: `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`,

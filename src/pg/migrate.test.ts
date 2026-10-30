@@ -38,12 +38,16 @@ describePg("pg migrations", () => {
     const tables = await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'usage' ORDER BY 1`;
     expect(tables.map((t: { table_name: string }) => t.table_name)).toEqual([
       "account_picks",
+      "collector_state",
+      "iu_portal_cost",
+      "iu_portal_total",
       "price_aliases",
       "price_overrides",
       "prices",
       "quota_samples",
       "records",
       "schema_migrations",
+      "session_env",
       "sessions",
     ]);
     const [{ n }] = await sql`
