@@ -3,7 +3,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { migratedDb } from "./fixture.ts";
 import { describePg } from "./testing.ts";
 
-// Migration 0007: the gateway mirror rule marks the later copy of a call that two stores recorded, never deletes, and
+// Migrations 0007-0009: the gateway mirror rule marks the later copy of a call that two stores recorded, never deletes, and
 // leaves legitimate neighbours alone.
 
 const pg = migratedDb();
@@ -87,5 +87,59 @@ describePg("gateway mirror duplicates", () => {
     expect((await db`SELECT count(*)::int AS n FROM usage.records_unique`)[0]!.n).toBe(1);
     await db`DELETE FROM usage.record_duplicates`;
     expect((await db`SELECT count(*)::int AS n FROM usage.records_unique`)[0]!.n).toBe(2);
+  });
+
+  // One call is recorded once per store; X is the audio gateway's collector copy, Y its Argo mirror, Z the image gateway's push.
+  const X = { source: "audio-gateway", machine: "Mac mini (M2 Pro)" };
+  const Y = { source: "audio-gateway-mini", machine: "mini" };
+  const Z = { source: "image-gen-gateway", machine: "vps" };
+
+  test("two mirrored calls within 10 s with interleaved ids mark exactly two rows, one per pair", async () => {
+    const xa = await put({ id: "xa", ...X, ts: "2026-10-24T10:00:00Z" });
+    const ya = await put({ id: "ya", ...Y, ts: "2026-10-24T10:00:01Z" });
+    const xb = await put({ id: "xb", ...X, ts: "2026-10-24T10:00:02Z" });
+    const yb = await put({ id: "yb", ...Y, ts: "2026-10-24T10:00:03Z" });
+    expect((await db`SELECT usage.flag_gateway_duplicates() AS n`)[0]!.n).toBe("2");
+    expect(await flagged()).toEqual([{ r: ya, d: xa }, { r: yb, d: xb }]);
+  });
+
+  test("pairing follows the timestamps, not the insert order; the lower id of a pair is kept", async () => {
+    const yb = await put({ id: "yb", ...Y, ts: "2026-10-24T10:00:03Z" });
+    const ya = await put({ id: "ya", ...Y, ts: "2026-10-24T10:00:01Z" });
+    const xb = await put({ id: "xb", ...X, ts: "2026-10-24T10:00:02Z" });
+    const xa = await put({ id: "xa", ...X, ts: "2026-10-24T10:00:00Z" });
+    await db`SELECT usage.flag_gateway_duplicates()`;
+    // (xa, ya) and (xb, yb): yb < ya < xb < xa by id, so yb and ya are kept
+    expect(await flagged()).toEqual([{ r: xb, d: yb }, { r: xa, d: ya }].sort((a, b) => a.r - b.r));
+  });
+
+  test("a row is never both an original and a duplicate, and two calls of one store never merge", async () => {
+    const x1 = await put({ id: "x1", ...X, ts: "2026-10-24T10:00:00Z" });
+    const x2 = await put({ id: "x2", ...X, ts: "2026-10-24T10:00:02Z" });
+    const y1 = await put({ id: "y1", ...Y, ts: "2026-10-24T10:00:03Z" });
+    await db`SELECT usage.flag_gateway_duplicates()`;
+    expect(await flagged()).toEqual([{ r: y1, d: x1 }]);
+    expect((await db`SELECT count(*)::int AS n FROM usage.records_unique WHERE id = ${x2}`)[0]!.n).toBe(1);
+    expect((await db`SELECT count(*)::int AS n FROM usage.record_duplicates a JOIN usage.record_duplicates b ON a.duplicate_of = b.record_id`)[0]!.n).toBe(0);
+  });
+
+  test("a call recorded by three stores keeps one row and marks the two other copies", async () => {
+    const x = await put({ id: "x", ...X, ts: "2026-10-24T10:00:00Z" });
+    const y = await put({ id: "y", ...Y, ts: "2026-10-24T10:00:01Z" });
+    const z = await put({ id: "z", ...Z, ts: "2026-10-24T10:00:02Z" });
+    expect((await db`SELECT usage.flag_gateway_duplicates() AS n`)[0]!.n).toBe("2");
+    expect(await flagged()).toEqual([{ r: y, d: x }, { r: z, d: x }]);
+  });
+
+  test("rows already in a pair are left alone, so a re-run after more rows arrive keeps the earlier marks", async () => {
+    const x = await put({ id: "x", ...X, ts: "2026-10-24T10:00:00Z" });
+    const y = await put({ id: "y", ...Y, ts: "2026-10-24T10:00:01Z" });
+    await db`SELECT usage.flag_gateway_duplicates()`;
+    const before = await db`SELECT record_id, duplicate_of, flagged_at FROM usage.record_duplicates`;
+    const x2 = await put({ id: "x2", ...X, ts: "2026-10-24T10:00:02Z" });
+    const y2 = await put({ id: "y2", ...Y, ts: "2026-10-24T10:00:03Z" });
+    expect((await db`SELECT usage.flag_gateway_duplicates() AS n`)[0]!.n).toBe("1");
+    expect(await flagged()).toEqual([{ r: y, d: x }, { r: y2, d: x2 }]);
+    expect((await db`SELECT record_id, duplicate_of, flagged_at FROM usage.record_duplicates WHERE record_id = ${y}`)[0]).toEqual(before[0]);
   });
 });
