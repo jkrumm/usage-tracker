@@ -281,6 +281,33 @@ claude-code's/codex's do; a failed usage-jsonl-mirror sync never blocks local
 ingest and never flips claude-code's own `ok`/`note` (its own
 `SyncResult.usageJsonlOk` flag, logged on failure but otherwise silent).
 
+### email-gateway model calls (`email-gateway`)
+
+email-gateway (VPS) no longer reports to Argo, so its model calls exist only as OTel spans in the VPS ClickStack
+(`src/telemetry/llm-call.ts` in email-gateway: span `llm.<lane>`, lane `classify|enrich|draft-reply|thread-summary|jev`;
+attributes `llm.model`, `llm.input_tokens` (uncached input), `llm.output_tokens`, `llm.cache_read_tokens`, `outcome`
+`ok|error`). The collector reads them from `default.otel_traces` (`ServiceName = 'email-gateway'`, `SpanName LIKE 'llm.%'`)
+with the otel skill's transport: keyless `ssh vps "docker exec -i clickstack clickhouse-client --format=JSONEachRow"`, the
+SQL on stdin, `BatchMode` and a 90 s hang guard. Nothing changes in email-gateway and nothing is exposed on the network.
+The query is injectable (`EmailGatewayQuery`, like athena's); `EMAIL_GATEWAY_SSH` / `EMAIL_GATEWAY_SSH_HOST` override the
+binary and host (tests use a fake `ssh`).
+
+One span is one record: `source_id` = `<TraceId>:<SpanId>`, grain `message`, `subTool` = `llm:<lane>`, `model` = `llm.model`,
+`durationMs` from the span's `Duration`, `outcome` from the `outcome` attribute or an `Error` status, workspace `private`.
+Tokens pass through as recorded; there is no cache write. Spans carry no prompt or output text and none is selected.
+Billing, key, lane and cost are the writer's: the source falls through `classifyBilling` to IU, so the rows are
+`billing='api_key'`, `api_key='personal'` (the gateway uses the shared `common/anthropic` key), lane `other` with
+`lane_detail.raw = 'llm:<lane>'`. A model no price covers (`pplx-decider-v1-27b`) is NULL / `cost_source='none'` and shows
+in `make sources`' unpriced list; that is correct, no price or override is added for it.
+
+The cursor is the newest span time seen, JSON `{"newest": ISO}`; each run re-reads one day behind it (upserts are idempotent
+on `source_id`). Every read starts no earlier than `HISTORY_FLOOR_MS` (2026-10-24 10:00Z, `--full` included): Argo's backfilled
+rows (105, ids are Argo's own) end with the calls of 2026-10-24 09:45, which are also spans, and reading them again would
+count those calls twice (it did for two rows, deleted 2026-10-30). A span dated in the future is dropped and cannot move the cursor. An unreachable `ssh vps` or a down ClickHouse throws, so the run records an `error`
+for this collector and carries on; an empty result is zero records with no note. `staleAfterHours` is `null`: the gateway makes a
+few model calls a month, so any row-age limit would fail `health` on a healthy source or be too loose to mean anything. Silence
+is still loud, because a failed read is a collector `error` on every run and `ingest` exits 1 on an error.
+
 ### IU portal cost (`iu-portal`, not a `records` source)
 
 IU's own cost report is the only number that counts against the employee cap,

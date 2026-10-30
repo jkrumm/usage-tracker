@@ -5,6 +5,7 @@ import { athenaTeamchatDefault } from "./athena-teamchat.ts";
 import { astraCollector } from "./astra.ts";
 import { claudeCodeCollector } from "./claude-code.ts";
 import { codexCollector } from "./codex.ts";
+import { emailGatewayDefault } from "./email-gateway.ts";
 import { hermesAgentCollector } from "./hermes-agent.ts";
 import { litellmCollector } from "./litellm.ts";
 import { modelpickCollector } from "./modelpick.ts";
@@ -41,6 +42,7 @@ export const collectors: Collector[] = [
   modelpickCollector,
   astraCollector,
   athenaTeamchatDefault,
+  emailGatewayDefault,
 ];
 
 export function findCollector(source: string): Collector | undefined {
