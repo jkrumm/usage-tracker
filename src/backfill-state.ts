@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { SQL } from "bun";
+import { upsertSessionEnv } from "./pg/session-env.ts";
 import { payload } from "./pg/writer.ts";
 
 // One-off import of the SQLite archive's non-record tables into the usage schema (scripts/import-sqlite-state.ts):
@@ -94,6 +95,7 @@ function parseJson(v: unknown): unknown {
   }
 }
 
+
 async function inChunks<T>(rows: T[], run: (chunk: T[]) => Promise<void>): Promise<void> {
   for (let i = 0; i < rows.length; i += CHUNK) await run(rows.slice(i, i + CHUNK));
 }
@@ -114,7 +116,7 @@ async function count(sql: SQL, query: string): Promise<number> {
 
 /**
  * Copy the six state tables from the SQLite archive. `collector_state` is insert-if-absent (the Postgres pipeline owns a
- * cursor once it has run), `session_env` and the portal tables take the newer line, the two Max-account series insert
+ * cursor once it has run), `session_env` (through `upsertSessionEnv`) and the portal tables take the newer line, the two Max-account series insert
  * what is absent (their primary keys carry the whole observation).
  */
 export async function importState(db: Database, sql: SQL): Promise<StateImportResult> {
@@ -138,17 +140,8 @@ export async function importState(db: Database, sql: SQL): Promise<StateImportRe
 
   b = await before("session_env");
   const envRows = all("SELECT session, base_url, lane, account, seen_at FROM session_env").map(toSessionEnv);
-  await inChunks(envRows, async (chunk) => {
-    await sql`
-      INSERT INTO usage.session_env AS e (session, base_url, lane, account, seen_at)
-      SELECT session, base_url, lane, account, seen_at
-      FROM jsonb_to_recordset(${payload(chunk)}::text::jsonb)
-        AS j(session text, base_url text, lane text, account text, seen_at timestamptz)
-      ORDER BY session
-      ON CONFLICT (session) DO UPDATE SET
-        base_url = EXCLUDED.base_url, lane = EXCLUDED.lane, account = coalesce(EXCLUDED.account, e.account), seen_at = EXCLUDED.seen_at
-      WHERE EXCLUDED.seen_at > e.seen_at`;
-  });
+  // The same upsert the pipeline uses: a line only replaces an older one, and never erases a stored lane or account.
+  await inChunks(envRows, (chunk) => upsertSessionEnv(sql, chunk.map((r) => ({ ...r, seen_at: new Date(r.seen_at) }))).then(() => undefined));
   result.session_env = { read: envRows.length, added: (await before("session_env")) - b };
 
   const quota = all("SELECT account, sampled_at, machine, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at, auth_ok, exhausted_until, source FROM quota_sample").map(toQuotaSample);

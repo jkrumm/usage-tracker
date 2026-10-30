@@ -39,6 +39,8 @@ interface SessionEnv {
   lane: string | null;
   /** Claude Max account id; null on lines older than the account field. */
   account: Account | null;
+  /** The log line's own timestamp (absent on stored rows and on lines without one). */
+  seen_at?: Date;
 }
 let sessionEnvs: Map<string, SessionEnv> | null = null;
 /** The lines already in usage.session_env: the baseline the logs are merged onto. */
@@ -68,6 +70,8 @@ export interface SessionEnvChange {
   base_url: string | null;
   lane: string | null;
   account: Account | null;
+  /** The log line's timestamp, so usage.session_env keeps the newest line by the line's time, not the run's. */
+  seen_at?: Date;
 }
 
 /** Lines the logs added or changed since the stored baseline; loads the logs if no lookup did yet. */
@@ -132,6 +136,8 @@ function loadSessionEnvs(): Map<string, SessionEnv> {
     // stored one: carry it forward.
     const stored = storedEnvs.get(session);
     env.account ??= stored?.account ?? null;
+    // Same for the lane: a resume without USAGE_LANE does not unset the stored one (usage.session_env keeps it too).
+    env.lane ??= stored?.lane ?? null;
     map.set(session, env);
     if (!stored || stored.base_url !== env.base_url || stored.lane !== env.lane || stored.account !== env.account) {
       changedSessions.add(session);
@@ -158,15 +164,22 @@ function loadLoggedSessionEnvs(): Map<string, SessionEnv> {
           if (!line) continue;
           try {
             const entry = JSON.parse(line) as {
+              ts?: string;
               event?: string;
               data?: { session?: string; base_url?: string | null; lane?: string | null; account?: string | null };
             };
             if (entry.event === "session_env" && entry.data?.session) {
+              const seen = typeof entry.ts === "string" ? new Date(entry.ts) : undefined;
+              const seenAt = seen && !Number.isNaN(seen.getTime()) ? seen : undefined;
+              const prev = map.get(entry.data.session);
+              // The newest line wins by its timestamp, whichever directory (local, iumac mirror) it came from.
+              if (prev?.seen_at && seenAt && seenAt < prev.seen_at) continue;
               map.set(entry.data.session, {
+                seen_at: seenAt,
                 base_url: entry.data.base_url ?? null,
-                lane: entry.data.lane ?? null,
-                // A later line that omits the account keeps the one already seen.
-                account: parseAccount(entry.data.account) ?? map.get(entry.data.session)?.account ?? null,
+                // A later line that omits the lane or the account keeps the one already seen.
+                lane: entry.data.lane ?? prev?.lane ?? null,
+                account: parseAccount(entry.data.account) ?? prev?.account ?? null,
               });
             }
           } catch {

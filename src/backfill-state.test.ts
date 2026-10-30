@@ -68,6 +68,10 @@ describePg("importing the SQLite state tables", () => {
     await importState(db, sql);
     expect((await sql`SELECT cursor FROM usage.collector_state WHERE source = 'claude-code'`)[0].cursor).toBe("newer");
     expect((await sql`SELECT base_url FROM usage.session_env WHERE session = 's1'`)[0].base_url).toBe("fresh");
+    // a line the pipeline wrote since, stamped with its own (newer) time, survives the archive's older one, lane included
+    await sql`UPDATE usage.session_env SET base_url = 'live', lane = 'bg', seen_at = '2026-10-30T13:00:00Z' WHERE session = 's2'`;
+    await importState(db, sql);
+    expect((await sql`SELECT base_url, lane, seen_at FROM usage.session_env WHERE session = 's2'`)[0]).toMatchObject({ base_url: "live", lane: "bg", seen_at: new Date("2026-10-30T13:00:00Z") });
     expect(Number((await sql`SELECT total_usd FROM usage.iu_portal_total`)[0].total_usd)).toBe(700);
   }, 60_000);
 });

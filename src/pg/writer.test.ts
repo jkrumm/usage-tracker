@@ -324,13 +324,32 @@ describePg("usage.records write path", () => {
     expect((await session("claude-code", "orphan")).parent).toBe("later");
   });
 
-  test("session_env helpers: the newest line wins, a missing account never erases a stored one", async () => {
+  test("session_env helpers: the newest line wins, a missing lane or account never erases a stored one", async () => {
     const sql = await ready();
     await upsertSessionEnv(sql, [{ session: "se-1", base_url: "https://a.example", lane: "wave", account: "a" }], T0);
     await upsertSessionEnv(sql, [{ session: "se-1", base_url: "", lane: null }], T1);
     const env = await readSessionEnv(sql, ["se-1", "se-absent"]);
     expect([...env.keys()]).toEqual(["se-1"]);
-    expect(env.get("se-1")).toMatchObject({ base_url: "", lane: null, account: "iu", seen_at: T1 });
+    // base_url is replaced as given ("" and NULL are real values: no gateway), the lane and account stay
+    expect(env.get("se-1")).toMatchObject({ base_url: "", lane: "wave", account: "iu", seen_at: T1 });
+  });
+
+  test("session_env: a line is stamped with its own time, and an older line never rolls a newer one back", async () => {
+    const sql = await ready();
+    await upsertSessionEnv(sql, [{ session: "se-2", base_url: "new", lane: "bg", account: "me", seen_at: T2 }], T3);
+    // replayed later (process time T3), but the line itself is older: nothing changes, seen_at stays the line's time
+    await upsertSessionEnv(sql, [{ session: "se-2", base_url: "old", lane: "wave", account: "me2", seen_at: T0 }], T3);
+    expect((await readSessionEnv(sql, ["se-2"])).get("se-2")).toMatchObject({ base_url: "new", lane: "bg", account: "me", seen_at: T2 });
+    // an older line still fills what the newer one left empty
+    await upsertSessionEnv(sql, [{ session: "se-3", base_url: null, lane: null, seen_at: T2 }], T3);
+    await upsertSessionEnv(sql, [{ session: "se-3", base_url: "old", lane: "wave", account: "me", seen_at: T0 }], T3);
+    expect((await readSessionEnv(sql, ["se-3"])).get("se-3")).toMatchObject({ base_url: null, lane: "wave", account: "me", seen_at: T2 });
+    // a newer line replaces; the newest line of a batch wins over an earlier one
+    await upsertSessionEnv(sql, [
+      { session: "se-2", base_url: "mid", lane: "fan", seen_at: T3 },
+      { session: "se-2", base_url: "stale", lane: "x", seen_at: T1 },
+    ], T3);
+    expect((await readSessionEnv(sql, ["se-2"])).get("se-2")).toMatchObject({ base_url: "mid", lane: "fan", account: "me", seen_at: T3 });
   });
 
   test("concurrent writers of overlapping batches converge without errors", async () => {

@@ -2,8 +2,8 @@ import type { SQL } from "bun";
 import { parseAccount, type Account } from "../models.ts";
 
 // The Postgres side of the hook's session_env lines (usage.session_env): base_url, USAGE_LANE and the Max account
-// per session id. The claude-code hook-log parsing in models.ts still fills the SQLite store; porting it is a later
-// step, this is the API it will call. The writer (writer.ts) reads it to classify billing and account.
+// per session id. The hook-log parsing in models.ts (`pendingSessionEnvs`) feeds `upsertSessionEnv` from `ingest`; the
+// writer (writer.ts) reads the table back to classify billing, account and lane.
 
 export interface SessionEnvRow {
   session: string;
@@ -20,13 +20,21 @@ export type SessionEnvInput = Pick<SessionEnvRow, "session"> &
 const CHUNK = 1000;
 
 /**
- * Insert or refresh session_env lines. The newest line wins for base_url and lane (a resume can change both), but a
- * line without `account` (a hook that predates the field) never erases a stored one. Idempotent, safe concurrently.
+ * Insert or refresh session_env lines; `seen_at` is the source line's own timestamp (process time only when the line
+ * has none). The newest line wins: a line older than the stored one changes nothing but fills a NULL lane or account,
+ * so replaying an old log or the SQLite archive never rolls a session back. Among equal-or-newer lines `base_url` is
+ * replaced as given (NULL is a real value there: no gateway, a Max session) while a NULL `lane` (a resume without
+ * USAGE_LANE) or `account` (a hook that predates the field) never erases a stored one. Idempotent, safe concurrently.
  */
 export async function upsertSessionEnv(sql: SQL, rows: SessionEnvInput[], now: Date = new Date()): Promise<number> {
-  // Last line per session wins inside the batch: one ON CONFLICT command cannot touch a row twice.
+  // Newest line per session wins inside the batch (the later one on a tie): one ON CONFLICT command cannot touch a row twice.
   const bySession = new Map<string, SessionEnvInput>();
-  for (const r of rows) if (r.session) bySession.set(r.session, r);
+  for (const r of rows) {
+    if (!r.session) continue;
+    const prev = bySession.get(r.session);
+    if (prev && (prev.seen_at?.getTime() ?? now.getTime()) > (r.seen_at?.getTime() ?? now.getTime())) continue;
+    bySession.set(r.session, r);
+  }
   const items = [...bySession.values()].sort((a, b) => (a.session < b.session ? -1 : 1));
   for (let i = 0; i < items.length; i += CHUNK) {
     const payload = items.slice(i, i + CHUNK).map((r) => ({
@@ -43,10 +51,13 @@ export async function upsertSessionEnv(sql: SQL, rows: SessionEnvInput[], now: D
         AS j(session text, base_url text, lane text, account text, seen_at timestamptz)
       ORDER BY session
       ON CONFLICT (session) DO UPDATE SET
-        base_url = EXCLUDED.base_url,
-        lane = EXCLUDED.lane,
-        account = coalesce(EXCLUDED.account, e.account),
-        seen_at = EXCLUDED.seen_at`;
+        base_url = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN EXCLUDED.base_url ELSE e.base_url END,
+        lane = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.lane, e.lane) ELSE coalesce(e.lane, EXCLUDED.lane) END,
+        account = CASE WHEN EXCLUDED.seen_at >= e.seen_at THEN coalesce(EXCLUDED.account, e.account) ELSE coalesce(e.account, EXCLUDED.account) END,
+        seen_at = greatest(EXCLUDED.seen_at, e.seen_at)
+      WHERE EXCLUDED.seen_at >= e.seen_at
+         OR (e.lane IS NULL AND EXCLUDED.lane IS NOT NULL)
+         OR (e.account IS NULL AND EXCLUDED.account IS NOT NULL)`;
   }
   return items.length;
 }

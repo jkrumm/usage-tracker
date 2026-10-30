@@ -233,7 +233,7 @@ describePg("runIngest (Postgres)", () => {
       entrypoint: "cli",
       message: { id: `msg-${requestId}`, model, usage: { input_tokens: 10, output_tokens: 5 } },
     })}\n`;
-  const hookLine = (data: Record<string, unknown>) => `${JSON.stringify({ event: "session_env", data })}\n`;
+  const hookLine = (data: Record<string, unknown>, ts?: string) => `${JSON.stringify({ ts, event: "session_env", data })}\n`;
   const collectors = () => [claudeCodeCollector];
   const opts = () => ({ collectors: collectors(), syncIumac: async () => ok });
   const row = async (requestId: string) => {
@@ -296,6 +296,22 @@ describePg("runIngest (Postgres)", () => {
     expect(await row("r2")).toMatchObject({ billing: "max", account: "me" });
     const [stored] = await sql`SELECT lane, account FROM usage.session_env WHERE session = 's'`;
     expect(stored).toMatchObject({ lane: "bg", account: "me" });
+  });
+
+  test("a stored line carries the log line's own time, and an older line replayed later does not replace it", async () => {
+    const log = join(dir, "claude-logs", "2026-10-30.jsonl");
+    writeFileSync(log, hookLine({ session: "s", base_url: "", lane: "bg" }, "2026-10-30T09:00:00.000Z"));
+    writeFileSync(join(dir, "claude-projects", "a.jsonl"), transcript("s", "r1"));
+    await runIngest(sql, opts());
+    const seen = async () => (await sql`SELECT lane, seen_at FROM usage.session_env WHERE session = 's'`)[0];
+    expect(await seen()).toMatchObject({ lane: "bg", seen_at: new Date("2026-10-30T09:00:00.000Z") });
+
+    // a mirrored log (read after the local one) holds an OLDER line of the same session: the newer line stays
+    mkdirSync(join(dir, "remote", "iumac", "logs"), { recursive: true });
+    writeFileSync(join(dir, "remote", "iumac", "logs", "2026-10-29.jsonl"), hookLine({ session: "s", base_url: "", lane: "wave" }, "2026-10-29T09:00:00.000Z"));
+    resetSessionBaseUrlsCacheForTest();
+    await runIngest(sql, opts());
+    expect(await seen()).toMatchObject({ lane: "bg", seen_at: new Date("2026-10-30T09:00:00.000Z") });
   });
 
   test("an unchanged log is not rewritten on the next run", async () => {
