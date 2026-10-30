@@ -305,6 +305,64 @@ writes only `session_events`, never saves the collector's cursor, does not sync 
 upsert is idempotent and merges by id); it prints the events seen, written and the per-kind totals. `make
 restamp-claude-code` also re-emits events but is for attribution changes only.
 
+## Weekly report
+
+`usage-tracker report weekly [--week YYYY-Www] [--top N] [--format md|json] [--out <dir>]` (`src/weekly.ts`; exports
+`weeklyReport(sql, {week})`, `formatWeekly`, `parseIsoWeek`, `findingsFor`, `FINDING_THRESHOLDS`). Read-only, nothing stored: both
+weeks are recomputed on every run (Wave 5 decides whether findings get a table). One `REPEATABLE READ` snapshot covers both weeks.
+
+**Range.** An ISO week is Monday 00:00 UTC to the next Monday, `[from, to)`; default = the last full week before now. The previous
+week gives the deltas. `window_attribution` / `window_intervals` are filtered on `to_at` in range (like `window --days`: the first
+interval can reach back one sampling gap), `session_events` by `ts`, `lane_signals` by `day` (weeks are whole UTC days), sessions by
+`first_ts < to AND last_ts >= from`. **Session counts and per-session means** (subagent-effort, role-tier, compaction-rate, the `sessions`
+column) come from the Claude Code sessions *active* in the week plus any session with an attributed share; a session with no
+attributed share counts with 0 points, so a mean is never biased up by dropping the idle ones. "Window data" is decided **per window**
+from `usage.quota_samples` in `[from, to)`, with the `window_intervals` predicate (a reading of a window has that window's pct *and*
+`resets_at`; a 5h-only sample is no 7d reading): readings without movement are a measured 0, no readings of a window are unknown
+(that window's points, deltas and coverage are null/`-`, never 0). Attribution rows without a session (NULL id or no `sessions` row)
+keep their points in the lane/role totals and the coverage but are no session: not counted, not in the top sessions.
+"Claude data" = any `records_unique` row with `source='claude-code'` in the week. Records are read only through `usage.records_unique` (request counts per lane). Cache ratio and
+compactions are Claude Code only (`source = 'claude-code'`); the ratio is recomputed from the token sums.
+
+**Sections, in order.** Verdict (5h/7d points moved and attributed, residual %, top lane and its share of the attributed 7d points,
+week-over-week change of the moved totals; with no window data in the previous week it says so and every delta is `-`/null),
+share of the 5h and 7d windows by lane, factory role, subagent type (each: this week, previous, delta; top N by 7d points, ties by
+5h), skills, cache hit ratio and compactions by lane, top sessions by 7d points (`--top`, default 10, only sessions with attributed points; short id = first 8 characters, `<parent8>:<agent6>`
+for a subagent), findings, coverage. **Skills have no window share**: a session loads several skills and its points cannot be split
+between them, so the table is loads, characters and average size per skill from `session_events kind='skill'`; the average is over
+the loads whose size was seen. A skill name is untrusted free text: it is shown only if it matches `^[A-Za-z0-9][A-Za-z0-9:_-]{0,60}$`
+(no dots, so no hostnames or addresses), otherwise it is grouped under `(other)`; aggregation uses the original name and only the exported
+label is merged, and an unsafe name is never a finding subject. An empty week renders a verdict and the coverage only.
+
+**Findings.** Each has a stable `id = <rule>:<subject>`, a measured `claim`, exactly one `proposal` (names the file kind it belongs to)
+and a `metric {name, value, unit}`. The thresholds are `FINDING_THRESHOLDS` (`weeklyReport` takes an override for tests):
+
+- `skill-size:<skill>`: at least 20 loads in the week and an average size of at least 8,000 characters; metric `avg_size_chars`.
+  Proposal: trim the skill in dotfiles.
+- `subagent-effort:<subagent_type>`: at least 10 sessions and a top-3 rank by 7d points among the typed subagents (the `(none)` row
+  is not a type); metric `window_7d_pts_per_session`. Proposal: lower the type's default effort in its subagent definition.
+- `role-tier:<role-or-lane>`: the role (or lane, not `subagent`) holds at least 20 % of the attributed 7d points, has at least 5 Opus
+  and 5 Sonnet sessions (by `sessions.model`) and the Opus mean 7d points per session is at least 2x the Sonnet mean; metric
+  `opus_vs_sonnet_mean_7d_ratio`. A role and a lane of one name are one finding, the role wins. Proposal: default it to a Sonnet-class
+  model (roles in software-factory `config/roles.json`, lanes in dotfiles `config/claude-effort.json`).
+- `compaction-rate:<lane>`: a main lane (`interactive`, `wave_mother`, `lead`, `worker`, `fan_worker`) with at least 5 sessions and at
+  least 0.5 compactions per session; metric `compactions_per_session`.
+- `cache-ratio:<lane>`: a main lane with at least 200 requests and a cache hit ratio below 0.90; metric `cache_hit_ratio`.
+
+**Effect tracking.** The same rules run on the previous week. A finding in both weeks prints `prev -> now (delta)` of its metric
+(`trend: recurring`), one only in this week is `new`, one only in the previous week is listed under Resolved with its last value.
+Every rule needs Claude data in the week, and the window rules (`subagent-effort`, `role-tier`, both 7d) also need 7d readings: a rule
+not measured this week lists last week's findings under **Unknown** (`unknown` in the JSON), not Resolved; a rule not measured last week
+makes a present finding `unmeasured`, not `new`. 5h readings never stand in for 7d ones. An empty current week still renders Findings (Resolved, Unknown) before the coverage.
+
+**Output.** Markdown by default (minimum table separators); `--format json` is `{week, from, to, previous, empty, verdict, tables,
+findings, resolved, unknown, coverage}`. `--out <dir>` also writes `<dir>/<week>.md` and `<week>.json` (temp file + rename) and prints the
+paths to stderr; the directory is created or chmod'ed `0700` and the files are `0600`. Every string that came from the database goes through `clean`: URLs and secret references become `(ref)`,
+anything with an `@` becomes `(address)`, so a report never carries a host, a token reference or an address. Account ids are fine.
+
+**Limits.** Same as §Window share: the 7-day meter moves in whole points, so single-session shares are noisy and only sums are reliable.
+Quota readings start 2026-10-24, so every week before 2026-W44 is partial and 2026-W43 has no previous week with window data.
+
 ## Prices (U3)
 
 No hand-kept prices. `usage.compute_cost(model, ts, input, output, cache_read, cache_write_5m, cache_write_1h[, reasoning,

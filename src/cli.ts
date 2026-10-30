@@ -21,6 +21,7 @@ import {
 import { connect } from "./pg/connect.ts";
 import { runPgCommand } from "./pg/cli.ts";
 import { formatReprice, reprice } from "./reprice.ts";
+import { formatWeekly, parseIsoWeek, weeklyReport, writeWeekly } from "./weekly.ts";
 import { formatWindow, WINDOW_BY_DIMS, windowShare, type WindowBy } from "./window.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
@@ -31,7 +32,7 @@ USAGE
 COMMANDS
   ingest                 Run all available collectors incrementally (default)
     --full               Ignore watermarks and re-scan everything
-    --source <name>      Only run one collector (claude-code|codex|hermes|feuer|opencode|litellm|modelpick|astra|athena-teamchat)
+    --source <name>      Only run one collector (claude-code|codex|hermes|feuer|opencode|litellm|modelpick|astra|athena-teamchat|email-gateway)
   reprice                Re-cost stored rows against the current prices (usage.compute_cost); provider-reported rows are never touched
     --model <name>       Only this records.model
     --dry-run            Report rows and dollars per model that would change, without writing
@@ -49,6 +50,12 @@ COMMANDS
     --top <N>            Rows shown (default 20)
     --account <id>       One account's windows only (iu | me | me2)
     --format <f>         plain (default) | json
+  report weekly          Where the Max windows went in one ISO week: verdict, shares by lane / role / subagent type / skill,
+                         cache ratio and compactions, top sessions, findings with effect tracking (week against the previous)
+    --week <YYYY-Www>    ISO week (Monday 00:00 UTC to the next Monday); default the last full week
+    --top <N>            Rows per table (default 10)
+    --format <f>         md (default) | json
+    --out <dir>          Also write <dir>/<week>.md and <week>.json (atomic); the paths go to stderr
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
   billing-audit          Per-session claude-code billing check vs. the live hook log
@@ -72,7 +79,7 @@ ENV
   USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `;
 
-const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit", "budget", "reprice", "window"]);
+const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit", "budget", "reprice", "window", "report"]);
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -226,6 +233,41 @@ async function main(): Promise<number> {
       }
       const report = await windowShare(sql, { by, days, top, account: flag(rest, "--account") });
       process.stdout.write(`${format === "json" ? JSON.stringify(report, null, 2) : formatWindow(report)}\n`);
+      return 0;
+    }
+
+    if (cmd === "report") {
+      if (rest[0] !== "weekly") {
+        process.stderr.write(`report needs a subcommand: weekly, got "${rest[0] ?? ""}"\n`);
+        return 2;
+      }
+      const missing = ["--week", "--top", "--format", "--out"].filter((f) => rest.includes(f) && (flag(rest, f) === undefined || flag(rest, f)?.startsWith("--")));
+      if (missing.length > 0) {
+        process.stderr.write(`${missing.join(", ")} needs a value\n`);
+        return 2;
+      }
+      const weekRaw = flag(rest, "--week");
+      try {
+        if (weekRaw !== undefined) parseIsoWeek(weekRaw);
+      } catch (err) {
+        process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        return 2;
+      }
+      const topRaw = flag(rest, "--top");
+      const top = topRaw === undefined ? 10 : Number(topRaw);
+      if (!Number.isInteger(top) || top <= 0) {
+        process.stderr.write(`--top must be a positive integer, got "${topRaw}"\n`);
+        return 2;
+      }
+      const format = flag(rest, "--format") ?? "md";
+      if (format !== "md" && format !== "json") {
+        process.stderr.write(`--format must be md or json, got "${format}"\n`);
+        return 2;
+      }
+      const report = await weeklyReport(sql, { week: weekRaw, top });
+      const outDir = flag(rest, "--out");
+      if (outDir !== undefined) for (const path of writeWeekly(outDir, report)) process.stderr.write(`${path}\n`);
+      process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : formatWeekly(report));
       return 0;
     }
 

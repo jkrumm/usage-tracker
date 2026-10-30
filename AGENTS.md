@@ -10,7 +10,7 @@ push step.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `budget`, `reprice`, `sources`, `health`,
-  `billing-audit`, `window`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
+  `billing-audit`, `window`, `report weekly`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
 - `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
   bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
   source's row count), records through `upsertRecords`. Also drives the quota / picks / portal passes.
@@ -28,6 +28,14 @@ push step.
 - `src/window.ts` — `window`: the share of the Max 5 h / 7 d windows by session, lane, role, subagent type, issue, repo or
   account over the `usage.window_attribution` / `session_window_share` views (migration 0011; rule and limits in
   `docs/usage-schema.md` §Window share), `make window BY=lane`; the residual (window moved, no priced record) is printed.
+- `src/weekly.ts` — `report weekly [--week <iso>] [--format md|json] [--out <dir>]`: "where the window went" for one ISO week
+  (verdict, window share by lane / role / subagent type, skill loads, cache ratio and compactions by lane, top sessions,
+  numbered **findings** with a stable id `<rule>:<subject>` and their effect against the previous week); `make report`.
+  Rules, thresholds and ranges: `docs/usage-schema.md` §Weekly report. `launchd/install-report-agent.sh` runs it Mondays
+  07:00 and writes `~/.local/share/usage-tracker/reports/<iso-week>.{md,json}`; Hermes (`usage-weekly-report.py`, 07:30) delivers
+  the file. See the "Weekly report" gotcha.
+- `src/collectors/email-gateway.ts` — email-gateway's model calls, read from its `llm.*` OTel spans in the VPS ClickStack over
+  `ssh vps` (`docs/collectors.md`).
 - `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and `resolveIuKey`,
   the one place that decides which key an IU row was billed to. See the "IU keys" gotcha.
 - `src/collectors/iu-portal.ts`, `tools/iu-portal/` — IU's own cost report (the cap) scraped from the MacBook into
@@ -75,6 +83,9 @@ so deploying a merged default branch is just `make deploy`. There is no CI and
 no rollback path: revert the offending commit and `make deploy` again. The plist holds no secret: the Postgres URL
 is built at spawn by `usagePgUrl()` (role `usage`, password via `secrets-run read`, never `op`; `USAGE_PG_URL`
 overrides). Schema changes ship as a new `migrations/pg` file and `make pg-migrate` before the deploy.
+`make install-report-agent` installs the separate weekly report agent (`launchd/install-report-agent.sh`, label
+`com.jkrumm.usage-tracker-report`, Monday 07:00 under `jobrun --every 604800`; it never reloads the ingest or prices
+agents; `make uninstall-report-agent`). `make deploy` does not install it: a new host runs both installers.
 `make install-prices-agent` installs the separate daily `prices-sync` agent (`launchd/install-prices-agent.sh`; it never
 reloads the ingest agent, and `prices-sync` resolves the Postgres password itself at spawn).
 
@@ -215,6 +226,13 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   malformed lines are skipped). `picked` is an opaque string — an account id or the `spill` sentinel; `snapshot` is the
   per-account `{s,w}` JSON. Legacy ids `a`/`b` are mapped to `iu`/`me` at ingest (in `picked` and snapshot keys); `spill`
   is kept. `bun run src/cli.ts quota [--days 7]` (`make quota`) prints the series and lane × picked × reason counts.
+- **Weekly report** (`docs/usage-schema.md` §Weekly report). A pure function of the schema and an ISO week (Monday 00:00 UTC to
+  the next); the default is the last full week, which on Monday 07:00 Europe/Berlin is the week that just ended. Findings
+  are recomputed for both the week and the one before it, so effect tracking stores nothing (Wave 5 decides whether a
+  `findings` table is needed for changes recorded against an id). The report carries no secrets, hostnames or e-mails
+  (skill names are untrusted free text and pass an allowlist). Window data only exists from 2026-10-24 (first quota
+  reading), so 2026-W43 is partial and has no previous week. A missed run is not retried: Hermes prints a one-line
+  "no report file" for the week, and `make report WEEK=<iso> OUT=1` regenerates it.
 - **Staleness fails loud.** Every collector declares `staleAfterHours` (a number, or `null` for legacy/dormant — enforced
   by `health.test.ts`). `make health` and `ingest` exit 1 when an available source's newest row (`max(ts)` in
   `usage.records`) is older than that, and `make verify` runs `health`; ingest's exit feeds `jobs-grade` and so the
@@ -252,6 +270,9 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   that collector's scan from the old cursor on the next tick (idempotent upserts, only repeated work). Known limitation; a
   per-batch cursor is a later improvement.
 - Claude Code resumes by byte offset per file (the cursor is a JSON map in `collector_state`) and only advances past
-  complete lines; re-scanning is a `--full` backfill.
+  complete lines; re-scanning is a `--full` backfill. The offset is **bytes** (the chunk is read as bytes and split on `0x0A`;
+  before 2026-10-30 it was a character index, which undershot on multibyte text and re-read part of every such file on every
+  poll). Cursors saved by the old code sit short of the true offset, never past it, so the first poll after the fix loses
+  no line and writes the exact offset.
 - The LaunchAgent logs to `~/Library/Logs`, never `/tmp` (macOS sweeps it). Keep the secrets design: no plaintext secret on
   disk — the Postgres password is resolved at spawn, never at install.

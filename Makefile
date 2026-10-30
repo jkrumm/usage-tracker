@@ -1,7 +1,8 @@
-.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
+REPORT_LABEL := com.jkrumm.usage-tracker-report
 
 # Tests need an admin Postgres connection in USAGE_TEST_PG_URL (scratch databases usage_test_<random>). Unset on the
 # mini, it is built from .env.test.tpl through secrets-run; without secrets-run the Postgres suites skip visibly.
@@ -102,6 +103,17 @@ uninstall-prices-agent: ## Stop + remove the prices-sync LaunchAgent
 	launchctl bootout gui/$$(id -u)/$(PRICES_LABEL) 2>/dev/null || true
 	rm -f $$HOME/Library/LaunchAgents/$(PRICES_LABEL).plist $$HOME/.local/state/jobs/$(PRICES_LABEL).json
 	@echo "removed $(PRICES_LABEL)"
+
+report: ## Weekly "where the window went" report on stdout (override: make report WEEK=2026-W43 FORMAT=json; OUT=1 also writes the files Hermes delivers to ~/.local/share/usage-tracker/reports)
+	bun run src/cli.ts report weekly $(if $(WEEK),--week $(WEEK)) $(if $(FORMAT),--format $(FORMAT)) $(if $(OUT),--out $$HOME/.local/share/usage-tracker/reports)
+
+install-report-agent: ## Install the weekly report LaunchAgent, Monday 07:00 (writes ~/.local/share/usage-tracker/reports/<iso-week>.md; does not touch the other agents)
+	bash launchd/install-report-agent.sh
+
+uninstall-report-agent: ## Stop + remove the weekly report LaunchAgent
+	launchctl bootout gui/$$(id -u)/$(REPORT_LABEL) 2>/dev/null || true
+	rm -f $$HOME/Library/LaunchAgents/$(REPORT_LABEL).plist $$HOME/.local/state/jobs/$(REPORT_LABEL).json
+	@echo "removed $(REPORT_LABEL)"
 
 install-agent: ## Install + start the 15-min ingest LaunchAgent
 	bash launchd/install-agent.sh
