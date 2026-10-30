@@ -110,7 +110,7 @@ cat > "$TMP" <<EOF
 
     <!-- Incremental ingest every 15 minutes, under \`jobrun\` (dotfiles): each run
          is recorded in ~/.local/state/jobs and graded by \`jobs-grade\` (the
-         heartbeat's \`jobs\` component and warden's \`job\` source), with a 10-minute
+         heartbeat's \`jobs\` component), with a 10-minute
          deadline. That replaced the heartbeat's log-mtime check. -->
     <key>StartInterval</key>
     <integer>900</integer>
