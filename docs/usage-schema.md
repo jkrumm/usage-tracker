@@ -101,7 +101,8 @@ treats `cli`; `wave` is the wave mother because `rd wave` exports that lane for 
   string always stays in `project_raw`. Nothing is renamed: only the directory name is the slug.
 - **tokens:** SQLite stores `cache_write_tokens` TOTAL plus `cache_write_1h_tokens` as a SUBSET, so
   `cache_write_5m_tokens = total - 1h`. A source that cannot split reports all of it as 5m.
-- **billing:** SQLite `max` -> `max`; `iu` -> `api_key` with `api_key` = `iu_key`; `anthropic-api` -> `api_key`, no key id;
+- **billing:** SQLite `max` -> `max`; `iu` -> `api_key` with `api_key` = `iu_key`; `anthropic-api` -> `api_key`, no key id
+  (`api_key` stays NULL: it is not an IU key, and `budget` reads IU keys only, so such rows never count against a cap);
   anything else `unknown`. `account` only on `max` rows, `api_key` only on `api_key` rows.
 - **cost:** see Prices. Writers pass `cost_reported_usd` only when the provider stated a cost; a Hermes `reportedEstimatedCostUsd: 0`
   with `costStatus: unknown` is not one.
@@ -132,12 +133,16 @@ has the semantics of `db.upsertRecords`, into `records`:
 - **Pre-classified input and insert-only (the history backfill).** A record may carry `preclassified: {billing, account, iuKey, machine?}`
   (`WriterRecord`, `src/pg/writer.ts`): the writer takes them verbatim instead of calling `classifyBilling` / `resolveAccount` /
   `resolveIuKey` (account still Max rows only, key still `iu` rows only; `machine: null` stores NULL). `WriteOptions.insertOnly` turns
-  both the records and the sessions statements into `ON CONFLICT DO NOTHING` (no parent-link updates either), for a source whose own
-  writer owns its rows. Neither is set on any live collector path. See `scripts/backfill-argo.ts`.
+  the records statement into `ON CONFLICT DO NOTHING` and the sessions statement into a widening upsert (the span takes
+  `least`/`greatest`, a NULL attribute is filled by `coalesce`, lane, lane detail and every stored value stay; no parent-link
+  updates), for a source whose own writer owns its rows. A session split across insert-only runs therefore converges on the whole
+  span. Neither is set on any live collector path. `scripts/backfill-argo.ts` is insert-only for every source by default and
+  overwrites only with `--overwrite` (`make backfill-argo OVERWRITE=...`), see AGENTS.md.
 - **session_env.** The batch's `raw.sessionId`s are looked up in `usage.session_env` (`readSessionEnv`, one query per chunk) and
   passed to `classifyBilling` (optional `lookupBaseUrl` parameter, default: the hook-log lookup) and `resolveAccount`.
-  `upsertSessionEnv` writes the table: the newest line wins for `base_url` and `lane`, a missing account never erases a stored
-  one. The hook-log parsing that fills it is `models.ts` (`useStoredSessionEnvs`, `pendingSessionEnvs`); `ingest` writes the lines
+  `upsertSessionEnv` writes the table: `seen_at` is the hook line's own timestamp, the newest line wins (an older one changes
+  nothing but fills a NULL lane or account), `base_url` is replaced as given (NULL and `''` are real values: no gateway, a Max
+  session), a missing lane or account never erases a stored one. The hook-log parsing that fills it is `models.ts` (`useStoredSessionEnvs`, `pendingSessionEnvs`); `ingest` writes the lines
 the logs added or changed with `upsertSessionEnv` after a collector runs and before its batch is written.
 
 ### Sessions
@@ -262,11 +267,18 @@ every call to Argo (`audio-gateway-mini`, `audio-gateway` with machine `mini` or
 call is two rows with the same key, model and token counts at timestamps milliseconds apart (the push lumps reasoning into
 `output_tokens`, the collector keeps it apart, so the rule compares `output + reasoning` and both cache writes as sums).
 
-- **Rule `gateway-mirror`** (`usage.flag_gateway_duplicates()`, migrations 0007 and 0008): two `billing = 'api_key'` rows of the sources
+- **Rule `gateway-mirror`** (`usage.flag_gateway_duplicates()`, migrations 0007, 0008 and 0009): `billing = 'api_key'` rows of the sources
   `audio-gateway`, `audio-gateway-mini`, `audio-gateway-vps`, `image-gen-gateway`, `image-gateway`, from different `(source, machine)`
-  pairs, same `api_key` and `model`, equal input, output + reasoning, cache read and cache writes (not all zero), at most 10 s
-  apart. The lower id is kept, the other is written to `record_duplicates(record_id, duplicate_of, rule)`. 2,278 rows, $72.34
-  (2026-10: $31.2) on the personal key. All of them are retired sources: the function is idempotent and only needs a re-run after a backfill.
+  stores, same `api_key` and `model`, equal input, output + reasoning, cache read and cache writes (not all zero), at most 10 s
+  apart, are one call. The lower id is kept, the others are written to `record_duplicates(record_id, duplicate_of, rule)`.
+  **The matching is per store pair (0009):** rows are walked in `(ts, id)` order and a free row takes, from every other store,
+  the earliest free later row of the same signature, so a call is one row per store and every row is in exactly one call; a row
+  is never both an original and a duplicate, and two identical calls of one store never merge (the interleaved
+  `X_a, Y_a, X_b, Y_b` marks exactly two rows; 0007/0008 paired `b -> min(a.id)` and marked three). A call recorded by three
+  stores keeps one row and marks two (22 gpt-image calls, $0.86 of marks that a strict one-pair-per-row rule would drop). Rows already in a pair are skipped, so the function
+  is idempotent; `scripts/backfill-argo.ts` runs it after its write loop. 2,278 rows, $72.34 (2026-10: $31.2) on the personal
+  key, the same rows before and after 0009 (13 rows only changed which row of their call is named as the original). All of
+  them are retired sources.
 - **Nothing is deleted.** `usage.records_unique` is `records` without the marked rows; `budget` and `stats` read it, `sources`/`health`
   count raw rows. Undo: `DELETE FROM usage.record_duplicates`. Other readers of `usage.records` (the dashboard) must read the view to
   agree with the portal.
@@ -280,3 +292,9 @@ call is two rows with the same key, model and token counts at timestamps millise
 
 `reprice` (`make reprice [MODEL=] [DRYRUN=1]`) re-applies `compute_cost` to stored rows in one `UPDATE ... FROM LATERAL`: rows with
 `cost_reported_usd` are never touched, a priced row whose model has no price today is kept, `ingested_at` is not moved.
+
+**Costs that changed in Wave 2.** History is not repriced, with three exceptions. The backfill priced every row through
+`usage.prices` (catalog plus overrides), not the retired `src/pricing.ts`; migration 0006 repriced 46,617 DeepSeek rows; and 4,217
+rows ($69.65 in the old store, e.g. `v3` ElevenLabs without token counts) now carry NULL cost, `cost_source = 'none'`, because no price
+exists. `cost_reported_usd` is verbatim. The previous costs stay readable in the SQLite archive `~/.local/share/usage-tracker/usage.db`
+and in the untouched VPS table `argo.usage_record`.

@@ -1,5 +1,7 @@
 # Backfill proof: `argo.usage_record` + SQLite archive to `usage.records`
 
+> **Superseded default (2026-10-30).** This is the record of the first load, run with the then-default of insert-only for `agent-workflows` only. `make backfill-argo` is now insert-only for every source and overwrites only with `OVERWRITE=`, and it refuses to overwrite while the ingest LaunchAgent is loaded (see AGENTS.md). The numbers below are unchanged.
+
 Argo snapshot taken 2026-10-30T12:23:27.422Z (one repeatable-read transaction, read-only over ssh), SQLite archive read-only (849,223 rows), written by `scripts/backfill-argo.ts` into schema `usage` of database `shared`. Every number below comes from that run; the script is idempotent and re-runnable (`make backfill-argo`).
 
 ## Result

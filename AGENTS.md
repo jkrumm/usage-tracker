@@ -36,7 +36,7 @@ push step.
 - `src/budget.ts` — `make budget`: the IU cap report (rolling 30 days per key, portal vs tracked per day and model,
   `--explain <model>`) over `usage.iu_portal_cost` / `iu_portal_total` and `usage.records` (`billing='api_key'`).
 - `src/reprice.ts` — `make reprice`: one set-based `UPDATE usage.records ... FROM LATERAL usage.compute_cost(...)`.
-- `scripts/backfill-argo.ts` (`make backfill-argo`, `DRYRUN=1`), `scripts/backfill-proof.ts`, `src/backfill.ts` — the one-off, re-runnable
+- `scripts/backfill-argo.ts` (`make backfill-argo`, `DRYRUN=1`, insert-only unless `OVERWRITE=`), `scripts/backfill-proof.ts`, `src/backfill.ts` — the one-off, re-runnable
   history backfill of Argo's `argo.usage_record` (dumped read-only over ssh into `~/.local/share/usage-tracker/backfill/`) and the SQLite
   archive into `usage.records` / `usage.sessions`; it writes the proof `docs/backfill/<date>-argo-usage-record.md`.
   `scripts/import-sqlite-state.ts` (`make import-sqlite-state`), `src/backfill-state.ts` — the archive's state tables into `usage.*`.
@@ -108,14 +108,17 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   prices it (`make sources` lists them). Free local models (`gemma4-agent`) stay `cost_source='none'`.
 - **Gateway mirror duplicates are marked, not deleted.** The audio/image gateway calls exist twice in `usage.records` (collector
   copy and the gateway's own Argo push); `usage.record_duplicates` marks the later copy (rule `gateway-mirror`,
-  `usage.flag_gateway_duplicates()`), `usage.records_unique` is the view without them, `budget` and `stats` read it. A
-  backfill needs `SELECT usage.flag_gateway_duplicates()` afterwards. Agent-workflows is the only writer of its own calls
+  `usage.flag_gateway_duplicates()`), `usage.records_unique` is the view without them, `budget` and `stats` read it.
+  The matching is per store pair, one row per store per call (migration 0009), idempotent; `backfill-argo` runs it after
+  its write loop, so there is no manual step. Agent-workflows is the only writer of its own calls
   (`docs/usage-schema.md` Duplicates).
-- **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`); `account` is set
-  only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
+- **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
+  `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
+  cap); `account` is set only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
 - **Collector failures never abort a run.** A throwing collector is recorded as `error` in `usage.collector_state`
-  (cursor kept, so the next run retries from the same watermark) and the rest continue; a collector with only a note and
+  (cursor kept, so the next run retries from the same watermark) and the rest continue, even when Postgres is the
+  failure and the error row cannot be written either (logged, the loop goes on, the summary line still prints); a collector with only a note and
   no records is `skipped`. `--full` hands the collector a null cursor; `--source` limits the run (and skips the
   quota / picks / portal passes, as does an injected collector set). A Postgres failure inside a pass is logged, not fatal
   to the other passes.
@@ -129,7 +132,8 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; there is no backfill command.
 - **session_env** (`usage.session_env`: `base_url`, `lane`, `account` per hook session id) outlives the hook's 3-day log
   retention. `ingest` primes `models.ts` with the table, merges the logs on first lookup and writes new or changed
-  lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `billing-audit` compares
+  lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `seen_at` is the hook line's
+  own `ts`; the newest line wins, an older one only fills a NULL lane or account. `billing-audit` compares
   the stored billing with the live log only.
 - **`account` is a dimension, not a billing class.** `records.account` (`iu`|`me`|`me2`; account `iu` ≠ billing `api_key`)
   is set only for `max` rows — the source's own `raw.account`, else session_env's `account`, else `iu` (all historical
@@ -202,18 +206,35 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped; agent-workflows
   posts its own rows (`source='agent-workflows'`), so no collector reads them. Removed: `agent-gateway-opencode`,
   `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`, `audio-gateway-vps` (and earlier `research-gateway`).
-  **Historical rows stay** — never delete, rewrite or reprice them. What still reads that history: claude-code / opencode /
+  **Historical rows stay** — never delete or rewrite them; `reprice` is the only thing that moves a cost, and the Wave 2
+  exceptions are listed under "Costs that changed in Wave 2" below. What still reads that history: claude-code / opencode /
   litellm re-ingest uses the `agent-gateway:*` lanes and the `agent-gateway-sessions.jsonl` attribution log
   (`models.ts`), `reprice` skips their provider-reported costs (`cost_reported_usd`), and `classifyBilling` keeps its `agent-gateway-sessions`
   branch. Evidence: `docs/reconciliation/2026-10-29-agent-workflows.md`.
-- **The backfill is an upsert that competes with the live pipeline.** `backfill-argo` writes billing / account / IU key as stored
-  (`Preclassified` on the writer record), prices everything but `cost_source = 'reported'` rows in SQL, and rewrites a key's row when its
-  content differs, so it overwrites what ingest wrote for the same key. `--insert-only all` (or a source list; default `agent-workflows`,
-  whose own writer owns its rows) only adds what is missing: use it for any re-run once ingest runs. Both scripts are safe to repeat; the
-  state import never overwrites a cursor or a newer line.
+- **The backfill is insert-only by default.** `backfill-argo` writes billing / account / IU key as stored (`Preclassified` on
+  the writer record) and prices everything but `cost_source = 'reported'` rows in SQL. For every source a row that exists is
+  left alone (the live pipeline owns it); a session widens its span (`least`/`greatest`) and fills NULL attributes, so a
+  session split across runs converges; records stay `DO NOTHING`. Overwriting (the initial load, a repair of one source) is
+  explicit: `make backfill-argo OVERWRITE=all|<source,...>` rewrites those sources' rows whose content differs, and refuses to
+  run while the ingest LaunchAgent is loaded (`launchctl print gui/$UID/com.jkrumm.usage-tracker`) unless `FORCE=1`, because
+  ingest rewrites the same keys. After its write loop it runs `usage.flag_gateway_duplicates()` and prints the count. The
+  proof document `docs/backfill/2026-10-30-argo-usage-record.md` is a record of the first load (it ran with the old default,
+  `agent-workflows` only); its numbers stand. The state import (`import-sqlite-state`) never overwrites a cursor, and a
+  `session_env` line only replaces an older one (the shared `upsertSessionEnv`).
+- **Costs that changed in Wave 2** (the only exceptions to "history is never repriced"). (1) The backfill priced every row
+  through `usage.prices` (the catalog plus `price_overrides`), not through the retired `src/pricing.ts`, so a re-derived
+  `cost_usd` can differ from the SQLite/Argo one. (2) Migration `0006` moved the DeepSeek schedule to the catalog's and
+  `reprice` repriced 46,617 DeepSeek rows. (3) 4,217 rows ($69.65 in the old store, e.g. `v3` ElevenLabs without token counts)
+  now have NULL cost with `cost_source = 'none'`, because no price exists for them. Provider-reported costs
+  (`cost_reported_usd`, `cost_source = 'reported'`) are verbatim. The old costs are not lost: the SQLite archive
+  `~/.local/share/usage-tracker/usage.db` (`records.cost_usd`) and the untouched VPS table `argo.usage_record`
+  (`cost_usd`, keyed `(source, source_id, machine)`) keep them; compare there before judging a delta.
 - **The SQLite file `~/.local/share/usage-tracker/usage.db` is an archive**, the source of the one-off backfill. Nothing in
   the pipeline opens it; never delete or modify it. Collectors still read their sources' own stores (Hermes, Feuer,
   OpenCode, modelpick, the Athena archive) with `bun:sqlite` / `sqlite3`, read-only.
+- **The cursor is saved after a collector's whole batch**, not per batch. A run killed at jobrun's 600 s deadline restarts
+  that collector's scan from the old cursor on the next tick (idempotent upserts, only repeated work). Known limitation; a
+  per-batch cursor is a later improvement.
 - Claude Code resumes by byte offset per file (the cursor is a JSON map in `collector_state`) and only advances past
   complete lines; re-scanning is a `--full` backfill.
 - The LaunchAgent logs to `~/Library/Logs`, never `/tmp` (macOS sweeps it). Keep the secrets design: no plaintext secret on
