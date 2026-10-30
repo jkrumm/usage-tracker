@@ -45,7 +45,7 @@ second over the whole range); its blocking findings were fixed where they held a
   `USAGE_LANE` (the runner sets `wave` on every pane): mother/wave→`wave_mother`, lead, worker (`fan_worker` under `USAGE_LANE=fan`),
   mechanical→`worker`; no lane added, so the CHECK is unchanged. Role is also on a subagent's detail (the tree's role).
 - **Data found:** effort is a top-level field of every assistant line (main and subagent). Subagent lines carry `isSidechain`,
-  `agentId`, the parent's `sessionId` and (97.7 %) `attributionAgent`; the rest take `agent-<id>.meta.json`'s `agentType`.
+  `agentId`, the parent's `sessionId` and (97.6 %) `attributionAgent`; the rest take `agent-<id>.meta.json`'s `agentType`.
 - **Proof (live, `shared`):** last 30 days, claude-code: effort set on all but 4,597 of 302k records (the lines that carry none);
   3,387 subagent sessions, all 3,387 linked to a parent, 25 type `unknown`; subagent is the largest lane by cost ($4.7k of
   $16.5k). `stats --by role|subagent_type|effort` works. `reprice --dry-run` after the restamp: 819,699 rows scanned, everything
