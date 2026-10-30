@@ -848,7 +848,7 @@ export function formatWeekly(report: WeeklyReport): string {
           : c.exposure === "not-yet"
             ? `lands after ${report.week}, no effect yet`
             : null;
-    return `  - Change: ${what}: ${c.summary}${when === null ? "" : ` (${when})`}`;
+    return `  - Change: ${what}: ${clean(c.summary)}${when === null ? "" : ` (${when})`}`;
   };
   const findingsMd = (): string[] => {
     const lines = ["## Findings", ""];

@@ -33,7 +33,8 @@ export interface ChangeNote extends ChangeRecord {
   exposure: ChangeExposure | null;
 }
 
-const ID_RE = /^[a-z][a-z-]*:\S.*$/; // the subject is whatever a role, lane, skill or subagent type is called, spaces included
+// The subject is whatever a role, lane, skill or subagent type is called (spaces and parentheses included), but never an address or a reference.
+const ID_RE = /^[a-z][a-z-]*:[A-Za-z0-9(][A-Za-z0-9 :._()-]{0,60}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REF_RE = /^[a-z0-9][a-z0-9._-]*@[0-9a-f]{7,40}$/;
 

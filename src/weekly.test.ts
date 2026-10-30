@@ -70,6 +70,8 @@ test("finding changes: strict parsing, a missing file throws, and the repo's own
   ]);
   const bad = (entry: object) => () => parseChanges(JSON.stringify([{ finding: "skill-size:wave", status: "declined", date: "2026-11-02", summary: "x", ...entry }]));
   expect(bad({ finding: "wave" })).toThrow("finding must look like");
+  expect(bad({ finding: "role-tier:worker a@b.c" })).toThrow("finding must look like");
+  expect(bad({ finding: "role-tier:op://v/i/f" })).toThrow("finding must look like");
   expect(bad({ status: "done" })).toThrow("status must be one of");
   expect(bad({ date: "2026-13-40" })).toThrow("date must be");
   expect(bad({ ref: "abc" })).toThrow("ref must look like");
@@ -88,6 +90,7 @@ test("a change is placed against the covered week: not yet, partial in either co
   const w44 = parseIsoWeek("2026-W44").from; // compares W44 with W43
   const at = (date: string) => noteOf(landed("x-y:z", date), w44);
   expect(at("2026-11-02")).toMatchObject({ week: "2026-W45", exposure: "not-yet" });
+  expect(noteOf(landed("x-y:z", "2026-12-24"), w44).cleanFrom).toBe("2027-W01"); // 2026-12-24 is W52, +14 days is 2027-01-07 in the week of 2027-01-04
   expect(at("2026-10-30").cleanFrom).toBe("2026-W46"); // W45 still compares the partial W44 with W45
   expect(noteOf({ ...landed("x-y:z", "2026-10-30"), summary: "see https://host.example/x or a@b.c" }, w44).summary).toBe("see (ref) or (address)");
   expect(at("2026-10-30")).toMatchObject({ week: "2026-W44", exposure: "partial" });
