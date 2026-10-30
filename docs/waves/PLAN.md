@@ -172,7 +172,7 @@ two commits); the blocking findings that held were fixed, the rest are below.
   rule could not be measured in either week (no quota readings for that window, no Claude Code records) is `unmeasured` / `unknown`, never "resolved".
   Session counts and per-session means include sessions with no attributed share (0 points).
 - **Delivery:** LaunchAgent `com.jkrumm.usage-tracker-report` (`launchd/install-report-agent.sh`, Monday 07:00, `jobrun --every 604800`) writes
-  `~/.local/share/usage-tracker/reports/<iso-week>.{md,json}` (0700/0600); Hermes job `825d9e57be32` ("Usage weekly report", no-agent, Mon 07:30, `slack:C0ASRUD7K1U`)
+  `~/.local/share/usage-tracker/reports/<iso-week>.{md,json}` (0700/0600); Hermes job `825d9e57be32` ("Usage weekly report", no-agent, Mon 07:30, the owner's Hermes Slack channel)
   prints the file (`hermes-agent/scripts/usage-weekly-report.py`; a missing file prints one line saying so). Proven: `launchctl kickstart` wrote `2026-W43.{md,json}`,
   the Hermes script printed it. The first scheduled run is Monday 2026-11-02 (report for 2026-W44; W43 is its previous week).
 - **email-gateway:** a collector `email-gateway` reads the gateway's `llm.*` OTel spans from the VPS ClickStack over `ssh vps` (no email-gateway change, no network grant).
@@ -198,6 +198,9 @@ two commits); the blocking findings that held were fixed, the rest are below.
   quota-nudge, Morning briefing / Evening report paused vs registered live); its untracked `scripts/model-release-watch.py` is not committed.
 
 ## Wave 5 — The first findings become changes            <!-- status: active -->
+Lead's scope (2026-10-30): answer `subagent-effort:implementer` here, and build the record of change ref → finding id.
+`skill-size:wave` is answered by F1's retirement, which rewrites `dotfiles/skills/wave/SKILL.md` anyway (the program lead lands
+it and gives its commit); do not edit that skill here. `verifier` and `general-purpose` are below the impact bar: no change.
 - [ ] For each finding of Wave 4's report: the change, in the repo it belongs to (a skill's size in dotfiles, a
   subagent's effort in its definition, an agw route). A role's tier or effort in `software-factory/config/roles.json` is
   written into **Left behind** for the program lead, not changed here.
