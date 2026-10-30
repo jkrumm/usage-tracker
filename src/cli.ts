@@ -21,6 +21,7 @@ import {
 import { connect } from "./pg/connect.ts";
 import { runPgCommand } from "./pg/cli.ts";
 import { formatReprice, reprice } from "./reprice.ts";
+import { formatWindow, WINDOW_BY_DIMS, windowShare, type WindowBy } from "./window.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
 
@@ -42,6 +43,12 @@ COMMANDS
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | role | subagent_type | effort
     --since <N>          Only the last N days
+  window                 Share of the Max accounts' 5h / 7d windows (points of the window), by session, lane, role, ...
+    --by <dim>           session (default) | lane | role | subagent_type | issue | repo | account
+    --days <N>           Only the last N days (default 7)
+    --top <N>            Rows shown (default 20)
+    --account <id>       One account's windows only (iu | me | me2)
+    --format <f>         plain (default) | json
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
   billing-audit          Per-session claude-code billing check vs. the live hook log
@@ -65,7 +72,7 @@ ENV
   USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `;
 
-const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit", "budget", "reprice"]);
+const COMMANDS = new Set(["ingest", "health", "quota", "iu-portal", "stats", "sources", "billing-audit", "budget", "reprice", "window"]);
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -189,6 +196,36 @@ async function main(): Promise<number> {
       const sinceRaw = flag(rest, "--since");
       const rows = await stats(sql, { by, sinceDays: sinceRaw ? Number(sinceRaw) : undefined });
       process.stdout.write(`${formatStats(rows, by)}\n`);
+      return 0;
+    }
+
+    if (cmd === "window") {
+      // A flag without a value must not fall back to its default: `--account` alone would silently report every account.
+      const missing = ["--by", "--days", "--top", "--account", "--format"].filter((f) => rest.includes(f) && (flag(rest, f) === undefined || flag(rest, f)?.startsWith("--")));
+      if (missing.length > 0) {
+        process.stderr.write(`${missing.join(", ")} needs a value\n`);
+        return 2;
+      }
+      const by = (flag(rest, "--by") ?? "session") as WindowBy;
+      if (!WINDOW_BY_DIMS.includes(by)) {
+        process.stderr.write(`--by must be one of: ${WINDOW_BY_DIMS.join(" | ")}, got "${by}"\n`);
+        return 2;
+      }
+      const daysRaw = flag(rest, "--days");
+      const topRaw = flag(rest, "--top");
+      const days = daysRaw === undefined ? 7 : Number(daysRaw);
+      const top = topRaw === undefined ? 20 : Number(topRaw);
+      if (!Number.isFinite(days) || days <= 0 || !Number.isInteger(top) || top <= 0) {
+        process.stderr.write("--days must be a positive number and --top a positive integer\n");
+        return 2;
+      }
+      const format = flag(rest, "--format") ?? "plain";
+      if (format !== "plain" && format !== "json") {
+        process.stderr.write(`--format must be plain or json, got "${format}"\n`);
+        return 2;
+      }
+      const report = await windowShare(sql, { by, days, top, account: flag(rest, "--account") });
+      process.stdout.write(`${format === "json" ? JSON.stringify(report, null, 2) : formatWindow(report)}\n`);
       return 0;
     }
 

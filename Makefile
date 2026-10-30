@@ -1,4 +1,4 @@
-.PHONY: help install restamp-claude-code backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -55,6 +55,9 @@ iu-portal-login: ## Re-run the IU portal sign-in headed on the MacBook (approve 
 
 quota: ## Claude account 5h/7d quota series + picker decisions (DAYS=7)
 	bun run src/cli.ts quota $(if $(DAYS),--days $(DAYS))
+
+window: ## Share of the Max 5h/7d windows (override: make window BY=lane DAYS=7 TOP=20 ACCOUNT=me; BY is session|lane|role|subagent_type|issue|repo|account)
+	bun run src/cli.ts window $(if $(BY),--by $(BY)) $(if $(DAYS),--days $(DAYS)) $(if $(TOP),--top $(TOP)) $(if $(ACCOUNT),--account $(ACCOUNT))
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources

@@ -10,7 +10,7 @@ push step.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `budget`, `reprice`, `sources`, `health`,
-  `billing-audit`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
+  `billing-audit`, `window`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
 - `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
   bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
   source's row count), records through `upsertRecords`. Also drives the quota / picks / portal passes.
@@ -22,6 +22,9 @@ push step.
   (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
 - `src/lane.ts` (`laneFor`), `src/repo.ts` (`normalizeRepo`) — the pure lane and repo mappings the writer calls.
 - `src/report.ts` — `stats`, `sources`, `health` staleness, `unpricedByModel`, `billing-audit` over the `usage` schema.
+- `src/window.ts` — `window`: the share of the Max 5 h / 7 d windows by session, lane, role, subagent type, issue, repo or
+  account over the `usage.window_attribution` / `session_window_share` views (migration 0011; rule and limits in
+  `docs/usage-schema.md` §Window share), `make window BY=lane`; the residual (window moved, no priced record) is printed.
 - `src/iu-keys.ts` — the registry of IU API keys (`personal`, `athena-team`; ids, op:// refs, cap) and `resolveIuKey`,
   the one place that decides which key an IU row was billed to. See the "IU keys" gotcha.
 - `src/collectors/iu-portal.ts`, `tools/iu-portal/` — IU's own cost report (the cap) scraped from the MacBook into
