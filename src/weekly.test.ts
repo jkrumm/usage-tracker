@@ -72,6 +72,7 @@ test("finding changes: strict parsing, a missing file throws, and the repo's own
   expect(bad({ finding: "wave" })).toThrow("finding must look like");
   expect(bad({ finding: "role-tier:worker a@b.c" })).toThrow("finding must look like");
   expect(bad({ finding: "role-tier:op://v/i/f" })).toThrow("finding must look like");
+  expect(bad({ finding: "subagent-effort:review/senior" })).not.toThrow(); // report-generated ids stay valid
   expect(bad({ status: "done" })).toThrow("status must be one of");
   expect(bad({ date: "2026-13-40" })).toThrow("date must be");
   expect(bad({ ref: "abc" })).toThrow("ref must look like");

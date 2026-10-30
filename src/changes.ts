@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { clean } from "./weekly.ts";
 
 // The record of change ref -> finding id (docs/usage-schema.md §Finding changes). A tracked file the weekly report reads:
 // nothing is stored in the database, the report recomputes a finding's metric for both weeks and prints the change next to it.
@@ -33,8 +34,8 @@ export interface ChangeNote extends ChangeRecord {
   exposure: ChangeExposure | null;
 }
 
-// The subject is whatever a role, lane, skill or subagent type is called (spaces and parentheses included), but never an address or a reference.
-const ID_RE = /^[a-z][a-z-]*:[A-Za-z0-9(][A-Za-z0-9 :._()-]{0,60}$/;
+// The subject is whatever a role, lane, skill or subagent type is called; it must also survive the report's own `clean` (no URL, reference or address), the bar every subject from the database meets.
+const ID_RE = /^[a-z][a-z-]*:\S.*$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REF_RE = /^[a-z0-9][a-z0-9._-]*@[0-9a-f]{7,40}$/;
 
@@ -54,7 +55,7 @@ export function parseChanges(json: string): ChangeRecord[] {
     if (typeof raw !== "object" || raw === null) throw new Error(`${where}: not an object`);
     const r = raw as Record<string, unknown>;
     const { finding, status, date, ref, summary } = r;
-    if (typeof finding !== "string" || !ID_RE.test(finding)) throw new Error(`${where}: finding must look like <rule>:<subject>`);
+    if (typeof finding !== "string" || !ID_RE.test(finding) || clean(finding) !== finding) throw new Error(`${where}: finding must look like <rule>:<subject>`);
     if (!CHANGE_STATUSES.includes(status as ChangeStatus)) throw new Error(`${where}: status must be one of ${CHANGE_STATUSES.join(", ")}`);
     if (typeof date !== "string" || !isDay(date)) throw new Error(`${where}: date must be a real day, YYYY-MM-DD`);
     if (ref !== undefined && ref !== null && (typeof ref !== "string" || !REF_RE.test(ref))) throw new Error(`${where}: ref must look like <repo>@<sha>`);
