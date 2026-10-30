@@ -99,12 +99,18 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `raw.reasoningTokensUnbilled`), live in `writer.ts`. Sessions: id from `sessionKey` (never invented), lane = earliest
   non-subagent record.
 - **There is no rate card in code.** Prices are `usage.prices` (catalog, `prices-sync`) plus `usage.price_overrides`:
-  migration `0005_price_overrides_iu.sql` holds every IU-measured rate and the DeepSeek v4.1 off-peak window that beat
-  or fill the catalog (the retired `pricing.ts` facts; the reason column cites each measurement). An override replaces
+  migration `0005_price_overrides_iu.sql` holds every IU-measured rate that beats or fills the catalog (the retired
+  `pricing.ts` facts; the reason column cites each measurement); DeepSeek is the catalog's, `0006` deleted its three rows
+  after the portal fit (`docs/reconciliation/2026-10-30-portal-actuals.md`). An override replaces
   the whole schedule (restate tiers / off-peak), `supersedes_prices` makes it beat the catalog. A new IU rate = a new
   override row with a later `valid_from` in a new migration, never an edit; then `make reprice DRYRUN=1`, then
   `make reprice`. The old `FAMILY_PRICING` tier fallback is gone: an unpriced Claude id is NULL until the catalog
   prices it (`make sources` lists them). Free local models (`gemma4-agent`) stay `cost_source='none'`.
+- **Gateway mirror duplicates are marked, not deleted.** The audio/image gateway calls exist twice in `usage.records` (collector
+  copy and the gateway's own Argo push); `usage.record_duplicates` marks the later copy (rule `gateway-mirror`,
+  `usage.flag_gateway_duplicates()`), `usage.records_unique` is the view without them, `budget` and `stats` read it. A
+  backfill needs `SELECT usage.flag_gateway_duplicates()` afterwards. Agent-workflows is the only writer of its own calls
+  (`docs/usage-schema.md` Duplicates).
 - **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`); `account` is set
   only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
@@ -163,11 +169,12 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - **IU portal cost is the truth; `records.cost_usd` is an estimate.** The employee cap is a ROLLING 30-day window
   (today + 29 days, limit `LIMIT_USD` = 500 in `tools/iu-portal/latest.ts`), measured by IU's self-service portal.
   Reconciled so far: `sonar` (vendor cost ignored, token-priced), `gpt-5.6-terra` (IU billed no reasoning tokens before
-  2026-10-16 08:55Z), the IU-measured rates in migration 0005. Portal days are the portal's calendar (UTC assumed).
+  2026-10-16 08:55Z; the day's portal fit puts the cutoff nearer 12:00Z, ~$2.8), the IU-measured rates in migration 0005,
+  the DeepSeek schedule (the catalog's) and the gateway mirror duplicates (below). Portal days are the portal's calendar (UTC assumed).
   `make budget [KEY=<id>] [MODEL=<name>]` is the reconciliation: rolling30, headroom, can-spend-today, 7-day drop-off and
   burn, portal vs tracked per day and model (flag when `|delta| > max($1, 20%)`), `MODEL` for the day-by-day explain
-  (tokens, implied rate, tracked cost by source). Tracked = `usage.records` with `billing='api_key'` and `api_key` = the
-  key, by UTC day. `reprice` never touches a row with `cost_reported_usd`. **Depends on iumac:** the scrape runs on the MacBook
+  (tokens, implied rate, tracked cost by source). Tracked = `usage.records_unique` with `billing='api_key'` and `api_key` =
+  the key, by UTC day. Last reconciliation (2026-10-30, per key and day, every driver): `docs/reconciliation/2026-10-30-portal-actuals.md`. `reprice` never touches a row with `cost_reported_usd`. **Depends on iumac:** the scrape runs on the MacBook
   (`ssh iumac`, IU-managed Chrome, profile `~/.local/share/iu-portal/profile`, tooling in
   `~/.local/share/iu-portal/tool`, installed by `make iu-portal-setup`). `ingest` fetches at most every 4 h; a sleeping
   MacBook skips quietly, and `health` goes stale after 48 h. **Login runbook:** when the log says `session expired`, run

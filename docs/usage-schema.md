@@ -34,6 +34,8 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `session_env` | the claude-code hook's `base_url` / `lane` / `account` per session id | `session` |
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
 | `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
+| `record_duplicates` | the later copy of a call two stores recorded (gateway mirror), see [Duplicates](#duplicates) | `PK (record_id)` |
+| `records_unique` | view: `records` without the marked copies; what `budget` and `stats` read | |
 | `schema_migrations` | applied files | `version` |
 
 ### records
@@ -233,14 +235,15 @@ tiers and off-peak windows; an override replaces the **whole** schedule (restate
 - **Migration `0005_price_overrides_iu.sql`**, derived by comparing every `PRICING` entry with the catalog schedule in force on
   2026-10-30 (effective rates after the cache fallbacks, tiers, off-peak). Models the catalog prices identically got no row.
   `valid_from` 2026-01-01 (before the first record), every row carries a `reason` citing the measurement:
-  - IU-measured, superseding: `deepseek-v4-pro` 1.32/3.96/0.044 (the catalog's off-peak windows are not applied: never measured
-    for this model), `deepseek-v4-flash` 0.44/1.32/0.014 (catalog 0.30/1.20/0.006), `hy3` 0.14/0.58/0.035, `kimi-k2.7-code`
-    0.95/4.0/0.19 (OpenRouter 0.56/3.1), and without a catalog key `glm-5.1`, `glm-5.2`, `mimo-v2.5-pro`,
-    `nvidia-nemotron-3-super-120b-a12b`, `nemotron-3-ultra`, `qwen3.7-max`. Cache writes bill as input (column NULL, the
-    fallback agrees); `qwen3.7-max` and the nemotron super model price cache reads at the input rate (no caching observed).
-  - `deepseek-v4.1-flash` 0.30/1.20/0.006 with off-peak 0.15/0.60/0.003 in the window 16:30-00:30 UTC daily (DeepSeek's
-    published one, measured at 17:17Z and ~18:50Z off-peak and 06:46Z peak). It aliases to a catalog entry whose base rates
-    agree but whose windows (weekdays 00-01, 04-06, 10-24 UTC, weekends all day) do not.
+  - IU-measured, superseding: `hy3` 0.14/0.58/0.035, `kimi-k2.7-code` 0.95/4.0/0.19 (OpenRouter 0.56/3.1), and without a catalog
+    key `glm-5.1`, `glm-5.2`, `mimo-v2.5-pro`, `nvidia-nemotron-3-super-120b-a12b`, `nemotron-3-ultra`, `qwen3.7-max`. Cache
+    writes bill as input (column NULL, the fallback agrees); `qwen3.7-max` and the nemotron super model price cache reads at the
+    input rate (no caching observed).
+  - **DeepSeek is the catalog's again (`0006_drop_deepseek_overrides.sql`).** 0005 also carried `deepseek-v4-pro`,
+    `deepseek-v4-flash` and `deepseek-v4.1-flash` (with a 16:30-00:30 UTC window). Measured against the portal over 2026-09-26..10-30
+    the catalog schedule fits better (`deepseek-v4.1-flash` 0.96x of the portal vs 1.39x with that window, `deepseek-v4-pro`
+    0.89x vs 1.18x; `deepseek-v4-flash` is too thin to fit, 7 days and $2.72), so 0006 deletes the three rows and `reprice`
+    moved 46,617 rows. Weekday/weekend off-peak windows come from the catalog and follow its changes.
   - List-price carry-overs that fill a gap and yield to a later catalog entry (`supersedes_prices = false`):
     `gemini-3-pro-preview`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`.
   - Kept on the catalog (identical effective rates): `kimi-k2.6`, `glm-5.3-flash`, `minimax-m3`, `sonar`, the Claude, Gemini 3.5/3.8 and
@@ -250,6 +253,30 @@ tiers and off-peak windows; an override replaces the **whole** schedule (restate
 - **Not ported:** the `FAMILY_PRICING` tier fallback (an unpriced Claude id is NULL until the catalog prices it) and free local models
   (`gemma4-agent`: an override cannot be 0, so it stays `cost_source = 'none'`). Claude/Gemini via Bedrock/Azure remain list-price
   proxies of unknown accuracy against IU's EU rate.
+
+### Duplicates
+
+Measured against the portal, the audio gateway (and the image gateways behind it) were counted twice: the usage-tracker collector
+read the gateway's own log (`audio-gateway`, machine = the host's hardware label, `audio-gateway-vps`) and the gateway also pushed
+every call to Argo (`audio-gateway-mini`, `audio-gateway` with machine `mini` or `vps`). The backfill carried both stores, so one
+call is two rows with the same key, model and token counts at timestamps milliseconds apart (the push lumps reasoning into
+`output_tokens`, the collector keeps it apart, so the rule compares `output + reasoning` and both cache writes as sums).
+
+- **Rule `gateway-mirror`** (`usage.flag_gateway_duplicates()`, migrations 0007 and 0008): two `billing = 'api_key'` rows of the sources
+  `audio-gateway`, `audio-gateway-mini`, `audio-gateway-vps`, `image-gen-gateway`, `image-gateway`, from different `(source, machine)`
+  pairs, same `api_key` and `model`, equal input, output + reasoning, cache read and cache writes (not all zero), at most 10 s
+  apart. The lower id is kept, the other is written to `record_duplicates(record_id, duplicate_of, rule)`. 2,278 rows, $72.34
+  (2026-10: $31.2) on the personal key. All of them are retired sources: the function is idempotent and only needs a re-run after a backfill.
+- **Nothing is deleted.** `usage.records_unique` is `records` without the marked rows; `budget` and `stats` read it, `sources`/`health`
+  count raw rows. Undo: `DELETE FROM usage.record_duplicates`. Other readers of `usage.records` (the dashboard) must read the view to
+  agree with the portal.
+- **Not duplicates:** the scan of every `api_key` pair (same key and model, identical token counts, within 10 s, different source or
+  machine) found only this family. Between `agent-workflows` and the collectors (`athena-teamchat`, `agent-gateway-*`, `opencode`,
+  `claude-code`, `hermes`, `research-gateway`) it found none: see `docs/reconciliation/2026-10-30-portal-actuals.md`.
+- **One writer per call.** A call made by an agent-workflows step is recorded by agent-workflows only. A collector must never read a
+  store that agent-workflows workers write (its OpenCode state lives in `~/.local/state/agent-workflows/opencode/`, not in the
+  `opencode` collector's `~/.local/share/opencode/`). `athena-teamchat` rows carry no model, so the overlap check for the team key is
+  the per-model tie-out against the portal (agent-workflows alone reaches the portal figure for every model it names).
 
 `reprice` (`make reprice [MODEL=] [DRYRUN=1]`) re-applies `compute_cost` to stored rows in one `UPDATE ... FROM LATERAL`: rows with
 `cost_reported_usd` are never touched, a priced row whose model has no price today is kept, `ingested_at` is not moved.
