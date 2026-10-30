@@ -1,6 +1,20 @@
-.PHONY: help install budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
+.PHONY: help install pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats sources billing-audit relane typecheck check deploy verify install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
+PRICES_LABEL := com.jkrumm.usage-tracker-prices
+
+# Tests need an admin Postgres connection in USAGE_TEST_PG_URL (scratch databases usage_test_<random>). Unset on the
+# mini, it is built from .env.test.tpl through secrets-run; without secrets-run the Postgres suites skip visibly.
+# ARGS (make test ARGS=src/prices) reaches the shell as an environment variable, never spliced into the command text.
+export ARGS
+define RUN_TESTS
+@if [ -n "$$USAGE_TEST_PG_URL" ] || ! command -v secrets-run >/dev/null 2>&1; then \
+	bun test $$ARGS; \
+else \
+	secrets-run run --env-file=.env.test.tpl -- sh -c \
+		'USAGE_TEST_PG_URL="postgres://$$(bun -e "process.stdout.write(encodeURIComponent(process.env.USAGE_TEST_PG_USER))"):$$(bun -e "process.stdout.write(encodeURIComponent(process.env.USAGE_TEST_PG_PASSWORD))")@127.0.0.1:5432/postgres" exec bun test $$ARGS'; \
+fi
+endef
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -54,8 +68,28 @@ billing-audit: ## Per-session claude-code billing check vs. the live session_env
 typecheck: ## Type-check with tsc
 	bun run tsc --noEmit
 
+test: ## Run the test suite (Postgres suites need secrets-run or USAGE_TEST_PG_URL)
+	$(RUN_TESTS)
+
 check: typecheck ## All local validation: type-check, then run the test suite
-	bun test
+	$(RUN_TESTS)
+
+pg-migrate: ## Apply migrations/pg to the usage schema (USAGE_PG_URL, default role usage on shared)
+	bun run src/cli.ts pg-migrate
+
+prices-sync: ## Write usage.prices rows for aliased models whose catalog price changed
+	bun run src/cli.ts prices-sync
+
+prices-seed-history: ## One-off: seed usage.prices from LiteLLM's git history (SINCE=YYYY-MM-DD)
+	bun run src/cli.ts prices-seed-history $(if $(SINCE),--since $(SINCE))
+
+install-prices-agent: ## Install the daily prices-sync LaunchAgent, 04:20 (does not touch the ingest agent)
+	bash launchd/install-prices-agent.sh
+
+uninstall-prices-agent: ## Stop + remove the prices-sync LaunchAgent
+	launchctl bootout gui/$$(id -u)/$(PRICES_LABEL) 2>/dev/null || true
+	rm -f $$HOME/Library/LaunchAgents/$(PRICES_LABEL).plist $$HOME/.local/state/jobs/$(PRICES_LABEL).json
+	@echo "removed $(PRICES_LABEL)"
 
 install-agent: ## Install + start the 15-min ingest LaunchAgent
 	bash launchd/install-agent.sh

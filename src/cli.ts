@@ -21,6 +21,7 @@ import {
 import { formatRelane, relane, scanEntrypoints } from "./relane.ts";
 import { checkPricingDrift, fetchRequestyModels } from "./pricing-drift.ts";
 import { formatReprice, reprice } from "./reprice.ts";
+import { runPgCommand } from "./pg/cli.ts";
 import { resyncAccount, sync } from "./sync.ts";
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
@@ -52,11 +53,15 @@ COMMANDS
   billing-audit          Per-session claude-code billing check vs. the live session_env log
     --since <N>          Only the last N days (default 3, matches log retention)
     --session <id>       Only this session
+  pg-migrate             Apply migrations/pg/*.sql to the usage schema (USAGE_PG_URL)
+  prices-sync            Daily: write usage.prices rows for aliased models whose catalog price changed
+  prices-seed-history    One-off: seed usage.prices from LiteLLM's git history (--since YYYY-MM-DD, default 2026-04-01)
   pricing-drift          Read-only: compare PRICING peak rates against Requesty's public catalogue (exit 1 on drift >1%)
   help                   This message
 
 ENV
   USAGE_DB       SQLite path (default ~/.local/share/usage-tracker/usage.db)
+  USAGE_PG_URL   Postgres URL for the pg-* and prices-* commands (default: role usage on shared, password via secrets-run)
   USAGE_MACHINE  Override the machine label (default: macOS hardware model, e.g. "Mac mini (M2 Pro)")
   ARGO_URL       Argo API base URL (default https://argo.jkrumm.com/api)
   ARGO_TOKEN     Bearer token for Argo sync (if absent, sync is silently disabled)
@@ -89,6 +94,9 @@ async function main(): Promise<number> {
     process.stdout.write(`${result.lines.join("\n")}\n`);
     return result.ok ? 0 : 1;
   }
+
+  const pgCode = await runPgCommand(cmd, rest);
+  if (pgCode !== null) return pgCode;
 
   const db = openDb();
   try {

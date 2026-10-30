@@ -10,7 +10,8 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `sync`, `resync-account`, `reprice`, `relane`,
-  `stats`, `quota`, `budget [--key]`, `iu-portal`, `sources`, `health`, `billing-audit`.
+  `stats`, `quota`, `budget [--key]`, `iu-portal`, `sources`, `health`, `billing-audit`, `pg-migrate`,
+  `prices-sync`, `prices-seed-history`.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s;
   registered in `src/collectors/index.ts`.
 - `src/db.ts`, `src/schema.ts` — SQLite schema and the idempotent upsert keyed
@@ -32,14 +33,31 @@ unsynced rows to the Argo API, which is where the dashboard lives.
 - `src/ingest.ts`, `src/sync.ts`, `src/reprice.ts`, `src/relane.ts`,
   `src/report.ts` — pipeline, backfills (`reprice`, `relane`) and reporting.
 - `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
+- `migrations/pg/NNNN_name.sql`, `src/pg/` (`connect.ts`, `migrate.ts`, `cli.ts`) — the Postgres `usage` schema (v2) and its
+  forward-only migration runner: `make pg-migrate`. Wave 1 of the Postgres move: the target schema and the price machinery
+  only; ingest, sync and the SQLite pipeline are untouched until Wave 2 switches the writers. Shape and rules:
+  `docs/usage-schema.md`.
+- `src/prices/` (`normalize.ts`, `cost.ts`, `sync.ts`, `history.ts`, `aliases.ts`, `store.ts`) — the effective-dated `usage.prices`
+  table synced daily from LiteLLM (OpenRouter fallback) and the cost resolution that mirrors SQL `usage.compute_cost`:
+  `make prices-sync`, `make prices-seed-history` (one-off), `make install-prices-agent` (daily 04:20,
+  `com.jkrumm.usage-tracker-prices`, separate from the ingest agent). `src/lane.ts` (`laneFor`) and `src/repo.ts`
+  (`normalizeRepo`) are the pure lane and repo mappings the Wave 2 writers call. `scripts/repo-report.ts` reports
+  `normalizeRepo` over the SQLite data (read-only).
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
 ## Validate
 
 `make check` runs `make typecheck` (`bun run tsc --noEmit`) and then
 `bun test` (Bun's runner; `*.test.ts` colocated in `src/`). There is no
-separate linter. The targets are side-effect free — tests open scratch DBs
-under `mkdtemp`, and the suite is the only validation the repo has.
+separate linter. The targets are side-effect free — SQLite tests open scratch DBs
+under `mkdtemp`, the Postgres suites (`src/pg`, `src/prices`) create and drop a
+`usage_test_<random>` database as the admin role. `make check`/`make test` inject
+`USAGE_TEST_PG_URL` from `.env.test.tpl` through `secrets-run`; without it (no secrets-run)
+those suites skip with the reason in their name. No test touches the network.
+The Postgres suites use the admin role (`jkrumm`, superuser) on the shared mini server because they must `CREATE`/`DROP`
+scratch databases; nothing else needs it. Scratch names are strictly `usage_test_<12 hex>` and `src/pg/testing.ts`
+(`assertScratchName`) refuses to create or drop any other name. `ARGS` (`make test ARGS=src/prices`) reaches the shell as an
+environment variable, never spliced into the command text.
 
 ## Deploy
 
@@ -52,6 +70,8 @@ state in `~/.local/state/jobs/`, graded by `jobs-grade`). Re-running the install
 so deploying a merged default branch is just `make deploy`. There is no CI and
 no rollback path: revert the offending commit and `make deploy` again. The Argo
 bearer is resolved at spawn via `secrets-run read` and is never written to disk.
+`make install-prices-agent` installs the separate daily `prices-sync` agent (`launchd/install-prices-agent.sh`; it never
+reloads the ingest agent, and `prices-sync` resolves the Postgres password itself at spawn).
 
 ## Verify & Monitor
 
@@ -67,6 +87,15 @@ bearer is resolved at spawn via `secrets-run read` and is never written to disk.
 
 ## Gotchas
 
+- **The Postgres `usage` schema (v2) is not wired to the pipeline yet** (Wave 1 of the move off SQLite/Argo; software-factory
+  decisions SF8, U1-U5). `docs/usage-schema.md` is the contract: `records` keyed `(source, source_id)` with machine as an
+  attribute, five token kinds, `sessions` with the CHECKed lane vocabulary, `quota_samples`/`account_picks`, and
+  effective-dated `prices`. Migrations are forward-only and owned here (`make pg-migrate`, `USAGE_PG_URL` or the `usage` role's
+  password via `secrets-run`, never `op`); never edit an applied file, add a new one. `usage.compute_cost` (SQL) and
+  `src/prices/cost.ts` must agree: change both and the shared fixtures in `src/prices/cost.test.ts` together. An unpriced
+  model is NULL / `cost_source='none'`, never 0; `prices-sync` exits 1 on a vanished or zeroed catalog price and keeps the
+  previous row. `src/pricing.ts` stays the SQLite pricing path until Wave 2 deletes it; its IU-specific knowledge is listed in
+  `docs/usage-schema.md` for the move to overrides.
 - **agent-gateway and audio-gateway collectors are retired (2026-10-29, Wave 11).** The gateways stopped;
   agent-workflows posts its own rows to Argo (`source='agent-workflows'`), so no collector reads them.
   Removed: `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway`,
