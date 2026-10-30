@@ -198,8 +198,22 @@ function toRow(
   };
 }
 
-/** jsonb rejects U+0000 in strings; no collector text needs it. */
-const payload = (rows: unknown[]): string => JSON.stringify(rows).replace(/\\u0000/g, "");
+const NUL = /\u0000/g;
+
+/**
+ * jsonb rejects U+0000 in strings; no collector text needs it. Stripped from the values (and the keys) before they are
+ * serialized, never from the serialized text: there the two characters `\u0000` of a string that merely spells it out
+ * (`"\\u0000"`) are indistinguishable from an escaped NUL.
+ */
+export function payload(rows: unknown): string {
+  return JSON.stringify(rows, (_key, value: unknown) => {
+    if (typeof value === "string") return value.replace(NUL, "");
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+    const entries = Object.entries(value);
+    if (!entries.some(([k]) => k.includes("\u0000"))) return value;
+    return Object.fromEntries(entries.map(([k, v]) => [k.replace(NUL, ""), v]));
+  });
+}
 
 // Content columns of usage.records: written on conflict only when one of them differs, so ingested_at moves on real change.
 const CONTENT = [

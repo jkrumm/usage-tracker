@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { SQL } from "bun";
+import { payload } from "./pg/writer.ts";
 
 // One-off import of the SQLite archive's non-record tables into the usage schema (scripts/import-sqlite-state.ts):
 // collector_state, session_env, quota_sample, account_pick, iu_portal_cost, iu_portal_total. Idempotent and safe to re-run
@@ -92,8 +93,6 @@ function parseJson(v: unknown): unknown {
     return null;
   }
 }
-
-const payload = (rows: unknown[]): string => JSON.stringify(rows).replace(/\\u0000/g, "");
 
 async function inChunks<T>(rows: T[], run: (chunk: T[]) => Promise<void>): Promise<void> {
   for (let i = 0; i < rows.length; i += CHUNK) await run(rows.slice(i, i + CHUNK));

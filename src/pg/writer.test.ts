@@ -426,4 +426,18 @@ describePg("usage.records write path", () => {
     const [{ n }] = await sql`SELECT count(*)::int AS n FROM usage.records WHERE ingested_at = ${T3.toISOString()}::timestamptz`;
     expect(n).toBe(0);
   });
+
+  test("U+0000 is stripped from values and keys, and a text that merely spells it out survives", async () => {
+    const sql = await ready();
+    const spelled = "path C:\\new\\u0000dir and \\u0000";
+    await upsertRecords(sql, "claude-code", [
+      rec("nul_1", {
+        project: "/Users/jkrumm/SourceRoot/argo\u0000",
+        raw: { spelled, real: "a\u0000b", "k\u0000ey": ["x\u0000", { "n\u0000": "v" }] },
+      }),
+    ]);
+    const row = await one("claude-code", "nul_1");
+    expect(row.raw).toEqual({ spelled, real: "ab", key: ["x", { n: "v" }] });
+    expect(row.project_raw).toBe("/Users/jkrumm/SourceRoot/argo");
+  });
 });
