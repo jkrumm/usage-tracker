@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // The record of change ref -> finding id (docs/usage-schema.md §Finding changes). A tracked file the weekly report reads:
@@ -28,12 +28,20 @@ export type ChangeExposure = "full" | "partial" | "not-yet";
 export interface ChangeNote extends ChangeRecord {
   /** ISO week of `date`. */
   week: string;
+  /** The first report week whose two compared weeks both ran wholly under a `landed` change: two weeks after `week`. */
+  cleanFrom: string | null;
   exposure: ChangeExposure | null;
 }
 
-const ID_RE = /^[a-z][a-z-]*:\S+$/;
+const ID_RE = /^[a-z][a-z-]*:\S.*$/; // the subject is whatever a role, lane, skill or subagent type is called, spaces included
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REF_RE = /^[a-z0-9][a-z0-9._-]*@[0-9a-f]{7,40}$/;
+
+/** `Date` rolls 2026-02-30 over to March 2, which would put the change in the wrong week: a day must round-trip. */
+const isDay = (s: string) => {
+  const at = new Date(`${s}T00:00:00Z`);
+  return DATE_RE.test(s) && !Number.isNaN(at.getTime()) && at.toISOString().startsWith(s);
+};
 
 /** Strict: a malformed record throws with its index, so a typo never silently drops a change from the report. */
 export function parseChanges(json: string): ChangeRecord[] {
@@ -47,7 +55,7 @@ export function parseChanges(json: string): ChangeRecord[] {
     const { finding, status, date, ref, summary } = r;
     if (typeof finding !== "string" || !ID_RE.test(finding)) throw new Error(`${where}: finding must look like <rule>:<subject>`);
     if (!CHANGE_STATUSES.includes(status as ChangeStatus)) throw new Error(`${where}: status must be one of ${CHANGE_STATUSES.join(", ")}`);
-    if (typeof date !== "string" || !DATE_RE.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) throw new Error(`${where}: date must be YYYY-MM-DD`);
+    if (typeof date !== "string" || !isDay(date)) throw new Error(`${where}: date must be a real day, YYYY-MM-DD`);
     if (ref !== undefined && ref !== null && (typeof ref !== "string" || !REF_RE.test(ref))) throw new Error(`${where}: ref must look like <repo>@<sha>`);
     if (status === "landed" && (ref === undefined || ref === null)) throw new Error(`${where}: a landed change needs a ref`);
     if (typeof summary !== "string" || summary.trim() === "") throw new Error(`${where}: summary is required`);
@@ -58,7 +66,7 @@ export function parseChanges(json: string): ChangeRecord[] {
   });
 }
 
-/** A missing file is no changes (a fresh checkout); an unreadable or malformed one throws. */
+/** The file is tracked and the report depends on it: a missing, unreadable or malformed one throws, never an empty report. */
 export function loadChanges(path = DEFAULT_CHANGES_PATH): ChangeRecord[] {
-  return existsSync(path) ? parseChanges(readFileSync(path, "utf8")) : [];
+  return parseChanges(readFileSync(path, "utf8"));
 }

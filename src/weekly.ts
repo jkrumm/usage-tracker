@@ -603,13 +603,19 @@ const topSessionRow = (s: SessionShare): TopSession => {
   };
 };
 
-/** A record placed against the covered week (`weekFrom` = its Monday): `full` = both compared weeks ran under the change, `partial` = it landed in one of them. */
+/** A record placed against the covered week (`weekFrom` = its Monday): `full` = both compared weeks ran wholly under the change, `partial` = it landed in one of them. A later replacement is not modelled: whether an older change still stands is the reader's call. */
 export function noteOf(c: ChangeRecord, weekFrom: Date): ChangeNote {
   const at = new Date(`${c.date}T00:00:00Z`);
   const prevFrom = new Date(weekFrom.getTime() - 7 * DAY_MS);
   const nextFrom = new Date(weekFrom.getTime() + 7 * DAY_MS);
   const exposure: ChangeExposure | null = c.status !== "landed" ? null : at >= nextFrom ? "not-yet" : isoWeekOf(at).from < prevFrom ? "full" : "partial";
-  return { ...c, week: isoWeekOf(at).label, exposure };
+  return {
+    ...c,
+    summary: clean(c.summary), // the file is authored, but the report promises no host, address or secret reference in either output
+    week: isoWeekOf(at).label,
+    cleanFrom: c.status === "landed" ? isoWeekOf(new Date(at.getTime() + 14 * DAY_MS)).label : null,
+    exposure,
+  };
 }
 
 const pctChange = (now: number, prev: number) => (prev > 0 ? round(((now - prev) / prev) * 100, 1) : null);
@@ -838,11 +844,11 @@ export function formatWeekly(report: WeeklyReport): string {
       c.exposure === "full"
         ? `both compared weeks ran under it`
         : c.exposure === "partial"
-          ? `landed in ${c.week}, so ${c.week === report.week ? "this week ran" : `${report.previous.week} ran`} partly under it: the effect shows in full from the next week`
+          ? `landed in ${c.week}, so ${c.week === report.week ? "this week ran" : `${report.previous.week} ran`} partly under it; the first clean comparison is the report for ${c.cleanFrom}`
           : c.exposure === "not-yet"
             ? `lands after ${report.week}, no effect yet`
             : null;
-    return `  - Change: ${what}: ${clean(c.summary)}${when === null ? "" : ` (${when})`}`;
+    return `  - Change: ${what}: ${c.summary}${when === null ? "" : ` (${when})`}`;
   };
   const findingsMd = (): string[] => {
     const lines = ["## Findings", ""];

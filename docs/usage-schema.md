@@ -379,10 +379,12 @@ sequence as the change, in this repo.
 
 The report prints each entry under its finding (also under Resolved and Unknown): `Change: landed 2026-10-30 (dotfiles@0b0e61d): <summary>`
 plus its exposure to the covered week against the previous one: `full` (both compared weeks ran under it), `partial` (it landed in one of
-them, so the full effect shows from the next week) or `not-yet` (it lands after the covered week); only `landed` has one. Entries whose
+them; `cleanFrom` names the first report whose two compared weeks both ran wholly under it, two weeks after the change's week) or `not-yet` (it lands after the covered week); only `landed` has one. Entries whose
 finding is not listed that week (declined, handed off, or a finding long gone) go under **Changes without a listed finding**; the JSON
 carries `changes` on every finding and `otherChanges` at the top. The effect itself is the metric's `prev -> now` under the same id;
-whether it is enough, and a revert or replacement, is judged by the reader (Wave 6), not by the report.
+whether it is enough, and a revert or replacement, is judged by the reader (Wave 6), not by the report; a later entry for the same id does not
+mark the older one superseded. `loadChanges` throws on a missing or malformed file (the report must not silently drop its changes); a day must be real
+(`2026-02-30` is rejected) and a summary goes through `clean` like every database string.
 
 ## Prices (U3)
 

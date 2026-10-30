@@ -64,7 +64,7 @@ test("the default week is the last one that has fully passed", () => {
 //   hostile skill names: example.com 3 x 30k, 10.0.0.1 / op://x/y / a@b.c 1 x 5k each -> one (other) row: 6 loads, 105k chars.
 const landed = (finding: string, date: string): ChangeRecord => ({ finding, status: "landed", date, ref: "dotfiles@0b0e61d", summary: "effort high -> medium" });
 
-test("finding changes: strict parsing, a missing file is no changes, and the repo's own file is valid", () => {
+test("finding changes: strict parsing, a missing file throws, and the repo's own file is valid", () => {
   expect(parseChanges(JSON.stringify([{ finding: "skill-size:wave", status: "landed", date: "2026-11-02", ref: "dotfiles@abc1234", summary: " trim " }]))).toEqual([
     { finding: "skill-size:wave", status: "landed", date: "2026-11-02", ref: "dotfiles@abc1234", summary: "trim" },
   ]);
@@ -77,7 +77,10 @@ test("finding changes: strict parsing, a missing file is no changes, and the rep
   expect(bad({ summary: " " })).toThrow("summary is required");
   expect(() => parseChanges(JSON.stringify([landed("a-b:c", "2026-11-02"), landed("a-b:c", "2026-11-02")]))).toThrow("duplicate entry");
   expect(() => parseChanges("{}")).toThrow("must hold a JSON array");
-  expect(loadChanges("/nonexistent/finding-changes.json")).toEqual([]);
+  expect(() => loadChanges("/nonexistent/finding-changes.json")).toThrow(); // the tracked file is required: no silent empty report
+  expect(bad({ date: "2026-02-30" })).toThrow("date must be a real day");
+  expect(bad({ date: "2028-02-29" })).not.toThrow(); // a leap day
+  expect(bad({ finding: "role-tier:wave mother" })).not.toThrow(); // subjects may hold spaces
   expect(loadChanges().length).toBeGreaterThan(0); // docs/finding-changes.json
 });
 
@@ -85,6 +88,8 @@ test("a change is placed against the covered week: not yet, partial in either co
   const w44 = parseIsoWeek("2026-W44").from; // compares W44 with W43
   const at = (date: string) => noteOf(landed("x-y:z", date), w44);
   expect(at("2026-11-02")).toMatchObject({ week: "2026-W45", exposure: "not-yet" });
+  expect(at("2026-10-30").cleanFrom).toBe("2026-W46"); // W45 still compares the partial W44 with W45
+  expect(noteOf({ ...landed("x-y:z", "2026-10-30"), summary: "see https://host.example/x or a@b.c" }, w44).summary).toBe("see (ref) or (address)");
   expect(at("2026-10-30")).toMatchObject({ week: "2026-W44", exposure: "partial" });
   expect(at("2026-10-20")).toMatchObject({ week: "2026-W43", exposure: "partial" });
   expect(at("2026-10-18")).toMatchObject({ week: "2026-W42", exposure: "full" });
@@ -319,13 +324,13 @@ describePg("weekly report", () => {
     ];
     const r = await weeklyReport(await db.sql(), { week: "2026-W43", thresholds: th, changes });
     const byId = Object.fromEntries(r.findings.map((f) => [f.id, f]));
-    expect(byId["cache-ratio:worker"]?.changes).toEqual([{ ...cache, week: "2026-W42", exposure: "partial" }]);
+    expect(byId["cache-ratio:worker"]?.changes).toEqual([{ ...cache, week: "2026-W42", cleanFrom: "2026-W44", exposure: "partial" }]);
     expect(byId["skill-size:wave"]?.changes).toEqual([]);
-    expect(r.resolved[0]?.changes).toEqual([{ ...old, week: "2026-W43", exposure: "partial" }]);
+    expect(r.resolved[0]?.changes).toEqual([{ ...old, week: "2026-W43", cleanFrom: "2026-W45", exposure: "partial" }]);
     expect(byId["subagent-effort:Explore"]?.changes[0]).toMatchObject({ status: "declined", exposure: null });
     expect(r.otherChanges.map((c) => c.finding)).toEqual(["skill-size:gone"]);
     const md = formatWeekly(r);
-    expect(md).toContain("  - Change: landed 2026-10-14 (dotfiles@0b0e61d): effort high -> medium (landed in 2026-W42, so 2026-W42 ran partly under it");
+    expect(md).toContain("  - Change: landed 2026-10-14 (dotfiles@0b0e61d): effort high -> medium (landed in 2026-W42, so 2026-W42 ran partly under it; the first clean comparison is the report for 2026-W44");
     expect(md).toContain("  - Change: declined 2026-10-30: below the impact bar");
     expect(md).toContain("### Changes without a listed finding");
     expect(md).toContain("- **skill-size:gone**");
