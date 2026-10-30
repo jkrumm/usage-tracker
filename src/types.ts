@@ -100,8 +100,32 @@ export interface CollectContext {
   syncIumac?: () => Promise<SyncResult>;
 }
 
+/**
+ * Something that happened inside a session and is not a billable record: a context compaction, a Skill tool call. Stored in
+ * usage.session_events (docs/usage-schema.md §Session events). One event can arrive as two halves (a skill's call and the
+ * line that shows its loaded size, possibly in different polls); halves share `eventId` and the database merges them.
+ */
+export interface SessionEvent {
+  /** Stable source-local id: the boundary line's uuid, the Skill tool_use id. */
+  eventId: string;
+  /** The transcript's session id; with `agentId` the session is the subagent's own (`eventSessionKey`). */
+  sessionId: string;
+  agentId?: string;
+  kind: "compaction" | "skill";
+  /** ISO 8601 UTC. */
+  ts: string;
+  /** Skill: the skill's name. */
+  name?: string;
+  /** Skill: characters of the injected skill text. */
+  sizeChars?: number;
+  /** Compaction: trigger, preTokens, postTokens, durationMs. */
+  detail?: Record<string, unknown>;
+}
+
 export interface CollectResult {
   records: UsageRecord[];
+  /** Session events (compactions, skill loads); sources without any leave it out. */
+  events?: SessionEvent[];
   /** New watermark to persist for the next run. Echo the old one if unused. */
   cursor: string | null;
   /** Human-readable note surfaced in the ingest summary (e.g. skip reason). */

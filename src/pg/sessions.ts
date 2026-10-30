@@ -23,11 +23,14 @@ function str(v: unknown): string | null {
 export function sessionKey(source: string, r: Pick<UsageRecord, "sourceId" | "grain" | "raw">): string | null {
   if (source === "agent-workflows") return str(r.raw?.runId) ?? str(r.raw?.sessionId);
   const fromRaw = str(r.raw?.sessionId);
-  const agentId = str(r.raw?.agentId);
-  if (fromRaw && agentId) return `${fromRaw}:${agentId}`;
-  if (fromRaw) return fromRaw;
+  if (fromRaw) return eventSessionKey({ sessionId: fromRaw, agentId: str(r.raw?.agentId) ?? undefined });
   if (source === "hermes" || source === "feuer") return str(r.sourceId.split(":")[0]);
   return r.grain === "session" ? str(r.sourceId) : null;
+}
+
+/** The session key of a transcript session event: `<sessionId>:<agentId>` for a subagent, else the session id (as `sessionKey`). */
+export function eventSessionKey(e: { sessionId: string; agentId?: string }): string {
+  return e.agentId ? `${e.sessionId}:${e.agentId}` : e.sessionId;
 }
 
 /** The session that spawned this one, when the source says so (`raw.parentSessionId`): a claude-code subagent's parent. */

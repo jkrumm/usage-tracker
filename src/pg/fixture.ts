@@ -6,7 +6,7 @@ import { scratchDb } from "./testing.ts";
 
 const STATE_TABLES = [
   "usage.records", "usage.sessions", "usage.collector_state", "usage.session_env", "usage.quota_samples",
-  "usage.account_picks", "usage.iu_portal_cost", "usage.iu_portal_total",
+  "usage.account_picks", "usage.iu_portal_cost", "usage.iu_portal_total", "usage.session_events",
 ];
 
 export function migratedDb(): { sql(): Promise<SQL>; reset(): Promise<SQL> } {
