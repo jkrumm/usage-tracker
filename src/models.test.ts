@@ -243,7 +243,7 @@ describe('getSessionLane', () => {
 })
 
 // With the stored usage.session_env lines primed, a line outlives the log file
-// it came from — herdr panes run longer than the hook's 3-day retention — and
+// it came from — terminal sessions run longer than the hook's 3-day retention — and
 // the lines the logs add or change are what ingest still has to persist.
 
 describe('stored session_env lines', () => {

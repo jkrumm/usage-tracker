@@ -150,7 +150,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   (from its session_env line), then agent-gateway's time-window fallback — only when no session_env line exists *and* the
   transcript `entrypoint` is `sdk-cli` or absent, since agent-gateway workers are always `claude -p` — then the entrypoint
   lane (`cli` → `interactive`, `sdk-cli` → `headless`, `claude-desktop` → `desktop`). Don't loosen the guard: it stops pruned
-  long-lived herdr sessions from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
+  long-lived terminal sessions from picking up random `agent-gateway:*` lanes. opencode rows without a lane are
   `interactive`, never null (the upsert would erase a lane). Lanes are derived at write time; `make restamp-claude-code` re-scans the transcripts so existing rows take a changed attribution (cost fingerprint checked before/after).
 - **Session events** (`usage.session_events`, `docs/usage-schema.md` §Session events): compactions (`compact_boundary` lines) and `Skill`
   tool calls with their loaded size, keyed `(source, event_id)` (boundary uuid / `tool_use` id), never record attributes or

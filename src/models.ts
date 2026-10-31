@@ -10,7 +10,7 @@ import type { Billing } from './types.ts'
 // `lane` — whoever spawned the session's `USAGE_LANE` env var, if any — so
 // this one scan feeds both billing classification and sub_tool attribution.
 // Loaded lazily and cached for the life of the process (ingest is a
-// short-lived one-shot run). The log files are pruned after 3 days, but herdr
+// short-lived one-shot run). The log files are pruned after 3 days, but terminal
 // panes run for longer — so ingest primes the cache with the stored
 // `usage.session_env` lines (useStoredSessionEnvs), merges the live logs on
 // top, and persists what changed (pendingSessionEnvs) before the writer runs.

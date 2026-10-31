@@ -30,7 +30,7 @@ once per `SessionStart` to `~/.claude/logs/YYYY-MM-DD.jsonl` (pruned after 3
 days) and the writer joins a record's `sessionId` against it — a non-empty
 `base_url` means `billing = 'api_key'` (IU-paid), empty means `max`.
 
-The join runs through `usage.session_env` (`session`, `base_url`, `lane`, `account`, `factory_role`, `factory_session`, `seen_at`), because herdr
+The join runs through `usage.session_env` (`session`, `base_url`, `lane`, `account`, `factory_role`, `factory_session`, `seen_at`), because terminal
 panes outlive the 3-day retention. `runIngest` primes `models.ts` with the whole table
 (`useStoredSessionEnvs`); the first lookup (`getSessionLane` in the claude-code / opencode collectors) scans the
 local and mirrored log dirs and merges them on top, a log entry winning for the same session (a resume's latest
@@ -416,7 +416,7 @@ explicit session lane, then the agent-gateway window, then the entrypoint lane. 
 window fallback only runs when there is no `session_env` line *and* the
 entrypoint is `sdk-cli` or absent: agent-gateway workers are always `claude -p`, so a
 `cli` or `claude-desktop` session can never be one. Without that guard, a
-days-old herdr pane whose line was pruned got a random `agent-gateway:*` lane from
+days-old terminal session whose line was pruned got a random `agent-gateway:*` lane from
 whichever window its rows overlapped, and lost its `wave`/`fleet` lane.
 
 Group by it with `make stats BY=lane`. `records.lane` is the CHECKed vocabulary `laneFor()` (`src/lane.ts`) derives
