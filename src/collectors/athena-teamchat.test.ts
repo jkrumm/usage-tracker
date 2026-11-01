@@ -46,9 +46,9 @@ describe('athena-teamchat collector', () => {
     })
   })
 
-  test('a failed call is an error row; source ids never collide across the three tables', () => {
+  test('a failed call is an error row; source ids never collide across the tables', () => {
     expect(toRecord(row({ kind: 'llm', id: 1, ok: false })).outcome).toBe('error')
-    const ids = [row(), row({ kind: 'llm' }), row({ kind: 'title' })].map(
+    const ids = [row(), row({ kind: 'llm' }), row({ kind: 'sqlite-turn' })].map(
       (r) => toRecord(r).sourceId,
     )
     expect(new Set(ids).size).toBe(3)

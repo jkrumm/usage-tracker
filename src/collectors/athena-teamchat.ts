@@ -11,9 +11,16 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from '../t
 // included: their tokens and OpenCode's own cost land in `athena.turns`, which is why no
 // OpenCode store is read for this key.
 //
-//   turns        chat + analysis turns (OpenCode usage per turn; cost = OpenCode's own estimate)
-//   llm_calls    host-side structured calls (`caller` names them); cost = tokens x configured prices
-//   title_calls  thread titles
+//   turns        chat + analysis turns (OpenCode usage per turn; cost = OpenCode's own estimate);
+//                `workflow` names the turn (chat.answer, case.take, ticket.take, pr.review, ...)
+//   llm_calls    host-side structured calls (`caller` names them, thread titles included as
+//                caller 'title'); cost = tokens x configured prices
+//
+// Schema drift (2026-11-01): `turns.kind` became `turns.workflow` and `title_calls` was folded
+// into `llm_calls` (titles from 2026-10-29T06:14Z on were already ingested as `llm:<id>` with
+// subTool `llm:title`; the earlier `title:<id>` rows stay as they are). A turn's failure is now
+// `end_reason` (`succeeded` / `error:...`) while `state` is `ended` either way. `turns.model`,
+// `llm_calls.model` and `turns.reasoning_tokens` now exist but are not read (see AGENTS.md).
 //
 // Not read: block_results / quality_reports / artifact_audits carry cost columns, but
 // together they are cents and (audits) a derived follow-up number, so reading them would
@@ -46,7 +53,7 @@ const OVERLAP_MS = 3 * 86_400_000
 const QUERY_TIMEOUT_MS = 60_000
 
 export interface AthenaRow {
-  kind: 'turn' | 'llm' | 'title' | 'sqlite-turn' | 'sqlite-title'
+  kind: 'turn' | 'llm' | 'sqlite-turn' | 'sqlite-title'
   id: number
   ts: string
   /** Last change of the row: a turn's end, else its start; created_at for the other tables. */
@@ -70,16 +77,14 @@ const psqlBin = () => process.env.ATHENA_PSQL ?? DEFAULT_PSQL
 // One JSON document per run: psql -At prints a single text value.
 const SQL = `
 SELECT coalesce(json_agg(r ORDER BY r.ts), '[]'::json) FROM (
-  SELECT 'turn' AS kind, id, started_at AS ts, coalesce(ended_at, started_at) AS touched, 'chat-turn:' || kind AS tool, state = 'ended' AS ok,
+  SELECT 'turn' AS kind, id, started_at AS ts, coalesce(ended_at, started_at) AS touched, 'chat-turn:' || workflow AS tool,
+         (state = 'ended' AND coalesce(end_reason, '') NOT LIKE 'error%') AS ok,
          tokens_in, tokens_out, cache_read_tokens AS cache_read, cache_write_tokens AS cache_write,
          cost::float8 AS cost, (extract(epoch FROM ended_at - started_at) * 1000)::bigint AS ms
     FROM athena.turns WHERE coalesce(ended_at, started_at) >= :'since'::timestamptz
   UNION ALL
   SELECT 'llm', id, created_at, created_at, 'llm:' || caller, ok, input_tokens, output_tokens, 0, 0, cost::float8, ms
     FROM athena.llm_calls WHERE created_at >= :'since'::timestamptz
-  UNION ALL
-  SELECT 'title', id, created_at, created_at, 'title', ok, input_tokens, output_tokens, 0, 0, cost::float8, ms
-    FROM athena.title_calls WHERE created_at >= :'since'::timestamptz
 ) r;`
 
 export const psqlQuery: AthenaQuery = async (sinceIso) => {
