@@ -33,7 +33,9 @@ CREATE TABLE usage.credit_cycles (
 );
 
 -- The gateway's routing decisions, modelled on usage.account_picks. picked is a pool id, 'iu-api' (the IU passthrough; a pool
--- may itself be named 'iu') or 'refused'; caller and session say who asked.
+-- may itself be named 'iu') or 'refused'; caller and session say who asked. Keyed (request_id, picked): a request refused for
+-- balance by a pool is re-picked, and both picks can share a millisecond ts; a request never picks the same target twice (refused
+-- pools are excluded), so the key also keeps an idempotent re-flush from dropping the re-pick. gateway_picks_ts_idx serves time-range reads.
 CREATE TABLE usage.gateway_picks (
   ts          timestamptz NOT NULL,
   caller      text        NOT NULL,
@@ -42,5 +44,6 @@ CREATE TABLE usage.gateway_picks (
   reason      text        NOT NULL,
   machine     text        NOT NULL,
   request_id  text        NOT NULL,
-  PRIMARY KEY (ts, caller, request_id)
+  PRIMARY KEY (request_id, picked)
 );
+CREATE INDEX gateway_picks_ts_idx ON usage.gateway_picks (ts);
