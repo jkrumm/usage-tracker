@@ -1,5 +1,5 @@
 import type { Lane, LaneDetail } from '../lane.ts'
-import type { UsageRecord } from '../types.ts'
+import type { StoredBilling, UsageRecord } from '../types.ts'
 
 // Pure session logic for the Postgres writer: which session a record belongs to, and how the records of one
 // session in a batch collapse into the session row. Persisting and merging with stored rows is writer.ts.
@@ -49,7 +49,7 @@ export interface SessionInput {
   ts: number
   lane: Lane
   laneDetail: LaneDetail | null
-  billing: 'max' | 'api_key' | 'unknown'
+  billing: StoredBilling
   account: string | null
   apiKey: string | null
   machine: string | null
@@ -66,7 +66,7 @@ export interface SessionRow {
   lane: Lane
   lane_detail: LaneDetail | null
   account: string | null
-  billing: 'max' | 'api_key' | 'unknown'
+  billing: StoredBilling
   api_key: string | null
   machine: string | null
   model: string | null

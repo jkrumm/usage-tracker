@@ -37,7 +37,13 @@ export interface StoredRow {
   iuKey: string | null
 }
 
-const BILLINGS: ReadonlySet<string> = new Set(['max', 'iu', 'anthropic-api', 'unknown'])
+const BILLINGS: ReadonlySet<string> = new Set([
+  'max',
+  'iu',
+  'anthropic-api',
+  'api_credit',
+  'unknown',
+])
 
 /** The stored billing class in the writer's input vocabulary; anything outside it (Argo's `openrouter`) is `unknown`. */
 export function storedBilling(billing: string): Billing {

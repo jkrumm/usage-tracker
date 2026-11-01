@@ -129,9 +129,12 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   The matching is per store pair, one row per store per call (migration 0009), idempotent; `backfill-argo` runs it after
   its write loop, so there is no manual step. Agent-workflows is the only writer of its own calls
   (`docs/usage-schema.md` Duplicates).
-- **Billing vocabulary:** `billing` is `max` | `api_key` | `unknown` (was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
+- **Billing vocabulary:** `billing` is `max` | `api_key` | `api_credit` | `unknown` (migration 0014 added `api_credit`: a request paid
+  from a Claude subscription's API credit, written by the agent-workflows inference gateway straight to Postgres with
+  `source='gateway'`; it has an `account` but no IU key, is its own `stats --by billing` group, and `budget` never counts it;
+  `usage.credit_cycles` and `usage.gateway_picks` are that gateway's tables, nothing in this repo writes them). Was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
   `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
-  cap); `account` is set only on `max` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
+  cap); `account` is set only on `max` and `api_credit` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
 - **Collector failures never abort a run.** A throwing collector is recorded as `error` in `usage.collector_state`
   (cursor kept, so the next run retries from the same watermark) and the rest continue, even when Postgres is the
@@ -163,8 +166,8 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   own `ts`; the newest line wins, an older one only fills a NULL lane or account. `billing-audit` compares
   the stored billing with the live log only.
 - **`account` is a dimension, not a billing class.** `records.account` (`iu`|`me`|`me2`; account `iu` ≠ billing `api_key`)
-  is set only for `max` rows — the source's own `raw.account`, else session_env's `account`, else `iu` (all historical
-  lines predate it; legacy `a`/`b` map to `iu`/`me` via `parseAccount`). Derived in the writer via `resolveAccount`
+  is set only for `max` and `api_credit` rows. A `max` row takes the source's own `raw.account`, else session_env's `account`, else `iu` (all historical
+  lines predate it; legacy `a`/`b` map to `iu`/`me` via `parseAccount`); an `api_credit` row takes only its own `raw.account`, else NULL. Derived in the writer via `resolveAccount`
   (models.ts, the only place that validates the account), never in a collector; a collector must put the session id in
   `raw.sessionId` for the lookup. A NULL Max row is a collector bug and stays visible.
 - **IU keys: spend is split per key, each key has its own $500 rolling cap.** `records.api_key` (`personal` |
