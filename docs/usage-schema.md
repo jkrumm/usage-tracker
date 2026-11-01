@@ -28,7 +28,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `quota_samples` | Max-window readings per account | `PK (account, sampled_at, machine)` |
 | `account_picks` | the account picker's decisions | `PK (ts, lane, machine)` |
 | `credit_cycles` | one API-credit cycle per account: grant, metered, reconciled and unspent USD (`cycle_end` NULL while the billing day is unknown), see [API credit](#api-credit-billing-the-inference-gateway) | `PK (account, cycle_start)` |
-| `gateway_picks` | the inference gateway's routing decisions | `PK (ts, caller, request_id)` |
+| `gateway_picks` | the inference gateway's routing decisions | `PK (request_id, picked)` |
 | `prices` | effective-dated catalog prices per model key | `UNIQUE (model_key, valid_from)` |
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
@@ -220,8 +220,8 @@ fallback, purpose}`), so the database CHECKs are its validator. Migration 0014 a
   `flag_gateway_duplicates()` (migrations 0007-0009) does not concern this gateway.
 - **`credit_cycles`:** `(account, cycle_start)` → `cycle_end` (NULL until the billing day is known), `grant_usd`, `metered_usd` (what we
   summed from `api_credit` rows), `reconciled_usd` and `unspent_usd` (the provider's figure, once known), `closed_at`.
-- **`gateway_picks`:** `(ts, caller, request_id)` → `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
-  the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`.
+- **`gateway_picks`:** `(request_id, picked)` → `ts` (indexed), `caller`, `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
+  the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`, but keyed by request and target: a request refused for balance by a pool is re-picked and both picks can share a millisecond `ts`; a request never picks the same target twice, so a re-flush with `ON CONFLICT DO NOTHING` keeps the re-pick.
 - The migration holds an ACCESS EXCLUSIVE lock on `sessions` then `records` (the writer's lock order) while it swaps the CHECKs.
 
 ## Window share (headline metric, U5)

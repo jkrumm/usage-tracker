@@ -115,6 +115,7 @@ describePg('usage schema constraints', () => {
 
     await sql`INSERT INTO usage.gateway_picks (ts, caller, session, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', NULL, 'iu', 'pool exhausted', 'mini', 'req_1')`
     await sql`INSERT INTO usage.gateway_picks (ts, caller, session, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', 's1', 'refused', 'no budget', 'mini', 'req_2')`
+    await sql`INSERT INTO usage.gateway_picks (ts, caller, session, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', NULL, 'refused', 're-pick, same ts', 'mini', 'req_1')`
     await fails(async () => {
       await sql`INSERT INTO usage.gateway_picks (ts, caller, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', 'iu', 'dup', 'mini', 'req_1')`
     })
