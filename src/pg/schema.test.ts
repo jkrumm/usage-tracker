@@ -82,6 +82,20 @@ describePg('usage schema constraints', () => {
     })
   })
 
+  test('the api_credit guard: a credit record needs an account and may not carry an IU key', async () => {
+    const sql = await db.connect()
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account) VALUES ('gateway', 'g-ok', 'message', now(), 'api_credit', 'iu')`
+    await fails(async () => {
+      await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account, api_key) VALUES ('gateway', 'g-key', 'message', now(), 'api_credit', 'me', 'personal')`
+    })
+    await fails(async () => {
+      await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing) VALUES ('gateway', 'g-noacct', 'message', now(), 'api_credit')`
+    })
+    // the guard is scoped to api_credit: the other classes keep their own rules
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, api_key) VALUES ('t', 'k-ok', 'message', now(), 'api_key', 'personal')`
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing) VALUES ('t', 'u-ok', 'message', now(), 'unknown')`
+  })
+
   test('credit cycles key on (account, cycle_start) and may be open; gateway picks key on (ts, caller, request_id)', async () => {
     const sql = await db.connect()
     await sql`INSERT INTO usage.credit_cycles (account, cycle_start, grant_usd, metered_usd) VALUES ('me', '2026-10-01T00:00:00Z', 200, 12.5)`

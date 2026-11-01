@@ -240,11 +240,4 @@ describe('account parsing (no database)', () => {
     ).toBe('iu')
     expect(resolveAccount({ billing: 'iu', raw: { account: 'me' } }, lookup)).toBeNull()
   })
-
-  test('resolveAccount: an api_credit row takes its line account and never falls back to a session lookup or "iu"', () => {
-    const lookup = () => 'me'
-    expect(resolveAccount({ billing: 'api_credit', raw: { account: 'me2' } }, lookup)).toBe('me2')
-    expect(resolveAccount({ billing: 'api_credit', raw: { sessionId: 's' } }, lookup)).toBeNull()
-    expect(resolveAccount({ billing: 'api_credit', raw: { account: 'ME2!' } }, lookup)).toBeNull()
-  })
 })

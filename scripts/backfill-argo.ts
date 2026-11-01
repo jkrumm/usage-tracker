@@ -256,6 +256,7 @@ async function buildUnion(): Promise<Union> {
       row.billing !== 'max' &&
       row.billing !== 'iu' &&
       row.billing !== 'anthropic-api' &&
+      row.billing !== 'api_credit' &&
       row.billing !== 'unknown'
     )
       note(`billing ${row.billing} -> unknown`)

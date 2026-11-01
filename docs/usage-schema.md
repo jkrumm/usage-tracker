@@ -27,6 +27,8 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `sessions` | the session as an entity for every lane | `UNIQUE (source, source_session_id)` |
 | `quota_samples` | Max-window readings per account | `PK (account, sampled_at, machine)` |
 | `account_picks` | the account picker's decisions | `PK (ts, lane, machine)` |
+| `credit_cycles` | one API-credit cycle per account: grant, metered, reconciled and unspent USD (`cycle_end` NULL while the billing day is unknown), see [API credit](#api-credit-billing-the-inference-gateway) | `PK (account, cycle_start)` |
+| `gateway_picks` | the inference gateway's routing decisions | `PK (ts, caller, request_id)` |
 | `prices` | effective-dated catalog prices per model key | `UNIQUE (model_key, valid_from)` |
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
@@ -50,8 +52,8 @@ Writers upsert on that key.
 - Links: `session_id` (fk `sessions`), `price_id` (fk `prices`, the row that priced it).
 - Model: `model_raw` (verbatim), `model` (normalized, see below).
 - Where: `repo` (normalized), `project_raw` (the collector string, verbatim), `workspace` (`work`|`private`).
-- Who pays: `billing` (`max` subscription | `api_key` per-token | `unknown`), `account` (Max account id, `max` rows only),
-  `api_key` (IU key id, `api_key` rows only), `machine`, `outcome` (`ok`|`error`).
+- Who pays: `billing` (`max` subscription | `api_key` per-token | `api_credit` subscription API credit | `unknown`), `account` (Max account id,
+  `max` and `api_credit` rows only), `api_key` (IU key id, `api_key` rows only), `machine`, `outcome` (`ok`|`error`).
 - What ran: `lane`, `lane_detail jsonb`, `effort`, `issue_id`, `run_id`.
 - Five token kinds, separate columns: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_5m_tokens`,
   `cache_write_1h_tokens`; plus `reasoning_tokens` (billed at the output rate *in addition* to `output_tokens`) and `duration_ms`.
@@ -111,7 +113,8 @@ has no lane of its own (a `worker`; the role keeps the distinction). Sessions wi
   `cache_write_5m_tokens = total - 1h`. A source that cannot split reports all of it as 5m.
 - **billing:** SQLite `max` -> `max`; `iu` -> `api_key` with `api_key` = `iu_key`; `anthropic-api` -> `api_key`, no key id
   (`api_key` stays NULL: it is not an IU key, and `budget` reads IU keys only, so such rows never count against a cap);
-  anything else `unknown`. `account` only on `max` rows, `api_key` only on `api_key` rows.
+  `api_credit` -> `api_credit` (the gateway's own class, see [API credit](#api-credit-billing-the-inference-gateway)); anything else
+  `unknown`. `account` only on `max` and `api_credit` rows, `api_key` only on `api_key` rows.
 - **cost:** see Prices. Writers pass `cost_reported_usd` only when the provider stated a cost; a Hermes `reportedEstimatedCostUsd: 0`
   with `costStatus: unknown` is not one.
 
@@ -200,6 +203,26 @@ over a session and its children (`parent_session_id`). Nested subagents (`spawnD
 transcript does not name the intermediate agent. A session's `effort` is its first request's; the effort of a mid-session
 change is on the records. `lane_detail.role` exists only for sessions whose `session_env` line carries `factory_role` (hook
 lines before 2026-10-30 do not), so history before the hook change has no role. The hook change (dotfiles `hooks/session-env.ts`) takes effect per host when that host's dotfiles are current; a session started before it never gets a role.
+
+## API credit billing: the inference gateway
+
+The agent-workflows inference gateway (agent-workflows `docs/gateway.md` §Usage and telemetry) writes one `usage.records` row per LLM
+request straight to Postgres (`source='gateway'`, `grain='message'`, `lane_detail {caller, session, run_id, workflow, step, pool,
+fallback, purpose}`), so the database CHECKs are its validator. Migration 0014 added the class and two tables.
+
+- **`billing='api_credit'`:** the request was paid from a Claude subscription's API credit: not the Max window (`max`), not the IU
+  per-token key (`api_key`). `account` (`iu`|`me`|`me2`) names the subscription and is required; `api_key` must be NULL. The guard is a CHECK on
+  `usage.records` (`records_api_credit_check`: `billing <> 'api_credit' OR (api_key IS NULL AND account IS NOT NULL)`), so a gateway bug
+  fails the insert instead of leaking a credit row into an IU key's spend. A request the gateway sends on to IU is `api_key` with
+  `api_key='personal'` as before. `stats --by billing` shows `api_credit` as its own group; `budget` and the IU portal reconciliation
+  read `billing='api_key'` only, so credit rows never count against a key's cap. The usage-tracker writer accepts `api_credit` on the
+  preclassified path (`mapBilling`, `backfill-argo`); `classifyBilling` never produces it, and the retired agent-gateway's
+  `flag_gateway_duplicates()` (migrations 0007-0009) does not concern this gateway.
+- **`credit_cycles`:** `(account, cycle_start)` → `cycle_end` (NULL until the billing day is known), `grant_usd`, `metered_usd` (what we
+  summed from `api_credit` rows), `reconciled_usd` and `unspent_usd` (the provider's figure, once known), `closed_at`.
+- **`gateway_picks`:** `(ts, caller, request_id)` → `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
+  the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`.
+- The migration holds an ACCESS EXCLUSIVE lock on `sessions` then `records` (the writer's lock order) while it swaps the CHECKs.
 
 ## Window share (headline metric, U5)
 
