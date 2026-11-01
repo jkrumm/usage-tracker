@@ -41,6 +41,8 @@ describePg('pg migrations', () => {
     expect(tables.map((t: { table_name: string }) => t.table_name)).toEqual([
       'account_picks',
       'collector_state',
+      'credit_cycles',
+      'gateway_picks',
       'iu_portal_cost',
       'iu_portal_total',
       'lane_signals',

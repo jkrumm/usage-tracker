@@ -2,7 +2,7 @@ import type { SQL } from 'bun'
 import { beforeEach, expect, test } from 'bun:test'
 import { migratedDb } from './pg/fixture.ts'
 import { describePg } from './pg/testing.ts'
-import { upsertRecords } from './pg/writer.ts'
+import { upsertRecords, type WriterRecord } from './pg/writer.ts'
 import { saveState } from './pg/state.ts'
 import {
   formatSources,
@@ -12,11 +12,10 @@ import {
   stats,
   unpricedByModel,
 } from './report.ts'
-import type { UsageRecord } from './types.ts'
 
 process.env.USAGE_MACHINE = 'Test Machine (Override)'
 
-const rec = (sourceId: string, o: Partial<UsageRecord> = {}): UsageRecord => ({
+const rec = (sourceId: string, o: Partial<WriterRecord> = {}): WriterRecord => ({
   sourceId,
   grain: 'message',
   ts: '2026-10-27T10:00:00.000Z',
@@ -92,6 +91,21 @@ describePg('report (Postgres)', () => {
     expect(await byKey('account')).toEqual({ iu: 2, '(n/a)': 2 })
     expect(await byKey('iu_key')).toEqual({ personal: 1, 'athena-team': 1, '(n/a)': 2 })
     expect(await byKey('repo')).toEqual({ argo: 3, 'iu/api': 1 })
+  })
+
+  test('api_credit is its own billing group and never lands under an IU key', async () => {
+    await upsertRecords(sql, 'gateway', [
+      rec('g1', {
+        authoritativeCostUsd: 7,
+        preclassified: { billing: 'api_credit', account: 'me', iuKey: 'personal' },
+      }),
+    ])
+    expect(await byKey('billing')).toEqual({ max: 2, api_key: 2, api_credit: 1 })
+    expect(await byKey('iu_key')).toEqual({ personal: 1, 'athena-team': 1, '(n/a)': 3 })
+    expect(await byKey('account')).toEqual({ iu: 2, me: 1, '(n/a)': 2 })
+    const rows = await stats(sql, { by: 'billing' })
+    expect(rows.find((r) => r.key === 'api_credit')?.costUsd).toBe(7)
+    expect(rows.find((r) => r.key === 'api_key')?.costUsd).toBe(3)
   })
 
   test('role, subagent_type and effort group the attribution of Claude Code rows; rows without it fall under (none)', async () => {

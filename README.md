@@ -31,6 +31,9 @@ catalog (`usage.prices`, `usage.compute_cost`) and tags each row with a
 - `api_key` — real per-token IU spend against the IU unified endpoint: Claude
   Code on the `ca` launcher (any served id, Claude or not), and the agent
   daemons. `api_key` on the row names the IU key.
+- `api_credit` — a request paid from a Claude subscription's API credit (the
+  inference gateway); `account` names the subscription. Its own group, never
+  part of the IU `api_key` spend or its budget.
 
 So `stats --by billing` answers "how much Max value am I burning" vs "what am
 I actually paying IU" in one view.

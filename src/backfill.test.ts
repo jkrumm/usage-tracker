@@ -79,6 +79,7 @@ test("legacy grains and billing classes map into the writer's vocabulary", () =>
   expect(storedBilling('openrouter')).toBe('unknown')
   expect(storedBilling('anthropic-api')).toBe('anthropic-api')
   expect(storedBilling('iu')).toBe('iu')
+  expect(storedBilling('api_credit')).toBe('api_credit')
 })
 
 test('an unparseable ts or unknown grain is skipped with the offending value, not mapped', () => {

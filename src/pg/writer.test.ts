@@ -6,7 +6,7 @@ import { fixtureDeps } from '../prices/testing.ts'
 import { migrate } from './migrate.ts'
 import { readSessionEnv, upsertSessionEnv } from './session-env.ts'
 import { describePg, scratchDb } from './testing.ts'
-import { upsertRecords, type WriterRecord } from './writer.ts'
+import { mapBilling, upsertRecords, type WriterRecord } from './writer.ts'
 
 const T0 = new Date('2026-10-30T09:00:00Z')
 const T1 = new Date('2026-10-30T10:00:00Z')
@@ -844,6 +844,32 @@ describePg('usage.records write path', () => {
     expect(await session('claude-code', 'pre-s2')).toMatchObject({ billing: 'max', account: 'me2' })
     // the default path is untouched: a record without preclassified is classified by the writer as before
     expect((await one('claude-code', 'pre_5')).billing).toBe('max')
+  })
+
+  test('preclassified api_credit keeps its account (not its IU key) on the record and the session', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'gateway', [
+      rec('cred_1', {
+        raw: { sessionId: 'cred-s1' },
+        preclassified: { billing: 'api_credit', account: 'me2', iuKey: 'personal' },
+      }),
+    ])
+    expect(await one('gateway', 'cred_1')).toMatchObject({
+      billing: 'api_credit',
+      account: 'me2',
+      api_key: null,
+    })
+    expect(await session('gateway', 'cred-s1')).toMatchObject({
+      billing: 'api_credit',
+      account: 'me2',
+      api_key: null,
+    })
+  })
+
+  test('mapBilling: api_credit is its own class, never folded into api_key', () => {
+    expect(mapBilling('api_credit')).toBe('api_credit')
+    expect(mapBilling('iu')).toBe('api_key')
+    expect(mapBilling('anthropic-api')).toBe('api_key')
   })
 
   test('insertOnly leaves an existing record and its session alone, inserts the rest, and a re-run inserts nothing', async () => {

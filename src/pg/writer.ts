@@ -6,7 +6,7 @@ import { currentMachine } from '../machine.ts'
 import { classifyBilling, normalizeModel, resolveAccount } from '../models.ts'
 import { baseModel } from '../prices/aliases.ts'
 import { normalizeRepo } from '../repo.ts'
-import type { Billing, UsageRecord, Workspace } from '../types.ts'
+import type { Billing, StoredBilling, UsageRecord, Workspace } from '../types.ts'
 import { readSessionEnv, sessionEnvLookups } from './session-env.ts'
 import { aggregateSessions, parentSessionKey, sessionKey, type SessionInput } from './sessions.ts'
 
@@ -46,7 +46,7 @@ export interface WriteOptions {
 /**
  * Values decided upstream (the historical backfill: rows were classified when the session_env logs still existed).
  * The writer takes them verbatim instead of re-running classifyBilling / resolveAccount / resolveIuKey, and still applies
- * the column rules: `account` only on `max` rows, `apiKey` only on `iu` rows. `machine: null` stores NULL instead of the
+ * the column rules: `account` only on `max` and `api_credit` rows, `apiKey` only on `iu` rows. `machine: null` stores NULL instead of the
  * writer host's machine; `undefined` keeps the default.
  */
 export interface Preclassified {
@@ -69,8 +69,8 @@ const tokens = (n: number | null | undefined): number =>
   typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0
 
 /** The billing class of usage.records: the SQLite `max`/`iu`/`anthropic-api` vocabulary mapped to who actually pays. */
-export function mapBilling(billing: Billing): 'max' | 'api_key' | 'unknown' {
-  if (billing === 'max') return 'max'
+export function mapBilling(billing: Billing): StoredBilling {
+  if (billing === 'max' || billing === 'api_credit') return billing
   if (billing === 'iu' || billing === 'anthropic-api') return 'api_key'
   return 'unknown'
 }
@@ -123,7 +123,7 @@ function toRow(
     : classifyBilling(source, r.model, rawSessionId, str(r.raw?.backend), env.baseUrl)
   const billing = mapBilling(classified)
   const account = pre
-    ? classified === 'max'
+    ? classified === 'max' || classified === 'api_credit'
       ? pre.account
       : null
     : resolveAccount({ billing: classified, raw: r.raw }, env.account)

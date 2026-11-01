@@ -7,7 +7,10 @@ import type { SyncResult } from './remote.ts'
 // one record per session — but every record normalizes to the same shape so a
 // single table and a single set of queries cover all of them.
 
-export type Billing = 'max' | 'iu' | 'anthropic-api' | 'unknown'
+/** The writer's input vocabulary; `iu` and `anthropic-api` both store as `api_key` (see `StoredBilling`). */
+export type Billing = 'max' | 'iu' | 'anthropic-api' | 'api_credit' | 'unknown'
+/** The `billing` column of usage.records / usage.sessions (migrations 0002, 0014). */
+export type StoredBilling = 'max' | 'api_key' | 'api_credit' | 'unknown'
 export type Workspace = 'work' | 'private'
 export type Grain = 'message' | 'session'
 export type Outcome = 'ok' | 'error'

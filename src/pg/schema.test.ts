@@ -64,4 +64,45 @@ describePg('usage schema constraints', () => {
     const [p] = await sql`SELECT snapshot->'iu'->>'s' AS s FROM usage.account_picks`
     expect(p.s).toBe('90')
   })
+
+  test('api_credit is an accepted billing class on records and sessions; an unknown value is still refused', async () => {
+    const sql = await db.connect()
+    await sql`INSERT INTO usage.sessions (source, source_session_id, lane, billing, account) VALUES ('gateway', 's-credit', 'other', 'api_credit', 'me')`
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account) VALUES ('gateway', 'r-credit', 'message', now(), 'api_credit', 'me2')`
+    const [r] = await sql`SELECT billing, account FROM usage.records WHERE source_id = 'r-credit'`
+    expect(r).toMatchObject({ billing: 'api_credit', account: 'me2' })
+    for (const billing of ['max', 'api_key', 'unknown']) {
+      await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing) VALUES ('t', ${`r-${billing}`}, 'message', now(), ${billing})`
+    }
+    await fails(async () => {
+      await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing) VALUES ('gateway', 'r-bad', 'message', now(), 'iu')`
+    })
+    await fails(async () => {
+      await sql`INSERT INTO usage.sessions (source, source_session_id, lane, billing) VALUES ('gateway', 's-bad', 'other', 'credit')`
+    })
+  })
+
+  test('credit cycles key on (account, cycle_start) and may be open; gateway picks key on (ts, caller, request_id)', async () => {
+    const sql = await db.connect()
+    await sql`INSERT INTO usage.credit_cycles (account, cycle_start, grant_usd, metered_usd) VALUES ('me', '2026-10-01T00:00:00Z', 200, 12.5)`
+    await sql`INSERT INTO usage.credit_cycles (account, cycle_start, cycle_end, grant_usd, metered_usd, reconciled_usd, unspent_usd, closed_at)
+              VALUES ('me', '2026-09-01T00:00:00Z', '2026-10-01T00:00:00Z', 200, 150, 149.2, 50.8, '2026-10-01T01:00:00Z')`
+    await fails(async () => {
+      await sql`INSERT INTO usage.credit_cycles (account, cycle_start, grant_usd, metered_usd) VALUES ('me', '2026-10-01T00:00:00Z', 200, 1)`
+    })
+    const [open] =
+      await sql`SELECT cycle_end, reconciled_usd, unspent_usd, closed_at FROM usage.credit_cycles WHERE cycle_start = '2026-10-01T00:00:00Z'`
+    expect(open).toEqual({
+      cycle_end: null,
+      reconciled_usd: null,
+      unspent_usd: null,
+      closed_at: null,
+    })
+
+    await sql`INSERT INTO usage.gateway_picks (ts, caller, session, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', NULL, 'iu', 'pool exhausted', 'mini', 'req_1')`
+    await sql`INSERT INTO usage.gateway_picks (ts, caller, session, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', 's1', 'refused', 'no budget', 'mini', 'req_2')`
+    await fails(async () => {
+      await sql`INSERT INTO usage.gateway_picks (ts, caller, picked, reason, machine, request_id) VALUES ('2026-10-30T10:00:00Z', 'agw', 'iu', 'dup', 'mini', 'req_1')`
+    })
+  })
 })
