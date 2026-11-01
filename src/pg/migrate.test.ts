@@ -1,8 +1,8 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { migrate, readMigrations } from './migrate.ts'
+import { MIGRATIONS_DIR, migrate, readMigrations } from './migrate.ts'
 import { describePg, scratchDb } from './testing.ts'
 
 describePg('pg migrations', () => {
@@ -95,5 +95,48 @@ describePg('pg migrations', () => {
     writeFileSync(join(dir, '0100_race.sql'), 'CREATE TABLE usage.race (id int);')
     const results = await Promise.all([migrate(sql, { dir }), migrate(sql, { dir })])
     expect(results.map((r) => r.applied.length).sort()).toEqual([0, 1])
+  })
+})
+
+describePg('pg migrations: upgrading a populated database', () => {
+  const db = scratchDb()
+  let tmp: string | undefined
+  afterAll(() => tmp && rmSync(tmp, { recursive: true, force: true }))
+
+  test('0014 leaves the existing records and sessions byte-for-byte unchanged', async () => {
+    const sql = await db.connect()
+    tmp = mkdtempSync(join(tmpdir(), 'mig-up-'))
+    const upTo0013 = join(tmp, 'v13')
+    mkdirSync(upTo0013)
+    for (const f of readMigrations().filter((m) => m.version <= 13)) {
+      const name = `${String(f.version).padStart(4, '0')}_${f.name}.sql`
+      copyFileSync(join(MIGRATIONS_DIR, name), join(upTo0013, name))
+    }
+    await migrate(sql, { dir: upTo0013 })
+
+    for (const [i, billing] of ['max', 'api_key', 'unknown'].entries()) {
+      const [{ id }] = await sql`
+        INSERT INTO usage.sessions (source, source_session_id, lane, billing, account, api_key)
+        VALUES ('claude-code', ${`s${i}`}, 'interactive', ${billing},
+                ${billing === 'max' ? 'me' : null}, ${billing === 'api_key' ? 'personal' : null})
+        RETURNING id`
+      await sql`
+        INSERT INTO usage.records (source, source_id, grain, ts, session_id, billing, account, api_key, input_tokens, cost_usd, cost_source)
+        VALUES ('claude-code', ${`r${i}`}, 'message', '2026-10-30T10:00:00Z', ${id}, ${billing},
+                ${billing === 'max' ? 'me' : null}, ${billing === 'api_key' ? 'personal' : null}, ${100 + i}, ${i + 0.5}, 'reported')`
+    }
+    const snapshot = async () => ({
+      records: await sql`SELECT to_jsonb(r) AS j FROM usage.records r ORDER BY source_id`,
+      sessions: await sql`SELECT to_jsonb(s) AS j FROM usage.sessions s ORDER BY source_session_id`,
+    })
+    const before = await snapshot()
+    expect(before.records.length).toBe(3)
+
+    const result = await migrate(sql)
+    expect(result.applied).toContain('0014_api_credit')
+    expect(await snapshot()).toEqual(before)
+
+    // the widened CHECK is live on the upgraded database
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account) VALUES ('gateway', 'g1', 'message', now(), 'api_credit', 'me')`
   })
 })

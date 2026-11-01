@@ -255,9 +255,10 @@ export async function buildProof(ctx: Ctx): Promise<void> {
       }
 
       const expectBilling = mapBilling(storedBilling(o.billing))
-      const expectAccount = expectBilling === 'max' ? o.account : null
+      const expectAccount =
+        expectBilling === 'max' || expectBilling === 'api_credit' ? o.account : null
       const expectKey = storedBilling(o.billing) === 'iu' ? o.iuKey : null
-      if (o.account && expectBilling !== 'max') accountDropped++
+      if (o.account && expectBilling !== 'max' && expectBilling !== 'api_credit') accountDropped++
       if (
         p.billing !== expectBilling ||
         (p.account ?? null) !== expectAccount ||
@@ -920,7 +921,7 @@ export async function buildProof(ctx: Ctx): Promise<void> {
   out.push(
     [
       `- Billing / account / IU key as stored: ${billingMismatch.length === 0 ? 'every backfilled row carries the stored values (checked on all matched keys)' : billingMismatch.join('; ')}.`,
-      `- \`account\` stored on a non-Max row and dropped (the column rule: Max rows only): ${int(accountDropped)}.`,
+      `- \`account\` stored on a non-Max, non-credit row and dropped (the column rule: \`max\` and \`api_credit\` rows only): ${int(accountDropped)}.`,
       `- Argo billing \`openrouter\` is not in the writer's vocabulary and is written \`unknown\`: ${int(note('billing openrouter -> unknown'))} rows.`,
       `- Malformed or non-object \`raw\` JSON (kept as \`{legacyRaw: ...}\` or dropped): ${int(u.malformedRaw)}.`,
       `- Rows not backfilled: ${u.skippedList.length === 0 ? 'none (every ts parses, every grain is known)' : ''}`,

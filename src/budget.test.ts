@@ -72,8 +72,8 @@ describePg('buildBudget', () => {
   test('api_credit spend never counts against the IU key budget', async () => {
     await seed()
     const before = (await buildBudget(db, NOW))!
-    await db`INSERT INTO usage.records (source, source_id, grain, ts, model, billing, account, api_key, cost_usd, cost_source)
-             VALUES ('gateway', 'credit-1', 'message', '2026-10-26T10:00:00Z', 'claude-haiku-5-5', 'api_credit', 'me', 'personal', 99, 'reported')`
+    await db`INSERT INTO usage.records (source, source_id, grain, ts, model, billing, account, cost_usd, cost_source)
+             VALUES ('gateway', 'credit-1', 'message', '2026-10-26T10:00:00Z', 'claude-haiku-5-5', 'api_credit', 'me', 99, 'reported')`
     const after = (await buildBudget(db, NOW))!
     expect(after.days).toEqual(before.days)
     expect(after.models).toEqual(before.models)

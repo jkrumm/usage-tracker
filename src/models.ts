@@ -283,10 +283,9 @@ export function getSessionAccount(
 }
 
 /**
- * The account dimension, separate from billing: only Max and `api_credit` rows have one (IU and
- * every other row is NULL). An `api_credit` row (the inference gateway, paid from a Claude subscription's API credit)
- * takes the `account` its line carried, else NULL: there is no session to look it up by and no "iu" default to infer.
- * A Max row takes the `account` its source
+ * The account dimension, separate from billing: only Max rows are resolved here (IU and
+ * every other non-Max row is NULL). `api_credit` rows never reach this function: the inference gateway writes them
+ * straight to Postgres with `account` set, and classifyBilling never returns `api_credit`. A Max row takes the `account` its source
  * line carried (agent-gateway session lines), validated and legacy-mapped by
  * parseAccount; a missing/unknown one falls through to the session's logged
  * account (`lookup` by `raw.sessionId`), else "iu" — the IU account is the only
@@ -296,7 +295,6 @@ export function resolveAccount(
   record: { billing: Billing; raw?: Record<string, unknown> },
   lookup: (sessionId: string) => Account | null | undefined = getSessionAccount,
 ): Account | null {
-  if (record.billing === 'api_credit') return parseAccount(record.raw?.account)
   if (record.billing !== 'max') return null
   const sessionId = record.raw?.sessionId
   return (

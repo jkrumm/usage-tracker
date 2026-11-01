@@ -3,9 +3,17 @@
 -- `api_credit`: a request paid from a Claude subscription's API credit (account iu|me|me2), neither the Max window
 -- (`max`) nor the IU per-token key (`api_key`). The gateway writes usage.records rows straight to Postgres, so this
 -- CHECK is its validator. Additive: the CHECKs are widened by name, no row changes.
+--
+-- Both tables are locked first, in the writer's order (sessions before records): the ALTERs take ACCESS EXCLUSIVE locks,
+-- and taking them in the other order while an ingest holds sessions and waits for records would deadlock.
+LOCK TABLE usage.sessions, usage.records IN ACCESS EXCLUSIVE MODE;
+
 ALTER TABLE usage.records  DROP CONSTRAINT records_billing_check;
 ALTER TABLE usage.records  ADD  CONSTRAINT records_billing_check
   CHECK (billing IN ('max', 'api_key', 'api_credit', 'unknown'));
+-- The guard: a credit row always names its account and never carries an IU key (its spend is not the IU key's).
+ALTER TABLE usage.records  ADD  CONSTRAINT records_api_credit_check
+  CHECK (billing <> 'api_credit' OR (api_key IS NULL AND account IS NOT NULL));
 ALTER TABLE usage.sessions DROP CONSTRAINT sessions_billing_check;
 ALTER TABLE usage.sessions ADD  CONSTRAINT sessions_billing_check
   CHECK (billing IN ('max', 'api_key', 'api_credit', 'unknown'));
@@ -24,8 +32,8 @@ CREATE TABLE usage.credit_cycles (
   PRIMARY KEY (account, cycle_start)
 );
 
--- The gateway's routing decisions, modelled on usage.account_picks. picked is a pool id, 'iu' (passthrough) or
--- 'refused'; caller and session say who asked.
+-- The gateway's routing decisions, modelled on usage.account_picks. picked is a pool id, 'iu-api' (the IU passthrough; a pool
+-- may itself be named 'iu') or 'refused'; caller and session say who asked.
 CREATE TABLE usage.gateway_picks (
   ts          timestamptz NOT NULL,
   caller      text        NOT NULL,
