@@ -32,6 +32,8 @@ export interface CreditPassOptions {
   now?: Date
   /** Minimum trailing window in days (default 35). */
   days?: number
+  /** Overall deadline of one org's Admin API reads, ms (default 120 s). */
+  deadlineMs?: number
 }
 
 export interface CreditPassResult {
@@ -169,7 +171,9 @@ async function writeCycle(
            CASE WHEN r.reconciled IS NULL THEN NULL ELSE greatest(${account.creditUsd}::numeric - r.reconciled, 0) END,
            CASE WHEN r.reconciled IS NULL THEN NULL ELSE ${now.toISOString()}::timestamptz END
     FROM (
-      SELECT coalesce(sum(coalesce(cost_usd, (lane_detail->>'costEstimatedUsd')::numeric, 0)), 0) AS metered
+      SELECT coalesce(sum(coalesce(cost_usd,
+        CASE WHEN jsonb_typeof(lane_detail->'costEstimatedUsd') = 'number'
+             THEN (lane_detail->>'costEstimatedUsd')::numeric END, 0)), 0) AS metered
       FROM usage.records
       WHERE source = 'gateway' AND billing = 'api_credit' AND account = ${account.id}
         AND ts >= ${cycle.start.toISOString()}::timestamptz AND ts < ${cycle.end.toISOString()}::timestamptz
@@ -183,7 +187,7 @@ async function writeCycle(
     ) r
     ON CONFLICT (account, cycle_start) DO UPDATE SET
       cycle_end      = EXCLUDED.cycle_end,
-      grant_usd      = EXCLUDED.grant_usd,
+      grant_usd      = CASE WHEN cc.closed_at IS NULL THEN EXCLUDED.grant_usd ELSE cc.grant_usd END,
       metered_usd    = EXCLUDED.metered_usd,
       reconciled_usd = CASE
         WHEN EXCLUDED.reconciled_usd IS NOT NULL
@@ -192,7 +196,8 @@ async function writeCycle(
       unspent_usd    = CASE
         WHEN EXCLUDED.reconciled_usd IS NOT NULL
          AND (cc.closed_at IS NULL OR ${now.toISOString()}::timestamptz < cc.cycle_end + make_interval(days => ${REVISION_DAYS}))
-        THEN EXCLUDED.unspent_usd ELSE cc.unspent_usd END,
+        THEN greatest(CASE WHEN cc.closed_at IS NULL THEN EXCLUDED.grant_usd ELSE cc.grant_usd END - EXCLUDED.reconciled_usd, 0)
+        ELSE cc.unspent_usd END,
       closed_at      = coalesce(cc.closed_at, EXCLUDED.closed_at)`
 }
 
@@ -221,6 +226,7 @@ async function runAccount(
         got = await fetchCost(adminWindows(previous?.start ?? null, now, opts.days), {
           baseUrl: opts.baseUrl,
           adminKey,
+          deadlineMs: opts.deadlineMs,
         })
       } catch (err) {
         if (!(err instanceof AdminApiError)) throw err

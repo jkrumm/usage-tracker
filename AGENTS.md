@@ -20,7 +20,7 @@ push step.
   harness). Migrations: `migrations/pg/NNNN_name.sql`, `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
 - `src/credit/` — the credit pass (`index.ts` registry + secrets + `runCreditPass`, `admin-api.ts` Admin API cost fetch, `cycle.ts` cycle
   math): the Admin API's daily cost into `usage.platform_cost` (migration 0015) and the current + previous `usage.credit_cycles` with
-  metered/reconciled/unspent. Run by `ingest` after the collectors, or `credit [--days N]`; `docs/usage-schema.md` §Credit pass.
+  metered/reconciled/unspent. Run by `ingest` after the collectors, at most hourly (`collector_state` key `credit`), or `credit [--days N]` (never throttled; exit 1 on a failed account); `docs/usage-schema.md` §Credit pass.
 - `src/models.ts` — model normalization, `classifyBilling`, `resolveAccount`, the hook-log `session_env` lookups
   (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
 - `src/pg/events.ts` — `upsertSessionEvents`: compactions and skill loads (`usage.session_events`, migration 0013; views
@@ -135,7 +135,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - **Billing vocabulary:** `billing` is `max` | `api_key` | `api_credit` | `unknown` (migration 0014 added `api_credit`: a request paid
   from a Claude subscription's API credit, written by the agent-workflows inference gateway straight to Postgres with
   `source='gateway'`; it has an `account` but no IU key, is its own `stats --by billing` group, and `budget` never counts it;
-  `usage.gateway_picks` is that gateway's table; `usage.credit_cycles` and `usage.platform_cost` are written by the `credit` pass here); `stats --by account` splits `iu (max)` from `iu (api_credit)`). Was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
+  `usage.gateway_picks` is that gateway's table; `usage.credit_cycles` and `usage.platform_cost` are written by the `credit` pass here, its only writer); `stats --by account` splits `iu (max)` from `iu (api_credit)`). Was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
   `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
   cap); `account` is set only on `max` and `api_credit` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.

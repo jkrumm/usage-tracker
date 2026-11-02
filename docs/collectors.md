@@ -367,6 +367,13 @@ ref, a failed read or a value starting `REPLACE` skips that org with one log lin
 - **Lag.** `data_refreshed_at` is the provider's snapshot, minutes to hours (docs: typically 4 h, up to 24 h) behind now, and is stamped
   on each row. A cycle reconciles only when that snapshot is past its end (`docs/usage-schema.md` §Credit pass).
 - **Missing key / `me2`.** `me2`'s refs hold a placeholder until its Console org exists; it is skipped, and with `cycleDay: null` it gets no cycles either.
+- **Cadence.** The Admin API docs ask for at most hourly: `ingest` runs the pass once an hour (last attempt in `usage.collector_state`, key
+  `credit`, cursor = attempt time, status/note = outcome); the ticks between skip it. `bun run src/cli.ts credit` always runs, and exits 1 with
+  the count when an account failed outright.
+- **Deadline and safety.** All requests of one org share a 120 s deadline (30 s per request), so a slow API cannot stall the 900 s ingest; the request
+  uses `redirect: "error"` (the key is in a header). A response that is not exactly the documented shape (`has_more` not a boolean,
+  `data_refreshed_at` not a string, a row without a usable `starting_at` / `cost.amount` / group) is malformed: the org is skipped and nothing is
+  written or deleted, so a truncated page can neither drop rows nor close a cycle at zero.
 - Ingest runs the pass last (after the collectors, the quota / picks pass and the portal), isolated: a failure logs and the run still succeeds.
   Not run with `--source` or an injected collector set.
 

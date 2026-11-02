@@ -24,16 +24,24 @@ const state = {
   refreshed: '2026-11-02T08:00:00Z',
   status: {} as Record<string, number>,
   seen: [] as Array<{ key: string; url: URL; headers: Headers }>,
+  delayMs: 0,
+  redirect: false,
+  numericAmounts: false,
+  /** Replace the JSON body of every answer (a malformed or truncated response). */
+  body: null as Record<string, unknown> | null,
 }
 
 const server = Bun.serve({
   port: 0,
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url)
     const key = req.headers.get('x-api-key') ?? ''
     state.seen.push({ key, url, headers: req.headers })
     const status = state.status[key]
+    if (state.delayMs) await Bun.sleep(state.delayMs)
+    if (state.redirect) return Response.redirect('http://localhost:1/elsewhere', 302)
     if (status) return new Response('{"error":"nope"}', { status })
+    if (state.body) return Response.json(state.body)
     const from = url.searchParams.get('starting_at')!.slice(0, 10)
     const to = url.searchParams.get('ending_at')!.slice(0, 10)
     const rows = (state.data[key] ?? []).filter((r) => r.day >= from && r.day < to)
@@ -45,7 +53,12 @@ const server = Bun.serve({
         starting_at: `${r.day}T00:00:00Z`,
         ending_at: `${r.day}T23:59:59Z`,
         group: { model: r.model, api_key_id: r.key },
-        cost: { amount: r.amount, list_amount: r.amount, currency: 'USD', requests: 1 },
+        cost: {
+          amount: state.numericAmounts ? Number(r.amount) : r.amount,
+          list_amount: r.amount,
+          currency: 'USD',
+          requests: 1,
+        },
       })),
       has_more: more,
       next_page: more ? String(offset + 2) : null,
@@ -67,8 +80,14 @@ const secrets: Record<string, string | null> = {
 const resolveSecret = async (ref: string) => secrets[ref] ?? null
 const NOW = new Date('2026-11-02T10:00:00Z')
 
-const run = (accounts: PlatformAccount[], over: { now?: Date } = {}, sql?: SQL) =>
-  runCreditPass(sql ?? db, { accounts, resolveSecret, baseUrl, now: over.now ?? NOW })
+const run = (accounts: PlatformAccount[], over: { now?: Date; deadlineMs?: number } = {}) =>
+  runCreditPass(db, {
+    accounts,
+    resolveSecret,
+    baseUrl,
+    now: over.now ?? NOW,
+    deadlineMs: over.deadlineMs,
+  })
 
 let db: SQL
 const pg = migratedDb()
@@ -107,6 +126,10 @@ beforeEach(async () => {
   state.status = {}
   state.seen = []
   state.refreshed = '2026-11-02T08:00:00Z'
+  state.delayMs = 0
+  state.redirect = false
+  state.numericAmounts = false
+  state.body = null
 })
 
 describePg('credit pass: platform_cost (Postgres, fake Admin API)', () => {
@@ -218,6 +241,62 @@ describePg('credit pass: platform_cost (Postgres, fake Admin API)', () => {
     expect((await costOf('iu'))[0].cost_usd).toBe(1)
   })
 
+  test('a malformed or truncated response writes and deletes nothing', async () => {
+    state.data['iu-key'] = [{ day: '2026-10-15', model: 'm', key: 'k', amount: '100' }]
+    await run([IU])
+    state.refreshed = '2026-11-02T09:00:00Z'
+    for (const body of [
+      { data: [], has_more: 'false', data_refreshed_at: '2026-11-02T09:00:00Z' }, // not a boolean
+      { data: [], data_refreshed_at: '2026-11-02T09:00:00Z' }, // has_more missing
+      { data: [], has_more: false, data_refreshed_at: 12345 }, // snapshot not a string
+      { data: [], has_more: false }, // snapshot missing
+      {
+        data: [{ starting_at: '2026-10-30T00:00:00Z', cost: { amount: 'abc' } }],
+        has_more: false,
+        data_refreshed_at: '2026-11-02T09:00:00Z',
+      },
+      {
+        data: [{ starting_at: '2026-10-30T00:00:00Z', cost: { amount: '1' }, group: { model: 5 } }],
+        has_more: false,
+        data_refreshed_at: '2026-11-02T09:00:00Z',
+      },
+    ]) {
+      state.body = body
+      const res = await run([IU])
+      expect(res.platformCost).toBe(0)
+    }
+    const rows = await costOf('iu')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].cost_usd).toBe(1)
+    // the cycles were not closed at zero by the empty answers
+    expect((await cycles('iu'))[0].reconciled).toBe(1)
+  })
+
+  test('a JSON number amount goes through fixed-point, not String()', async () => {
+    state.numericAmounts = true
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'm', key: 'k', amount: '0.00001' }] // 1e-5 cents
+    await run([IU])
+    expect((await costOf('iu'))[0].cost_usd).toBeCloseTo(1e-7, 12)
+  })
+
+  test('a redirect is an error: the admin key is never re-sent', async () => {
+    state.redirect = true
+    const res = await run([IU])
+    expect(res.platformCost).toBe(0)
+    expect(state.seen).toHaveLength(1)
+  })
+
+  test('one org gets an overall deadline; a slow Admin API is skipped', async () => {
+    state.delayMs = 400
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'm', key: 'k', amount: '100' }]
+    const started = Date.now()
+    const res = await run([IU], { deadlineMs: 100 })
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(res.platformCost).toBe(0)
+    expect(res.errors).toBe(0)
+    expect(await costOf('iu')).toEqual([])
+  })
+
   test('the admin key never appears in an error', async () => {
     state.status['SECRET-KEY-123'] = 401
     const window = [
@@ -315,6 +394,29 @@ describePg('credit pass: credit_cycles (Postgres)', () => {
     ;[prev] = await cycles('iu')
     expect(prev.reconciled).toBe(150)
     expect(new Date(prev.closed_at).toISOString()).toBe(closedAt)
+  })
+
+  test('an unusable costEstimatedUsd counts 0 and never blocks the cycle', async () => {
+    await insertRows([
+      gatewayRow('s1', { lane_detail: { costEstimatedUsd: 'abc' } }),
+      gatewayRow('s2', { lane_detail: { costEstimatedUsd: { v: 1 } } }),
+      gatewayRow('s3', { lane_detail: { costEstimatedUsd: '0.3' } }),
+      gatewayRow('s4', { lane_detail: { costEstimatedUsd: 0.5 } }),
+    ])
+    await run([IU])
+    expect((await cycles('iu'))[1].metered).toBe(0.5)
+  })
+
+  test('once closed, grant_usd stays; the revised unspent uses the stored grant', async () => {
+    state.data['iu-key'] = [{ day: '2026-10-01', model: 'm', key: 'k', amount: '5000' }] // 50 USD
+    state.refreshed = '2026-10-22T00:00:00Z'
+    await run([IU], { now: new Date('2026-10-22T01:00:00Z') })
+    state.refreshed = '2026-10-24T00:00:00Z'
+    await run([{ ...IU, creditUsd: 500 }], { now: new Date('2026-10-24T01:00:00Z') })
+    const [prev, cur] = await cycles('iu')
+    expect(prev.grant).toBe(200)
+    expect(prev.unspent).toBe(150)
+    expect(cur.grant).toBe(500) // the open cycle follows the registry
   })
 
   test('a quiet org (no cost rows at all) still closes its cycle: unspent is the whole grant', async () => {
@@ -417,6 +519,36 @@ describePg('credit pass: wired into ingest (Postgres)', () => {
     })
     expect((await costOf('iu')).length).toBe(1)
     expect((await cycles('iu')).length).toBe(2)
+  })
+
+  test('ingest runs the pass at most once an hour; the credit command always runs', async () => {
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'm', key: 'k', amount: '100' }]
+    const ingest = () =>
+      runIngest(db, {
+        collectors: [],
+        accounts: false,
+        portal: false,
+        credit: { accounts: [IU], resolveSecret, baseUrl, now: NOW },
+      })
+    await ingest()
+    const after1 = state.seen.length
+    expect(after1).toBeGreaterThan(0)
+    await ingest()
+    expect(state.seen.length).toBe(after1) // throttled
+    const [st] =
+      await db`SELECT cursor, last_status, last_note FROM usage.collector_state WHERE source = 'credit'`
+    expect(st.last_status).toBe('ok')
+    expect(st.last_note).toContain('errors=0')
+
+    // a stale attempt runs again
+    await db`UPDATE usage.collector_state SET cursor = ${new Date(Date.now() - 3_700_000).toISOString()} WHERE source = 'credit'`
+    await ingest()
+    expect(state.seen.length).toBeGreaterThan(after1)
+
+    // the pass itself (what the CLI calls) is not throttled
+    const before = state.seen.length
+    await run([IU])
+    expect(state.seen.length).toBeGreaterThan(before)
   })
 
   test('a narrowed run (--source / injected collectors) skips the pass by default', async () => {

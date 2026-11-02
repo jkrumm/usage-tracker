@@ -43,7 +43,7 @@ COMMANDS
   budget [--key <id>]    IU cap per key (rolling 30 days): portal cost vs the limit, drop-off, portal vs tracked per day/model
     --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
   iu-portal [--key <id>] Fetch the IU portal cost report now, every key unless given (ignores the 4 h throttle)
-  credit                 Admin API cost into platform_cost + the current and previous credit_cycles (ingest runs it too)
+  credit                 Admin API cost into platform_cost + the current and previous credit_cycles (ingest runs it hourly; this always runs)
     --days <N>           Trailing window in days (default 35; never shorter than the previous cycle)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | role | subagent_type | effort
@@ -193,8 +193,12 @@ async function main(): Promise<number> {
       }
       const done = await runCreditPass(sql, { days })
       process.stdout.write(
-        `credit: platform_cost +${done.platformCost} rows, credit_cycles ${done.cycles} upserted\n`,
+        `credit: platform_cost +${done.platformCost} rows, credit_cycles ${done.cycles} upserted, ${done.errors} failed\n`,
       )
+      if (done.errors > 0) {
+        process.stderr.write(`credit: ${done.errors} account(s) failed, see the log above\n`)
+        return 1
+      }
       return 0
     }
 
