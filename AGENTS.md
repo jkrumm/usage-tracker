@@ -10,14 +10,17 @@ push step.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `budget`, `reprice`, `sources`, `health`,
-  `billing-audit`, `window`, `report weekly`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
+  `billing-audit`, `window`, `credit`, `report weekly`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
 - `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
   bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
-  source's row count), records through `upsertRecords`. Also drives the quota / picks / portal passes.
+  source's row count), records through `upsertRecords`. Also drives the quota / picks / portal / credit passes.
 - `src/collectors/<name>.ts` — one file per source, emits `UsageRecord`s; registered in `src/collectors/index.ts`.
 - `src/pg/` — `connect.ts`, `migrate.ts`, `cli.ts` (the Postgres commands); `writer.ts` (`upsertRecords`: records,
   sessions, cost via SQL), `sessions.ts`, `session-env.ts`, `state.ts`; `testing.ts` + `fixture.ts` (scratch-database
   harness). Migrations: `migrations/pg/NNNN_name.sql`, `make pg-migrate`. Shape and rules: `docs/usage-schema.md`.
+- `src/credit/` — the credit pass (`index.ts` registry + secrets + `runCreditPass`, `admin-api.ts` Admin API cost fetch, `cycle.ts` cycle
+  math): the Admin API's daily cost into `usage.platform_cost` (migration 0015) and the current + previous `usage.credit_cycles` with
+  metered/reconciled/unspent. Run by `ingest` after the collectors, or `credit [--days N]`; `docs/usage-schema.md` §Credit pass.
 - `src/models.ts` — model normalization, `classifyBilling`, `resolveAccount`, the hook-log `session_env` lookups
   (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
 - `src/pg/events.ts` — `upsertSessionEvents`: compactions and skill loads (`usage.session_events`, migration 0013; views
@@ -132,7 +135,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - **Billing vocabulary:** `billing` is `max` | `api_key` | `api_credit` | `unknown` (migration 0014 added `api_credit`: a request paid
   from a Claude subscription's API credit, written by the agent-workflows inference gateway straight to Postgres with
   `source='gateway'`; it has an `account` but no IU key, is its own `stats --by billing` group, and `budget` never counts it;
-  `usage.credit_cycles` and `usage.gateway_picks` are that gateway's tables, nothing in this repo writes them). Was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
+  `usage.gateway_picks` is that gateway's table; `usage.credit_cycles` and `usage.platform_cost` are written by the `credit` pass here); `stats --by account` splits `iu (max)` from `iu (api_credit)`). Was `max`/`iu`/`anthropic-api`; `anthropic-api` maps to
   `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
   cap); `account` is set only on `max` and `api_credit` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
@@ -140,7 +143,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   (cursor kept, so the next run retries from the same watermark) and the rest continue, even when Postgres is the
   failure and the error row cannot be written either (logged, the loop goes on, the summary line still prints); a collector with only a note and
   no records is `skipped`. `--full` hands the collector a null cursor; `--source` limits the run (and skips the
-  quota / picks / portal passes, as does an injected collector set). A Postgres failure inside a pass is logged, not fatal
+  quota / picks / portal / credit passes, as does an injected collector set). A Postgres failure inside a pass is logged, not fatal
   to the other passes.
 - **The upsert is idempotent on `(source, source_id)`** and fires only when a content column differs, so `ingested_at`
   moves on real change only even though hermes/feuer re-read their whole tables every run.

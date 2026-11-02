@@ -1,6 +1,7 @@
 import type { SQL } from 'bun'
 import { collectPicks } from './collectors/account-picks.ts'
 import { collectQuota } from './collectors/claude-quota.ts'
+import { runCreditPass, type CreditPassOptions } from './credit/index.ts'
 import { collectPortal, type PortalFetcher } from './collectors/iu-portal.ts'
 import { collectors as allCollectors } from './collectors/index.ts'
 import { log } from './log.ts'
@@ -48,6 +49,8 @@ export interface IngestOptions {
   portal?: boolean
   /** Replace the ssh scrape (tests). */
   portalFetch?: PortalFetcher
+  /** Run the credit pass (Admin API cost + credit cycles): `true`, or its options (tests). Default: same condition as `accounts`. */
+  credit?: boolean | CreditPassOptions
 }
 
 /**
@@ -103,6 +106,16 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
       portal = await collectPortal(sql, { fetch: opts.portalFetch })
     } catch (err) {
       log.error(`iu-portal: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // After the collectors: it reads the gateway rows they (and the gateway) wrote, and a slow Admin API must not starve them.
+  const credit = opts.credit ?? (!opts.only && !opts.collectors)
+  if (credit) {
+    try {
+      await runCreditPass(sql, credit === true ? {} : credit)
+    } catch (err) {
+      log.error(`credit: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 

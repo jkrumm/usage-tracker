@@ -29,6 +29,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `account_picks` | the account picker's decisions | `PK (ts, lane, machine)` |
 | `credit_cycles` | one API-credit cycle per account: grant, metered, reconciled and unspent USD (`cycle_end` NULL while the billing day is unknown), see [API credit](#api-credit-billing-the-inference-gateway) | `PK (account, cycle_start)` |
 | `gateway_picks` | the inference gateway's routing decisions | `PK (request_id, picked)` |
+| `platform_cost` | the provider's own cost per org, day, model and API key (Admin API, migration 0015), see [Credit pass](#credit-pass-platform_cost-and-cycle-reconciliation) | unique on `(account, day, coalesce(model,''), coalesce(api_key_id,''))` |
 | `prices` | effective-dated catalog prices per model key | `UNIQUE (model_key, valid_from)` |
 | `price_aliases` | usage `model` to catalog key, with how it matched | `model` |
 | `price_overrides` | manual corrections | `id` |
@@ -223,6 +224,28 @@ fallback, purpose}`), so the database CHECKs are its validator. Migration 0014 a
 - **`gateway_picks`:** `(request_id, picked)` → `ts` (indexed), `caller`, `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
   the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`, but keyed by request and target: a request refused for balance by a pool is re-picked and both picks can share a millisecond `ts`; a request never picks the same target twice, so a re-flush with `ON CONFLICT DO NOTHING` keeps the re-pick.
 - The migration holds an ACCESS EXCLUSIVE lock on `sessions` then `records` (the writer's lock order) while it swaps the CHECKs.
+- `stats --by account` keeps the two spends of an account apart: `iu (max)` (the window) and `iu (api_credit)`; rows without an account are `(n/a)`.
+
+### Credit pass: `platform_cost` and cycle reconciliation
+
+`src/credit/` (run by `ingest` after the collectors, or `bun run src/cli.ts credit [--days N]`) reads the account registry
+(dotfiles `config/claude-accounts.json`, `USAGE_CLAUDE_ACCOUNTS`) and, per account with a `platform` block, does two things.
+The Admin API side is in `docs/collectors.md` §Admin API cost.
+
+- **`platform_cost`** (migration 0015): `(account, day, model, api_key_id, cost_usd, refreshed_at)`. `cost_usd` is the API's `amount`
+  (cents) / 100, list price, **before credits**. `model` and `api_key_id` are NULL for cost with neither; the unique index coalesces
+  them to `''`. `refreshed_at` is the response's `data_refreshed_at`. Upserted, never deleted; a trailing window is re-read because the provider revises.
+- **`credit_cycles`**: the current and the previous cycle per account, from `cycleDay` (the day the credit expires, 00:00 UTC; a cycle is
+  `[start, end)`, the expiry instant belongs to the new cycle, a day past a month's end is clamped: the rule of the gateway's `pools/cycle.ts`, copied).
+  A null `cycleDay` writes no rows (the pass logs it); `platform_cost` is still filled. `metered_usd` = sum over `records` with `source='gateway'`,
+  `billing='api_credit'` and that `account` and `ts` in the cycle of `coalesce(cost_usd, lane_detail->>'costEstimatedUsd', 0)`: nothing
+  else counts (not `agent-workflows` rows, not `max` rows), refreshed every pass.
+- **Closing rule.** A cycle is closed when the provider's snapshot is past its end: every request window that reads the cycle answered
+  with `data_refreshed_at >= cycle_end` in this pass. Then `reconciled_usd` = sum of `platform_cost` over the cycle's days,
+  `unspent_usd` = `greatest(grant_usd - reconciled_usd, 0)` and `closed_at` = now, set once. The provider revises, so a later pass may move
+  `reconciled_usd` / `unspent_usd` until 7 days after `cycle_end`; `closed_at` never moves and the row freezes after that. An open cycle keeps
+  `reconciled_usd`, `unspent_usd` and `closed_at` NULL. A quiet org (no cost rows) closes with `reconciled_usd = 0`: the snapshot, not a row, proves it.
+  The snapshot is read from the responses of the pass, not from the table, so a failed Admin call leaves the reconciled columns alone.
 
 ## Window share (headline metric, U5)
 

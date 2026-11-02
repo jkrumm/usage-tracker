@@ -46,6 +46,7 @@ describePg('pg migrations', () => {
       'iu_portal_cost',
       'iu_portal_total',
       'lane_signals',
+      'platform_cost',
       'price_aliases',
       'price_overrides',
       'prices',

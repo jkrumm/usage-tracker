@@ -4,6 +4,7 @@ import { formatQuotaReport } from './collectors/claude-quota.ts'
 import { collectors } from './collectors/index.ts'
 import { DEFAULT_IU_KEY, IU_KEYS, iuKeyDef } from './iu-keys.ts'
 import { collectPortal, iuPortalFreshnessAll } from './collectors/iu-portal.ts'
+import { runCreditPass } from './credit/index.ts'
 import { formatRunSummary, runIngest } from './ingest.ts'
 import {
   formatBillingAudit,
@@ -42,6 +43,8 @@ COMMANDS
   budget [--key <id>]    IU cap per key (rolling 30 days): portal cost vs the limit, drop-off, portal vs tracked per day/model
     --explain <model>    Day-by-day portal vs tracked for one model: tokens, implied rate, tracked cost by source
   iu-portal [--key <id>] Fetch the IU portal cost report now, every key unless given (ignores the 4 h throttle)
+  credit                 Admin API cost into platform_cost + the current and previous credit_cycles (ingest runs it too)
+    --days <N>           Trailing window in days (default 35; never shorter than the previous cycle)
   stats                  Aggregated token + cost report (successful requests only)
     --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | role | subagent_type | effort
     --since <N>          Only the last N days
@@ -77,6 +80,7 @@ ENV
   USAGE_REMOTE_DIR     Mirror root (default ~/.local/share/usage-tracker/remote)
   USAGE_CLAUDE_ACCOUNT_BIN  claude-account binary (default ~/.local/bin/claude-account)
   USAGE_ACCOUNT_PICKS  picker log (default ~/.local/share/claude-accounts/picks.jsonl)
+  USAGE_CLAUDE_ACCOUNTS  account registry (default ~/SourceRoot/dotfiles/config/claude-accounts.json)
   USAGE_IUMAC_DISABLE  Set to "1" to disable the MacBook mirror entirely
 `
 
@@ -85,6 +89,7 @@ const COMMANDS = new Set([
   'health',
   'quota',
   'iu-portal',
+  'credit',
   'stats',
   'sources',
   'billing-audit',
@@ -176,6 +181,20 @@ async function main(): Promise<number> {
         return 2
       }
       process.stdout.write(`${await formatQuotaReport(sql, days)}\n`)
+      return 0
+    }
+
+    if (cmd === 'credit') {
+      const daysRaw = flag(rest, '--days')
+      const days = daysRaw === undefined ? undefined : Number(daysRaw)
+      if (days !== undefined && (!Number.isInteger(days) || days <= 0)) {
+        process.stderr.write(`--days must be a positive integer, got "${daysRaw}"\n`)
+        return 2
+      }
+      const done = await runCreditPass(sql, { days })
+      process.stdout.write(
+        `credit: platform_cost +${done.platformCost} rows, credit_cycles ${done.cycles} upserted\n`,
+      )
       return 0
     }
 

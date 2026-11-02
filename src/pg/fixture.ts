@@ -16,6 +16,7 @@ const STATE_TABLES = [
   'usage.session_events',
   'usage.credit_cycles',
   'usage.gateway_picks',
+  'usage.platform_cost',
 ]
 
 export function migratedDb(): { sql(): Promise<SQL>; reset(): Promise<SQL> } {
