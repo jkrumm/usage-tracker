@@ -5,7 +5,7 @@ import { collectors } from './collectors/index.ts'
 import { DEFAULT_IU_KEY, IU_KEYS, iuKeyDef } from './iu-keys.ts'
 import { collectPortal, iuPortalFreshnessAll } from './collectors/iu-portal.ts'
 import { runCreditPass } from './credit/index.ts'
-import { formatRunSummary, runIngest } from './ingest.ts'
+import { formatCreditLine, formatRunSummary, runIngest } from './ingest.ts'
 import {
   formatBillingAudit,
   formatSources,
@@ -155,7 +155,10 @@ async function main(): Promise<number> {
         )
       }
       if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`)
-      process.stdout.write(`\ndb: postgres usage schema\n${formatRunSummary(summary)}\n`)
+      const creditLine = formatCreditLine(summary.credit)
+      process.stdout.write(
+        `\ndb: postgres usage schema\n${creditLine ? `${creditLine}\n` : ''}${formatRunSummary(summary)}\n`,
+      )
       if (summary.unpriced.length > 0) {
         const breakdown = summary.unpriced.map((m) => `${m.model}=${m.rows}`).join(' ')
         process.stdout.write(`unpriced by model: ${breakdown}\n`)

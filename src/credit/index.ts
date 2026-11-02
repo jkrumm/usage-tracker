@@ -129,11 +129,22 @@ async function writePlatformCost(
   chunks: Chunk[],
 ): Promise<void> {
   await sql.begin(async (tx) => {
-    for (const r of rows) {
-      // An older snapshot (an overlapping pass) never replaces a newer one.
+    if (rows.length > 0) {
+      // One statement for the whole window. An older snapshot (an overlapping pass) never replaces a newer one.
+      const payload = JSON.stringify(
+        rows.map((r) => ({
+          day: r.day,
+          model: r.model,
+          api_key_id: r.apiKeyId,
+          cents: r.cents,
+          refreshed_at: r.refreshedAt.toISOString(),
+        })),
+      )
       await tx`
         INSERT INTO usage.platform_cost AS pc (account, day, model, api_key_id, cost_usd, refreshed_at)
-        VALUES (${account}, ${r.day}::date, ${r.model}, ${r.apiKeyId}, ${r.cents}::numeric / 100, ${r.refreshedAt.toISOString()}::timestamptz)
+        SELECT ${account}, r.day, r.model, r.api_key_id, r.cents / 100, r.refreshed_at
+        FROM jsonb_to_recordset(${payload}::text::jsonb)
+          AS r(day date, model text, api_key_id text, cents numeric, refreshed_at timestamptz)
         ON CONFLICT (account, day, coalesce(model, ''), coalesce(api_key_id, '')) DO UPDATE SET
           cost_usd = EXCLUDED.cost_usd, refreshed_at = EXCLUDED.refreshed_at
         WHERE pc.refreshed_at <= EXCLUDED.refreshed_at`
@@ -247,6 +258,11 @@ async function runAccount(
   for (const cycle of [previous, current]) {
     const snapshot = snapshotCovering(chunks, cycle)
     const closed = snapshot !== null && cycle.end.getTime() <= snapshot.getTime()
+    if (chunks.length > 0 && snapshot === null && cycle.end.getTime() <= now.getTime()) {
+      log.warn(
+        `credit: ${account.id}: the window does not cover the cycle ${cycle.start.toISOString().slice(0, 10)}..${cycle.end.toISOString().slice(0, 10)}, it stays open`,
+      )
+    }
     await writeCycle(sql, account, cycle, closed, now)
     result.cycles++
   }

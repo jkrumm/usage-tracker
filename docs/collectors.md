@@ -369,7 +369,7 @@ ref, a failed read or a value starting `REPLACE` skips that org with one log lin
 - **Missing key / `me2`.** `me2`'s refs hold a placeholder until its Console org exists; it is skipped, and with `cycleDay: null` it gets no cycles either.
 - **Cadence.** The Admin API docs ask for at most hourly: `ingest` runs the pass once an hour (last attempt in `usage.collector_state`, key
   `credit`, cursor = attempt time, status/note = outcome); the ticks between skip it. `bun run src/cli.ts credit` always runs, and exits 1 with
-  the count when an account failed outright.
+  the count when an account failed outright. `ingest` prints one `credit:` line (rows, cycles, failed, or `skipped`) before its run summary line.
 - **Deadline and safety.** All requests of one org share a 120 s deadline (30 s per request), so a slow API cannot stall the 900 s ingest; the request
   uses `redirect: "error"` (the key is in a header). A response that is not exactly the documented shape (`has_more` not a boolean,
   `data_refreshed_at` not a string, a row without a usable `starting_at` / `cost.amount` / group) is malformed: the org is skipped and nothing is

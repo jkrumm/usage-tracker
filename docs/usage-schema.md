@@ -226,7 +226,7 @@ fallback, purpose}`), so the database CHECKs are its validator. Migration 0014 a
 - **`gateway_picks`:** `(request_id, picked)` → `ts` (indexed), `caller`, `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
   the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`, but keyed by request and target: a request refused for balance by a pool is re-picked and both picks can share a millisecond `ts`; a request never picks the same target twice, so a re-flush with `ON CONFLICT DO NOTHING` keeps the re-pick.
 - The migration holds an ACCESS EXCLUSIVE lock on `sessions` then `records` (the writer's lock order) while it swaps the CHECKs.
-- `stats --by account` keeps the two spends of an account apart: `iu (max)` (the window) and `iu (api_credit)`; rows without an account are `(n/a)`.
+- `stats --by account` keeps the two spends of an account apart: `iu (max)` (the window) and `iu (api_credit)`, any other billing class as `iu (<billing>)`; rows without an account are `(n/a)`.
 
 ### Credit pass: `platform_cost` and cycle reconciliation
 
@@ -245,7 +245,7 @@ The Admin API side is in `docs/collectors.md` §Admin API cost.
 - **Closing rule.** A cycle is closed when the provider's snapshot is past its end: every request window that reads the cycle answered
   with `data_refreshed_at >= cycle_end` in this pass. Then `reconciled_usd` = sum of `platform_cost` over the cycle's days,
   `unspent_usd` = `greatest(grant_usd - reconciled_usd, 0)` and `closed_at` = now, set once. The provider revises, so a later pass may move
-  `reconciled_usd` / `unspent_usd` until 7 days after `cycle_end`; `closed_at` never moves and the row freezes after that. An open cycle keeps
+  `reconciled_usd` / `unspent_usd` until 7 days after `cycle_end`; `closed_at` never moves and the row freezes after that. A past cycle the request window does not reach (before the API's 2026-01-01 floor) stays open and the pass logs it. An open cycle keeps
   `reconciled_usd`, `unspent_usd` and `closed_at` NULL. A quiet org (no cost rows) closes with `reconciled_usd = 0`: the snapshot, not a row, proves it.
   The snapshot is read from the responses of the pass, not from the table, so a failed Admin call leaves the reconciled columns alone.
 

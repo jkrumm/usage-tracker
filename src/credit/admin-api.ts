@@ -166,7 +166,10 @@ async function fetchChunk(
       if (opts.deadline.aborted) throw new AdminApiError('deadline exceeded')
       throw new AdminApiError(`request failed (${err instanceof Error ? err.name : 'error'})`)
     }
-    if (!res.ok) throw new AdminApiError(`HTTP ${res.status}`)
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined) // release the connection; the body is never read or logged
+      throw new AdminApiError(`HTTP ${res.status}`)
+    }
     const body = (await res.json().catch(() => null)) as CostResponse | null
     if (opts.deadline.aborted) throw new AdminApiError('deadline exceeded')
     if (!isObject(body) || !Array.isArray(body.data)) {

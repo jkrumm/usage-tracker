@@ -1,7 +1,7 @@
 import type { SQL } from 'bun'
 import { collectPicks } from './collectors/account-picks.ts'
 import { collectQuota } from './collectors/claude-quota.ts'
-import { runCreditPass, type CreditPassOptions } from './credit/index.ts'
+import { runCreditPass, type CreditPassOptions, type CreditPassResult } from './credit/index.ts'
 import { collectPortal, type PortalFetcher } from './collectors/iu-portal.ts'
 import { collectors as allCollectors } from './collectors/index.ts'
 import { log } from './log.ts'
@@ -37,6 +37,8 @@ export interface IngestSummary {
   picks: number
   /** IU portal cost cells written this run (0 when throttled, unreachable or failed). */
   portal: number
+  /** The credit pass: its counts, `'throttled'` (ran within the hour) or null (not asked for, or Postgres failed). */
+  credit: CreditPassResult | 'throttled' | null
 }
 
 export interface IngestOptions {
@@ -117,14 +119,17 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
   // The Admin API docs ask for at most hourly: the attempt time lives in usage.collector_state (`credit`, cursor), so the
   // 900 s ticks in between skip the pass. `credit` on the CLI is not throttled.
   const credit = opts.credit ?? (!opts.only && !opts.collectors)
+  let creditResult: IngestSummary['credit'] = null
   if (credit) {
     try {
       const last = await loadCursor(sql, CREDIT_SOURCE)
       if (last && Date.now() - Date.parse(last) < CREDIT_EVERY_MS) {
         log.info('credit: ran within the last hour, skipped')
+        creditResult = 'throttled'
       } else {
         const startedAt = new Date().toISOString()
         const done = await runCreditPass(sql, credit === true ? {} : credit)
+        creditResult = done
         await saveState(sql, CREDIT_SOURCE, {
           cursor: startedAt,
           status: done.errors > 0 ? 'error' : 'ok',
@@ -142,7 +147,7 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
   } catch (err) {
     log.error(`unpriced: ${err instanceof Error ? err.message : String(err)}`)
   }
-  return { results, unpriced, quota, picks, portal }
+  return { results, unpriced, quota, picks, portal, credit: creditResult }
 }
 
 export interface EventBackfill {
@@ -195,6 +200,13 @@ export async function backfillEvents(
  * run) — a nonzero value means some model id has no price; `make sources`
  * has the per-model breakdown.
  */
+/** The credit pass's line for the ingest output (kept out of the run summary line, which tooling greps). */
+export function formatCreditLine(credit: IngestSummary['credit']): string | null {
+  if (credit === null) return null
+  if (credit === 'throttled') return 'credit: skipped (ran within the last hour)'
+  return `credit: platform_cost +${credit.platformCost} rows, credit_cycles ${credit.cycles} upserted, ${credit.errors} failed`
+}
+
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
   const status = summary.results.some((r) => r.status === 'error') ? 'error' : 'ok'
   const perSource = summary.results.map((r) =>
