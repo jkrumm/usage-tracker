@@ -1,9 +1,11 @@
 import type { SQL } from 'bun'
-import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { log } from '../log.ts'
 import { runIngest } from '../ingest.ts'
+import { stats } from '../report.ts'
 import { migratedDb } from '../pg/fixture.ts'
 import { describePg } from '../pg/testing.ts'
 import { AdminApiError, fetchCost } from './admin-api.ts'
@@ -419,6 +421,38 @@ describePg('credit pass: credit_cycles (Postgres)', () => {
     expect(cur.grant).toBe(500) // the open cycle follows the registry
   })
 
+  test('a cycle the window cannot reach stays open and the pass says so once', async () => {
+    const warn = spyOn(log, 'warn').mockImplementation(() => undefined)
+    try {
+      // 2026-01-10 with cycleDay 21: the previous cycle starts 2025-11-21, before the API's 2026-01-01 floor
+      await run([IU], { now: new Date('2026-01-10T10:00:00Z') })
+      const [prev] = await cycles('iu')
+      expect(prev).toEqual(
+        expect.objectContaining({ reconciled: null, unspent: null, closed_at: null }),
+      )
+      const msgs = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes('does not cover'))
+      expect(msgs).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  test('stats --by account labels each billing class, not only max and api_credit', async () => {
+    for (const [id, billing, account] of [
+      ['a1', 'max', 'iu'],
+      ['a2', 'api_credit', 'iu'],
+      ['a3', 'unknown', 'iu'],
+      ['a4', 'max', null],
+    ] as const) {
+      await db`INSERT INTO usage.records (source, source_id, grain, ts, billing, account, cost_usd)
+               VALUES ('gateway', ${id}, 'message', now(), ${billing}, ${account}, 1)`
+    }
+    const keys = (await stats(db, { by: 'account' })).map((r) => r.key).sort()
+    expect(keys).toEqual(['(n/a)', 'iu (api_credit)', 'iu (max)', 'iu (unknown)'])
+  })
+
   test('a quiet org (no cost rows at all) still closes its cycle: unspent is the whole grant', async () => {
     await run([IU])
     const [prev, cur] = await cycles('iu')
@@ -530,10 +564,11 @@ describePg('credit pass: wired into ingest (Postgres)', () => {
         portal: false,
         credit: { accounts: [IU], resolveSecret, baseUrl, now: NOW },
       })
-    await ingest()
+    const first = await ingest()
+    expect(first.credit).toEqual(expect.objectContaining({ platformCost: 1, cycles: 2, errors: 0 }))
     const after1 = state.seen.length
     expect(after1).toBeGreaterThan(0)
-    await ingest()
+    expect((await ingest()).credit).toBe('throttled')
     expect(state.seen.length).toBe(after1) // throttled
     const [st] =
       await db`SELECT cursor, last_status, last_note FROM usage.collector_state WHERE source = 'credit'`

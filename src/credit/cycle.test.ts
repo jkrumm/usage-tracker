@@ -74,3 +74,21 @@ test('adminWindows never starts before 2026-01-01', () => {
   const w = adminWindows(d('2025-06-01T00:00:00Z'), d('2026-01-10T00:00:00Z'))
   expect(w[0]!.from.toISOString()).toBe('2026-01-01T00:00:00.000Z')
 })
+
+test('the default window always reaches back to the previous cycle start', () => {
+  // from April 2026 on, so the 2026-01-01 floor never applies
+  for (let cycleDay = 1; cycleDay <= 31; cycleDay++) {
+    for (let t = Date.UTC(2026, 3, 1); t < Date.UTC(2028, 0, 1); t += 3 * 86_400_000 + 7_000_000) {
+      const now = new Date(t)
+      const prev = previousCycle(cycleDay, cycleOf(cycleDay, now))
+      const windows = adminWindows(prev.start, now)
+      expect(windows[0]!.from.getTime()).toBeLessThanOrEqual(prev.start.getTime())
+      expect(windows.at(-1)!.to.getTime()).toBeGreaterThan(now.getTime())
+      // contiguous, each at most 31 days
+      for (const [i, w] of windows.entries()) {
+        expect(w.to.getTime() - w.from.getTime()).toBeLessThanOrEqual(31 * 86_400_000)
+        if (i > 0) expect(w.from.getTime()).toBe(windows[i - 1]!.to.getTime())
+      }
+    }
+  }
+})

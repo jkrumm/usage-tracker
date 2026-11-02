@@ -36,10 +36,11 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   day: "to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
   machine: "coalesce(machine, '(unknown)')",
   lane: "coalesce(lane, '(none)')",
-  // An account has two spends that must not merge: its Max window and its API credit (billing 'api_credit').
+  // An account has separate spends that must not merge: its Max window and its API credit.
   account: `CASE WHEN account IS NULL THEN '(n/a)'
+    WHEN billing = 'max' THEN account || ' (max)'
     WHEN billing = 'api_credit' THEN account || ' (api_credit)'
-    ELSE account || ' (max)' END`,
+    ELSE account || ' (' || billing || ')' END`,
   iu_key: "coalesce(api_key, '(n/a)')",
   repo: "coalesce(repo, '(none)')",
   // lane_detail.role is the factory role of the session (or of the tree a subagent belongs to), lane_detail.subagent_type
