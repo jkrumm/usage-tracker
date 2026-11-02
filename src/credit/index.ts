@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { log } from '../log.ts'
-import { adminWindows, fetchCost, type Chunk, type CostRow } from './admin-api.ts'
+import { AdminApiError, adminWindows, fetchCost, type Chunk, type CostRow } from './admin-api.ts'
 import { cycleOf, previousCycle, type Cycle } from './cycle.ts'
 
 // The credit pass (docs/usage-schema.md §API credit, docs/collectors.md §Admin API): per Claude Console org with a
@@ -39,6 +39,8 @@ export interface CreditPassResult {
   platformCost: number
   /** credit_cycles rows upserted. */
   cycles: number
+  /** Accounts that failed outright (Postgres, bad cycleDay); an Admin API refusal is a skip, not an error. */
+  errors: number
 }
 
 function registryPath(): string {
@@ -54,8 +56,14 @@ export function loadPlatformAccounts(path = registryPath()): PlatformAccount[] {
     log.info(`credit: no account registry at ${path}, skipped`)
     return []
   }
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
-    accounts?: Record<string, { platform?: Record<string, unknown> }>
+  let parsed: { accounts?: Record<string, { platform?: Record<string, unknown> }> }
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (err) {
+    log.warn(
+      `credit: account registry ${path} unreadable (${err instanceof Error ? err.name : 'error'}), skipped`,
+    )
+    return []
   }
   const out: PlatformAccount[] = []
   for (const [id, acct] of Object.entries(parsed.accounts ?? {})) {
@@ -112,15 +120,31 @@ function snapshotCovering(chunks: Chunk[], cycle: Cycle): Date | null {
   return new Date(Math.min(...overlapping.map((c) => c.refreshedAt.getTime())))
 }
 
-async function writePlatformCost(sql: SQL, account: string, rows: CostRow[]): Promise<void> {
-  if (rows.length === 0) return
+async function writePlatformCost(
+  sql: SQL,
+  account: string,
+  rows: CostRow[],
+  chunks: Chunk[],
+): Promise<void> {
   await sql.begin(async (tx) => {
     for (const r of rows) {
+      // An older snapshot (an overlapping pass) never replaces a newer one.
       await tx`
-        INSERT INTO usage.platform_cost (account, day, model, api_key_id, cost_usd, refreshed_at)
+        INSERT INTO usage.platform_cost AS pc (account, day, model, api_key_id, cost_usd, refreshed_at)
         VALUES (${account}, ${r.day}::date, ${r.model}, ${r.apiKeyId}, ${r.cents}::numeric / 100, ${r.refreshedAt.toISOString()}::timestamptz)
         ON CONFLICT (account, day, coalesce(model, ''), coalesce(api_key_id, '')) DO UPDATE SET
-          cost_usd = EXCLUDED.cost_usd, refreshed_at = EXCLUDED.refreshed_at`
+          cost_usd = EXCLUDED.cost_usd, refreshed_at = EXCLUDED.refreshed_at
+        WHERE pc.refreshed_at <= EXCLUDED.refreshed_at`
+    }
+    // The fetch is all-or-nothing, so each chunk was read completely: a row of its days that the snapshot no longer
+    // carries (revised away) and that an older snapshot wrote is stale.
+    for (const c of chunks) {
+      await tx`
+        DELETE FROM usage.platform_cost
+        WHERE account = ${account}
+          AND day >= (${c.from.toISOString()}::timestamptz AT TIME ZONE 'UTC')::date
+          AND day <  (${c.to.toISOString()}::timestamptz AT TIME ZONE 'UTC')::date
+          AND refreshed_at < ${c.refreshedAt.toISOString()}::timestamptz`
     }
   })
 }
@@ -172,56 +196,73 @@ async function writeCycle(
       closed_at      = coalesce(cc.closed_at, EXCLUDED.closed_at)`
 }
 
+/** One account: its platform_cost, then its cycles. Throws on a bad cycleDay or a Postgres failure. */
+async function runAccount(
+  sql: SQL,
+  account: PlatformAccount,
+  opts: CreditPassOptions,
+  now: Date,
+  result: CreditPassResult,
+): Promise<void> {
+  const current = account.cycleDay === null ? null : cycleOf(account.cycleDay, now)
+  const previous =
+    current && account.cycleDay !== null ? previousCycle(account.cycleDay, current) : null
+
+  let chunks: Chunk[] = []
+  if (!account.adminKeyRef) {
+    log.info(`credit: ${account.id}: no admin key ref, platform_cost skipped`)
+  } else {
+    const adminKey = await (opts.resolveSecret ?? resolveSecret)(account.adminKeyRef)
+    if (!adminKey) {
+      log.info(`credit: ${account.id}: admin key not available, platform_cost skipped`)
+    } else {
+      let got: Awaited<ReturnType<typeof fetchCost>> | null = null
+      try {
+        got = await fetchCost(adminWindows(previous?.start ?? null, now, opts.days), {
+          baseUrl: opts.baseUrl,
+          adminKey,
+        })
+      } catch (err) {
+        if (!(err instanceof AdminApiError)) throw err
+        log.warn(`credit: ${account.id}: admin API ${err.message}, platform_cost skipped`)
+      }
+      if (got) {
+        await writePlatformCost(sql, account.id, got.rows, got.chunks)
+        chunks = got.chunks
+        result.platformCost += got.rows.length
+      }
+    }
+  }
+
+  if (!current || !previous) {
+    log.info(`credit: ${account.id}: cycleDay unknown, credit_cycles skipped`)
+    return
+  }
+  for (const cycle of [previous, current]) {
+    const snapshot = snapshotCovering(chunks, cycle)
+    const closed = snapshot !== null && cycle.end.getTime() <= snapshot.getTime()
+    await writeCycle(sql, account, cycle, closed, now)
+    result.cycles++
+  }
+}
+
 /**
  * Run the pass. Each org is isolated: a missing key or a failing Admin API call skips that org's platform_cost (one log
- * line, no secret) and the rest go on; credit_cycles still gets its metered figure. Throws only on a Postgres failure,
- * which the caller (ingest) logs.
+ * line, no secret) and its credit_cycles still get their metered figure; any other failure (a Postgres error, a bad
+ * cycleDay) is logged against the account, counted in `errors`, and the next account goes on.
  */
 export async function runCreditPass(
   sql: SQL,
   opts: CreditPassOptions = {},
 ): Promise<CreditPassResult> {
   const now = opts.now ?? new Date()
-  const resolve = opts.resolveSecret ?? resolveSecret
-  const result: CreditPassResult = { platformCost: 0, cycles: 0 }
-
+  const result: CreditPassResult = { platformCost: 0, cycles: 0, errors: 0 }
   for (const account of opts.accounts ?? loadPlatformAccounts()) {
-    const current = account.cycleDay === null ? null : cycleOf(account.cycleDay, now)
-    const previous =
-      current && account.cycleDay !== null ? previousCycle(account.cycleDay, current) : null
-
-    let chunks: Chunk[] = []
-    if (!account.adminKeyRef) {
-      log.info(`credit: ${account.id}: no admin key ref, platform_cost skipped`)
-    } else {
-      const adminKey = await resolve(account.adminKeyRef)
-      if (!adminKey) {
-        log.info(`credit: ${account.id}: admin key not available, platform_cost skipped`)
-      } else {
-        try {
-          const got = await fetchCost(adminWindows(previous?.start ?? null, now, opts.days), {
-            baseUrl: opts.baseUrl,
-            adminKey,
-          })
-          await writePlatformCost(sql, account.id, got.rows)
-          chunks = got.chunks
-          result.platformCost += got.rows.length
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          log.warn(`credit: ${account.id}: admin API ${msg}, platform_cost skipped`)
-        }
-      }
-    }
-
-    if (!current || !previous) {
-      log.info(`credit: ${account.id}: cycleDay unknown, credit_cycles skipped`)
-      continue
-    }
-    for (const cycle of [previous, current]) {
-      const snapshot = snapshotCovering(chunks, cycle)
-      const closed = snapshot !== null && cycle.end.getTime() <= snapshot.getTime()
-      await writeCycle(sql, account, cycle, closed, now)
-      result.cycles++
+    try {
+      await runAccount(sql, account, opts, now, result)
+    } catch (err) {
+      result.errors++
+      log.error(`credit: ${account.id}: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   return result

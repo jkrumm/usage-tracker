@@ -1,10 +1,13 @@
 import type { SQL } from 'bun'
 import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { runIngest } from '../ingest.ts'
 import { migratedDb } from '../pg/fixture.ts'
 import { describePg } from '../pg/testing.ts'
 import { AdminApiError, fetchCost } from './admin-api.ts'
-import { runCreditPass, type PlatformAccount } from './index.ts'
+import { loadPlatformAccounts, runCreditPass, type PlatformAccount } from './index.ts'
 
 // A fake Admin API on port 0: the tests never touch the network. Data is a flat list of daily cost rows; the server
 // filters by the requested window, pages by two rows (to force paging) and answers per admin key.
@@ -198,6 +201,23 @@ describePg('credit pass: platform_cost (Postgres, fake Admin API)', () => {
     expect((await cycles('me')).length).toBe(2)
   })
 
+  test('a row the new snapshot no longer carries is removed; an older snapshot never overwrites a newer one', async () => {
+    state.data['iu-key'] = [
+      { day: '2026-10-30', model: 'a', key: 'k', amount: '100' },
+      { day: '2026-10-30', model: 'b', key: 'k', amount: '200' },
+    ]
+    await run([IU])
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'a', key: 'k', amount: '100' }]
+    state.refreshed = '2026-11-02T09:00:00Z'
+    await run([IU])
+    expect((await costOf('iu')).map((r: { model: string }) => r.model)).toEqual(['a'])
+
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'a', key: 'k', amount: '999' }]
+    state.refreshed = '2026-11-02T07:00:00Z' // older than the stored snapshot
+    await run([IU])
+    expect((await costOf('iu'))[0].cost_usd).toBe(1)
+  })
+
   test('the admin key never appears in an error', async () => {
     state.status['SECRET-KEY-123'] = 401
     const window = [
@@ -333,6 +353,44 @@ describePg('credit pass: credit_cycles (Postgres)', () => {
     await insertRows([gatewayRow('g1', { cost_usd: 4 })])
     await run([IU])
     expect((await cycles('iu'))[1].metered).toBe(4)
+  })
+})
+
+describePg('credit pass: isolation (Postgres)', () => {
+  test('a bad account is counted and logged, the next account still runs', async () => {
+    state.data['iu-key'] = [{ day: '2026-10-30', model: 'm', key: 'k', amount: '100' }]
+    const bad: PlatformAccount = { id: 'me', creditUsd: 1, cycleDay: 99, adminKeyRef: null }
+    const res = await run([bad, IU])
+    expect(res.errors).toBe(1)
+    expect((await costOf('iu')).length).toBe(1)
+    expect((await cycles('iu')).length).toBe(2)
+  })
+
+  test('a malformed registry file is an empty registry, not a crash', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'credit-reg-'))
+    try {
+      const path = join(dir, 'accounts.json')
+      writeFileSync(path, '{ half written')
+      expect(loadPlatformAccounts(path)).toEqual([])
+      writeFileSync(
+        path,
+        JSON.stringify({
+          accounts: {
+            iu: { platform: { creditUsd: 200, cycleDay: 21, adminKeyRef: 'ref-iu' } },
+            nope: {},
+            bad: { platform: { creditUsd: 'x', cycleDay: 5 } },
+            day0: { platform: { creditUsd: 1, cycleDay: 0 } },
+            me2: { platform: { creditUsd: 100, cycleDay: null } },
+          },
+        }),
+      )
+      expect(loadPlatformAccounts(path)).toEqual([
+        { id: 'iu', creditUsd: 200, cycleDay: 21, adminKeyRef: 'ref-iu' },
+        { id: 'me2', creditUsd: 100, cycleDay: null, adminKeyRef: null },
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
