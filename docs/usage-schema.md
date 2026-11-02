@@ -234,7 +234,7 @@ The Admin API side is in `docs/collectors.md` §Admin API cost.
 
 - **`platform_cost`** (migration 0015): `(account, day, model, api_key_id, cost_usd, refreshed_at)`. `cost_usd` is the API's `amount`
   (cents) / 100, list price, **before credits**. `model` and `api_key_id` are NULL for cost with neither; the unique index coalesces
-  them to `''`. `refreshed_at` is the response's `data_refreshed_at`. Upserted, never deleted; a trailing window is re-read because the provider revises.
+  them to `''`. `refreshed_at` is the response's `data_refreshed_at`. A trailing window is re-read because the provider revises: rows are upserted (an older snapshot never replaces a newer one) and a row of the window that the new snapshot no longer carries is deleted, all in one transaction per org.
 - **`credit_cycles`**: the current and the previous cycle per account, from `cycleDay` (the day the credit expires, 00:00 UTC; a cycle is
   `[start, end)`, the expiry instant belongs to the new cycle, a day past a month's end is clamped: the rule of the gateway's `pools/cycle.ts`, copied).
   A null `cycleDay` writes no rows (the pass logs it); `platform_cost` is still filled. `metered_usd` = sum over `records` with `source='gateway'`,
