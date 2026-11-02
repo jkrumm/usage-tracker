@@ -109,7 +109,7 @@ describePg('records.account (Postgres)', () => {
     const byAccount = Object.fromEntries(
       (await stats(sql, { by: 'account' })).map((r) => [r.key, r.records]),
     )
-    expect(byAccount).toEqual({ iu: 1, me: 2 })
+    expect(byAccount).toEqual({ 'iu (max)': 1, 'me (max)': 2 })
 
     const audit = await sessionBillingAudit(sql)
     expect(audit.find((r) => r.sessionId === 's-b')?.accounts).toBe('me')

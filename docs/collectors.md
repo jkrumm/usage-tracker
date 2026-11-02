@@ -349,6 +349,27 @@ the key is read from stdin and never touches disk.
   successful ingest, atomically, dir created; agent-gateway's OCR gate reads it.
   `IU_PORTAL_ROOT` overrides the directory (tests).
 
+### Admin API cost (`credit` pass, `platform_cost`, not a `records` source)
+
+`src/credit/` asks each Claude Console org for its own bill: `GET https://api.anthropic.com/v1/organizations/analytics/cost`
+(beta header `anthropic-beta: analytics-usage-cost-2026-08-24`, `anthropic-version: 2023-06-01`, `time_bucket_width=1d`,
+`group_by[]=api_key_id&group_by[]=model`, `limit=1000`, `has_more` / `next_page` paging). Request shapes: agent-workflows
+`docs/spikes/gateway/admin-api.md`. The admin key is resolved per org through `secrets-run read` (20 s timeout, never `op`); a missing
+ref, a failed read or a value starting `REPLACE` skips that org with one log line naming the account, never the value. The key goes in
+`x-api-key` only; errors carry the HTTP status, never the key or the body.
+
+- **Unit.** `cost.amount` is **cents**, a decimal string with 6 decimals, at list price before credits. Amounts are summed per
+  (day, model, key) as exact decimals and divided by 100 in SQL (`numeric`), no float.
+- **Window.** From the earlier of the previous cycle's start and today - 35 days (`--days N` changes the 35), never before 2026-01-01,
+  to the end of today, split into requests of at most 31 days. The whole window is re-read every pass and upserted (values are revised until
+  about 7 days after month end). Rows are written per org in one transaction after all requests succeeded; a failing org (4xx, timeout,
+  bad shape) is logged and skipped without touching the others.
+- **Lag.** `data_refreshed_at` is the provider's snapshot, minutes to hours (docs: typically 4 h, up to 24 h) behind now, and is stamped
+  on each row. A cycle reconciles only when that snapshot is past its end (`docs/usage-schema.md` §Credit pass).
+- **Missing key / `me2`.** `me2`'s refs hold a placeholder until its Console org exists; it is skipped, and with `cycleDay: null` it gets no cycles either.
+- Ingest runs the pass last (after the collectors, the quota / picks pass and the portal), isolated: a failure logs and the run still succeeds.
+  Not run with `--source` or an injected collector set.
+
 ### Gateway collectors (retired)
 
 The `agent-gateway-opencode`, `agent-gateway-iu`, `agent-gateway-sessions`, `audio-gateway` and
