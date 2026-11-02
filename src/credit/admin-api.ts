@@ -12,6 +12,8 @@ const DAY_MS = 86_400_000
 const MAX_REQUEST_DAYS = 31
 const DEFAULT_TRAILING_DAYS = 35
 const REQUEST_TIMEOUT_MS = 30_000
+/** All requests of one org together: a slow Admin API must not stall the 900 s ingest. */
+export const ORG_DEADLINE_MS = 120_000
 const MAX_PAGES = 50
 const SCALE = 12 // decimals kept when summing amounts; the API sends 6
 
@@ -86,9 +88,49 @@ interface CostResponse {
   data_refreshed_at?: unknown
 }
 
+/** A JSON number as a fixed-point decimal string (String() would give 1e-7); null when it is not finite. */
+function numberToDecimal(n: number): string | null {
+  return Number.isFinite(n) ? n.toFixed(SCALE) : null
+}
+
+interface ParsedRow {
+  day: string
+  model: string | null
+  apiKeyId: string | null
+  amount: bigint
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** One `data` entry, or an AdminApiError: a response that does not look like the spike's is malformed, never guessed at. */
+function parseRow(raw: unknown): ParsedRow {
+  if (!isObject(raw) || !isObject(raw.cost)) throw new AdminApiError('malformed row')
+  const startingAt = raw.starting_at
+  if (typeof startingAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(startingAt)) {
+    throw new AdminApiError('row without starting_at')
+  }
+  const amount =
+    typeof raw.cost.amount === 'number' ? numberToDecimal(raw.cost.amount) : raw.cost.amount
+  if (typeof amount !== 'string') throw new AdminApiError('row without a usable cost.amount')
+  const group = raw.group ?? {}
+  if (!isObject(group)) throw new AdminApiError('malformed row group')
+  const field = (v: unknown): string | null => {
+    if (v == null) return null
+    if (typeof v === 'string') return v
+    throw new AdminApiError('malformed row group')
+  }
+  return {
+    day: startingAt.slice(0, 10),
+    model: field(group.model),
+    apiKeyId: field(group.api_key_id),
+    amount: toScaled(amount),
+  }
+}
+
 async function fetchChunk(
   window: { from: Date; to: Date },
-  opts: { baseUrl: string; adminKey: string; fetch: typeof fetch },
+  opts: { baseUrl: string; adminKey: string; fetch: typeof fetch; deadline: AbortSignal },
 ): Promise<{
   rows: Map<string, { row: Omit<CostRow, 'cents' | 'refreshedAt'>; sum: bigint }>
   refreshedAt: Date
@@ -115,15 +157,23 @@ async function fetchChunk(
           'anthropic-beta': BETA,
           'user-agent': 'usage-tracker (credit pass)',
         },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        // The key is in a header: a redirect would carry it to another host.
+        redirect: 'error',
+        signal: AbortSignal.any([opts.deadline, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       })
     } catch (err) {
       // The request carries the key in a header; report the failure kind only.
+      if (opts.deadline.aborted) throw new AdminApiError('deadline exceeded')
       throw new AdminApiError(`request failed (${err instanceof Error ? err.name : 'error'})`)
     }
     if (!res.ok) throw new AdminApiError(`HTTP ${res.status}`)
     const body = (await res.json().catch(() => null)) as CostResponse | null
-    if (!body || !Array.isArray(body.data)) throw new AdminApiError('unexpected response shape')
+    if (opts.deadline.aborted) throw new AdminApiError('deadline exceeded')
+    if (!isObject(body) || !Array.isArray(body.data)) {
+      throw new AdminApiError('unexpected response shape')
+    }
+    // A truncated or foreign body must never read as "no more rows": it would delete rows and close a cycle at zero.
+    if (typeof body.has_more !== 'boolean') throw new AdminApiError('has_more is not a boolean')
 
     // Every page reads one snapshot: the first page's stamp stands for the chunk.
     if (!refreshedAt) {
@@ -134,26 +184,15 @@ async function fetchChunk(
       refreshedAt = stamp
     }
 
-    for (const raw of body.data as Array<Record<string, any>>) {
-      const startingAt = raw?.starting_at
-      const amount = raw?.cost?.amount
-      if (typeof startingAt !== 'string' || !/^\d{4}-\d{2}-\d{2}/.test(startingAt)) {
-        throw new AdminApiError('row without starting_at')
-      }
-      if (typeof amount !== 'string' && typeof amount !== 'number') {
-        throw new AdminApiError('row without cost.amount')
-      }
-      const day = startingAt.slice(0, 10)
-      const model = typeof raw.group?.model === 'string' ? raw.group.model : null
-      const apiKeyId = typeof raw.group?.api_key_id === 'string' ? raw.group.api_key_id : null
+    for (const raw of body.data) {
+      const { day, model, apiKeyId, amount } = parseRow(raw)
       const key = JSON.stringify([day, model, apiKeyId])
       const hit = rows.get(key)
-      const cents = toScaled(String(amount))
-      if (hit) hit.sum += cents
-      else rows.set(key, { row: { day, model, apiKeyId }, sum: cents })
+      if (hit) hit.sum += amount
+      else rows.set(key, { row: { day, model, apiKeyId }, sum: amount })
     }
 
-    if (body.has_more !== true) return { rows, refreshedAt }
+    if (!body.has_more) return { rows, refreshedAt }
     if (typeof body.next_page !== 'string' || !body.next_page) {
       throw new AdminApiError('has_more without next_page')
     }
@@ -163,13 +202,14 @@ async function fetchChunk(
 }
 
 /**
- * Read the cost rows of one org over `windows`, all or nothing: a failed request throws and the caller writes nothing,
+ * Read the cost rows of one org over `windows` within one overall deadline, all or nothing: a failed request throws and the caller writes nothing,
  * so a half-read window never reaches the table. Rows are summed per (day, model, key) in exact decimal arithmetic.
  */
 export async function fetchCost(
   windows: Array<{ from: Date; to: Date }>,
-  opts: { baseUrl?: string; adminKey: string; fetch?: typeof fetch },
+  opts: { baseUrl?: string; adminKey: string; fetch?: typeof fetch; deadlineMs?: number },
 ): Promise<CostFetch> {
+  const deadline = AbortSignal.timeout(opts.deadlineMs ?? ORG_DEADLINE_MS)
   const rows = new Map<string, CostRow>()
   const chunks: Chunk[] = []
   for (const w of windows) {
@@ -177,6 +217,7 @@ export async function fetchCost(
       baseUrl: opts.baseUrl ?? ADMIN_API_BASE,
       adminKey: opts.adminKey,
       fetch: opts.fetch ?? fetch,
+      deadline,
     })
     chunks.push({ from: w.from, to: w.to, refreshedAt: got.refreshedAt })
     for (const [key, { row, sum }] of got.rows)

@@ -15,6 +15,10 @@ import { syncIumac } from './remote.ts'
 import type { SyncResult } from './remote.ts'
 import type { Collector } from './types.ts'
 
+/** State-only key in usage.collector_state: the credit pass's last attempt (cursor) and outcome. */
+const CREDIT_SOURCE = 'credit'
+const CREDIT_EVERY_MS = 3_600_000
+
 export interface SourceResult {
   source: string
   status: 'ok' | 'skipped' | 'error'
@@ -110,10 +114,23 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
   }
 
   // After the collectors: it reads the gateway rows they (and the gateway) wrote, and a slow Admin API must not starve them.
+  // The Admin API docs ask for at most hourly: the attempt time lives in usage.collector_state (`credit`, cursor), so the
+  // 900 s ticks in between skip the pass. `credit` on the CLI is not throttled.
   const credit = opts.credit ?? (!opts.only && !opts.collectors)
   if (credit) {
     try {
-      await runCreditPass(sql, credit === true ? {} : credit)
+      const last = await loadCursor(sql, CREDIT_SOURCE)
+      if (last && Date.now() - Date.parse(last) < CREDIT_EVERY_MS) {
+        log.info('credit: ran within the last hour, skipped')
+      } else {
+        const startedAt = new Date().toISOString()
+        const done = await runCreditPass(sql, credit === true ? {} : credit)
+        await saveState(sql, CREDIT_SOURCE, {
+          cursor: startedAt,
+          status: done.errors > 0 ? 'error' : 'ok',
+          note: `platform_cost=${done.platformCost} cycles=${done.cycles} errors=${done.errors}`,
+        })
+      }
     } catch (err) {
       log.error(`credit: ${err instanceof Error ? err.message : String(err)}`)
     }

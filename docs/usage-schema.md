@@ -221,6 +221,8 @@ fallback, purpose}`), so the database CHECKs are its validator. Migration 0014 a
   `flag_gateway_duplicates()` (migrations 0007-0009) does not concern this gateway.
 - **`credit_cycles`:** `(account, cycle_start)` → `cycle_end` (NULL until the billing day is known), `grant_usd`, `metered_usd` (what we
   summed from `api_credit` rows), `reconciled_usd` and `unspent_usd` (the provider's figure, once known), `closed_at`.
+- **Writers.** usage-tracker's `credit` pass is the only writer of `credit_cycles` (and `platform_cost`). The gateway reads none of it: its own
+  meter is its ledger. Once a row has `closed_at`, `grant_usd` stays as it was; the open cycle follows the registry's `creditUsd`.
 - **`gateway_picks`:** `(request_id, picked)` → `ts` (indexed), `caller`, `session` (nullable), `picked` (a pool id, `iu-api` for the IU passthrough, or `refused`;
   the gateway labels the passthrough `iu-api` because a pool may itself be named `iu`), `reason`, `machine`. Modelled on `account_picks`, but keyed by request and target: a request refused for balance by a pool is re-picked and both picks can share a millisecond `ts`; a request never picks the same target twice, so a re-flush with `ON CONFLICT DO NOTHING` keeps the re-pick.
 - The migration holds an ACCESS EXCLUSIVE lock on `sessions` then `records` (the writer's lock order) while it swaps the CHECKs.
@@ -238,7 +240,7 @@ The Admin API side is in `docs/collectors.md` §Admin API cost.
 - **`credit_cycles`**: the current and the previous cycle per account, from `cycleDay` (the day the credit expires, 00:00 UTC; a cycle is
   `[start, end)`, the expiry instant belongs to the new cycle, a day past a month's end is clamped: the rule of the gateway's `pools/cycle.ts`, copied).
   A null `cycleDay` writes no rows (the pass logs it); `platform_cost` is still filled. `metered_usd` = sum over `records` with `source='gateway'`,
-  `billing='api_credit'` and that `account` and `ts` in the cycle of `coalesce(cost_usd, lane_detail->>'costEstimatedUsd', 0)`: nothing
+  `billing='api_credit'` and that `account` and `ts` in the cycle of `coalesce(cost_usd, lane_detail->>'costEstimatedUsd', 0)` (the estimate only when it is a JSON number; anything else counts 0): nothing
   else counts (not `agent-workflows` rows, not `max` rows), refreshed every pass.
 - **Closing rule.** A cycle is closed when the provider's snapshot is past its end: every request window that reads the cycle answered
   with `data_refreshed_at >= cycle_end` in this pass. Then `reconciled_usd` = sum of `platform_cost` over the cycle's days,
