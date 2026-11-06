@@ -14,7 +14,7 @@ import { payload } from './writer.ts'
 //                      repo is the checkout that has the commit
 //   transcript-paths   the paths its tool calls touched: a repo with >= 60% of the classified hits and at least 3
 //   parent             the parent session's repo
-//   neighbor           sessions of the same workflow starting within 15 minutes, resolved, all agreeing (review synthesis
+//   neighbor           sessions of the same workflow starting within 15 minutes with direct evidence (never a neighbor verdict), all agreeing (review synthesis
 //                      prompts carry no sha)
 //   none               scanned, nothing found: stored with a NULL repo so it is not scanned again
 // Reading only: `resolveSessionRepos` returns the verdicts, `saveSessionRepos` writes them. The repair pass applies them.
@@ -286,7 +286,7 @@ export async function resolveSessionRepos(
     if (repo) set(c.id, repo, 'parent')
   }
 
-  // neighbor
+  // neighbor: only direct evidence counts, a neighbour's own verdict must not spread further from pass to pass
   const withWorkflow = todo.filter((c) => c.workflow && !results.has(c.id))
   if (withWorkflow.length > 0) {
     const lo = Math.min(...withWorkflow.map((c) => c.firstTs)) - NEIGHBOR_MS
@@ -295,6 +295,7 @@ export async function resolveSessionRepos(
       `SELECT s.lane_detail->>'workflow' AS workflow, s.first_ts, coalesce(s.repo, e.repo) AS repo
        FROM usage.sessions s LEFT JOIN usage.session_repo e ON e.session_id = s.id
        WHERE s.source = 'claude-code' AND s.lane_detail->>'workflow' IS NOT NULL AND coalesce(s.repo, e.repo) IS NOT NULL
+         AND e.evidence IS DISTINCT FROM 'neighbor'
          AND s.first_ts BETWEEN $1::timestamptz AND $2::timestamptz`,
       [new Date(lo).toISOString(), new Date(hi).toISOString()],
     )

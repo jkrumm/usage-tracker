@@ -485,7 +485,7 @@ is located with the claude-code collector's roots (`<id>.jsonl`, subagent `<pare
 `git-sha` (the first prompt has `git diff [--flags] <sha>...HEAD`, resolved with `git cat-file -e` across SourceRoot, IuRoot and the
 two archived IU repos, one lookup cache per run), `transcript-paths` (`SourceRoot`/`IuRoot` paths in tool inputs through
 `classifyRepo`, winner with >= 60% share and >= 3 hits), `parent` (the parent session's repo), `neighbor` (same
-`lane_detail.workflow`, first record within 15 minutes of resolved sessions that all agree: review synthesis prompts carry no sha),
+`lane_detail.workflow`, first record within 15 minutes of resolved sessions that all agree: review synthesis prompts carry no sha; only direct evidence counts, never another neighbor verdict, migration 0020 reset the chained ones),
 `none` (scanned, nothing found: stored with a NULL repo so it is not scanned again). A session without a transcript on disk gets no
 row and is retried. Only sessions without a row are scanned; ongoing passes look at the last 3 days, `FULL=1` at all.
 

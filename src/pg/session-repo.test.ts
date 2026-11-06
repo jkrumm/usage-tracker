@@ -230,6 +230,22 @@ describePg('session repo evidence (Postgres)', () => {
     )
   })
 
+  test('a neighbor verdict does not resolve the next neighbor', async () => {
+    const wf = { workflow: 'review' }
+    await session('direct', { detail: wf, first: '2026-10-30T12:00:00Z', repo: 'argo' })
+    const near = await session('near', { detail: wf, first: '2026-10-30T12:10:00Z' })
+    const next = await session('next', { detail: wf, first: '2026-10-30T12:24:00Z' })
+    transcript('near', [line({ type: 'user', message: { content: 'x' } })])
+    transcript('next', [line({ type: 'user', message: { content: 'x' } })])
+    await saveSessionRepos(db, await resolveSessionRepos(db, opts()))
+    const got = await db`SELECT session_id::int AS id, repo FROM usage.session_repo ORDER BY id`
+    expect(Array.from(got)).toEqual([
+      { id: near, repo: 'argo' },
+      { id: next, repo: null },
+    ])
+    expect(await verdicts()).toEqual({})
+  })
+
   test('a none is rescanned once the session has grown, a found repo is final', async () => {
     transcript('live', [line({ type: 'user', message: { content: 'hello' } })])
     const live = await session('live')
