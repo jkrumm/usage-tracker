@@ -1,4 +1,4 @@
-.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify install-agent uninstall-agent logs
+.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify version install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -144,6 +144,9 @@ verify: ## Probe the running LaunchAgent + source freshness (exit 0 = loaded, lo
 	  [ "$$age" -le 1800 ] || { echo "verify: last output $${age}s old (limit 1800s)"; exit 1; }; \
 	  echo "verify: $(LABEL) loaded, last output $${age}s ago"
 	@bun run src/cli.ts health
+
+version: ## Print the deployed commit sha: the LaunchAgent runs this checkout, so its HEAD (the factory checks a shipped commit against it)
+	@git -C "$(CURDIR)" rev-parse HEAD
 
 health: ## Fail when a source's newest row is older than its expected cadence
 	bun run src/cli.ts health

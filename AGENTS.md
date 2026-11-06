@@ -82,7 +82,9 @@ environment variable, never spliced into the command text.
 bootout/bootstrap/kickstart it. The agent runs
 `bun run src/cli.ts ingest` every 900s under `jobrun` (dotfiles; `--timeout 600`,
 state in `~/.local/state/jobs/`, graded by `jobs-grade`). Re-running the installer is idempotent,
-so deploying a merged default branch is just `make deploy`. There is no CI and
+so deploying a merged default branch is just `make deploy`. `project.yaml` is the factory manifest (deploy mode `make`, target
+`mini` verified by `make verify`, ship by push, migrations in `migrations/pg/`); `make version` prints the checkout's HEAD sha
+(the LaunchAgent runs this checkout), which the factory compares to a shipped commit. There is no CI and
 no rollback path: revert the offending commit and `make deploy` again. The plist holds no secret: the Postgres URL
 is built at spawn by `usagePgUrl()` (role `usage`, password via `secrets-run read`, never `op`; `USAGE_PG_URL`
 overrides). Schema changes ship as a new `migrations/pg` file and `make pg-migrate` before the deploy.
