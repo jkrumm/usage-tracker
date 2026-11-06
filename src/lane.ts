@@ -64,6 +64,8 @@ export function laneForRole(role: string, usageLane: string | null): Lane | null
     case 'worker':
       return usageLane === 'fan' ? 'fan_worker' : 'worker'
     case 'mechanical':
+    case 'reviewer':
+    case 'deep':
       return 'worker'
   }
   return null

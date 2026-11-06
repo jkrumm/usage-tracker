@@ -85,7 +85,7 @@ SQLite `sub_tool`:
 | `fan` | `fan_worker` | the `rd fan` worktree session |
 | `fleet` | `worker` | `raw: fleet` (the work-machine fleet) |
 | `lead`, `worker` (claude-code) | `lead`, `worker` | |
-| `raw.factoryRole` `mother`, `wave` / `lead` / `worker` / `mechanical` | `wave_mother` / `lead` / `worker` (`fan_worker` when the sub_tool is `fan`) / `worker` | `role`: the factory role; beats the sub_tool |
+| `raw.factoryRole` `mother`, `wave` / `lead` / `worker` / `mechanical`, `reviewer`, `deep` | `wave_mother` / `lead` / `worker` (`fan_worker` when the sub_tool is `fan`) / `worker` | `role`: the factory role; beats the sub_tool |
 | `agent-gateway:<x>` (claude-code, opencode); any sub_tool of agent-gateway-*, litellm, agent-workflows | `agw_workflow` | `workflow: x`, `step`: the rest of `a:b:c` |
 | research-gateway, audio-gateway(-vps), audio-proxy | `agw_workflow` | `workflow`: the source, `step`: sub_tool |
 | source hermes | `hermes` | `surface`: slack, cron, cli, ... |

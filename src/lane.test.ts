@@ -122,6 +122,11 @@ describe('factory role', () => {
       lane: 'worker',
       detail: { role: 'mechanical' },
     })
+    expect(laneFor('wave', 'claude-code', { factoryRole: 'reviewer' })).toEqual({
+      lane: 'worker',
+      detail: { role: 'reviewer' },
+    })
+    expect(laneFor('wave', 'claude-code', { factoryRole: 'deep' }).lane).toBe('worker')
   })
 
   test('a worker spawned with USAGE_LANE=fan is a fan_worker', () => {
