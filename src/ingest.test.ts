@@ -99,6 +99,39 @@ describePg('runIngest (Postgres)', () => {
     return row
   }
 
+  test('the repair pass runs after the collectors at most hourly, and is skipped for a narrowed run', async () => {
+    const repair = {
+      full: true,
+      known: new Set(['only-known-to-repair']),
+      evidence: { roots: [], gitRepos: [] },
+    }
+    const run = (extra = {}) =>
+      runIngest(sql, {
+        collectors: [
+          fake(
+            'gateway',
+            [rec('r1', { project: 'only-known-to-repair', workspace: 'private' })],
+            null,
+          ),
+        ],
+        accounts: false,
+        portal: false,
+        ...extra,
+      })
+    expect((await run()).repair).toBeNull()
+
+    const first = await run({ repair })
+    expect(first.repair).toMatchObject({ repo: 1 })
+    expect((await sql`SELECT repo FROM usage.records WHERE source_id = 'r1'`)[0].repo).toBe(
+      'only-known-to-repair',
+    )
+    expect((await state('repair')).last_note).toContain('repo=1')
+    expect((await run({ repair })).repair).toBe('throttled')
+
+    await sql`UPDATE usage.collector_state SET cursor = ${new Date(Date.now() - 3_700_000).toISOString()} WHERE source = 'repair'`
+    expect((await run({ repair })).repair).toMatchObject({ repo: 0 })
+  })
+
   test('syncs the mirror once per pass, and again on the next pass', async () => {
     let calls = 0
     const opts = {

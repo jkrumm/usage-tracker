@@ -321,7 +321,7 @@ describePg('usage.records write path', () => {
       'hermes',
       [
         rec('repo_1', { project: '/Users/jkrumm/SourceRoot/warden-w6/src' }),
-        rec('repo_2', { project: 'hermes-agent', workspace: 'work' }),
+        rec('repo_2', { project: 'no-such-repo', workspace: 'private' }),
       ],
       { defaultWorkspace: 'private' },
     )
@@ -331,10 +331,44 @@ describePg('usage.records write path', () => {
       workspace: 'private',
     })
     expect(await one('hermes', 'repo_2')).toMatchObject({
-      repo: null,
-      project_raw: 'hermes-agent',
+      repo: 'hermes-agent', // the source's owner, since the slug names no known repo
+      project_raw: 'no-such-repo',
+      workspace: 'private',
+    })
+  })
+
+  test('classifier: renames, the workspace derived from path or repo, and a NULL never erases a stored repo', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [
+      rec('cls_iu', { project: '/Users/jkrumm/IuRoot/prometheus-scripts/analysis' }),
+      rec('cls_src', { project: '/Users/jkrumm/SourceRoot/worktrees/argo/factory-1-1' }),
+      rec('cls_slug', { project: 'epos-tool-athena', workspace: 'work' }),
+      rec('cls_none', { project: '/Users/jkrumm' }),
+    ])
+    expect(await one('claude-code', 'cls_iu')).toMatchObject({
+      repo: 'iu/epos-tool-athena',
       workspace: 'work',
     })
+    expect(await one('claude-code', 'cls_src')).toMatchObject({
+      repo: 'argo',
+      workspace: 'private',
+    })
+    expect(await one('claude-code', 'cls_slug')).toMatchObject({
+      repo: 'iu/epos-tool-athena',
+      workspace: 'work',
+    })
+    expect(await one('claude-code', 'cls_none')).toMatchObject({ repo: null, workspace: null })
+
+    // The repair pass fills the repo and workspace; the collector keeps reporting a path with no repo: both stay.
+    await sql`UPDATE usage.records SET repo = 'dotfiles', workspace = 'private', issue_id = '7' WHERE source_id = 'cls_none'`
+    const before = (await one('claude-code', 'cls_none')).ingested_at
+    await upsertRecords(sql, 'claude-code', [rec('cls_none', { project: '/Users/jkrumm' })])
+    expect(await one('claude-code', 'cls_none')).toMatchObject({
+      repo: 'dotfiles',
+      workspace: 'private',
+      issue_id: '7',
+    })
+    expect((await one('claude-code', 'cls_none')).ingested_at).toEqual(before)
   })
 
   test('lane, effort, issue and run pass through; lane_detail and raw stay NULL when absent', async () => {

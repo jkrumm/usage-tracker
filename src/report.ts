@@ -393,3 +393,80 @@ export function formatStale(stale: StaleSource[]): string {
     )
     .join('\n')
 }
+
+/** Share of the last 7 days' tokens with no repo above which `health` fails (docs/usage-schema.md §Attribution health). */
+export const REPO_NULL_SHARE_LIMIT = 0.1
+const ATTRIBUTION_DAYS = 7
+
+export interface AttributionHealth {
+  /** Repo values of the last 7 days that are not a known repo (a directory, an `iu/` directory or a retired one). */
+  unknownRepos: Array<{ repo: string; rows: number }>
+  /** Share of the last 7 days' tokens (records_unique) with a NULL repo; null when there are no tokens. */
+  nullShare: number | null
+  limit: number
+  /** The heaviest source / project_raw shapes among the NULL-repo rows (uuid worktree names folded). */
+  shapes: Array<{ shape: string; tokens: number }>
+  ok: boolean
+}
+
+/**
+ * The attribution guard of `health`: a repo value nobody knows (a typo, a renamed repo the rules do not map) and too
+ * many tokens without a repo both fail it, so a new source or a new directory cannot silently fall out of Argo's project
+ * dimension. Reads usage.records_unique, the rows Argo reads.
+ */
+export async function attributionHealth(
+  sql: SQL,
+  opts: { known: { has(repo: string): boolean }; limit?: number; now?: Date },
+): Promise<AttributionHealth> {
+  const limit = opts.limit ?? REPO_NULL_SHARE_LIMIT
+  const since = new Date((opts.now ?? new Date()).getTime() - ATTRIBUTION_DAYS * 86_400_000)
+  const byRepo = await sql`
+    SELECT repo, count(*)::int AS rows,
+           sum(input_tokens + output_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens)::float8 AS tokens
+    FROM usage.records_unique WHERE ts >= ${since.toISOString()}::timestamptz GROUP BY repo`
+  let total = 0
+  let nullTokens = 0
+  const unknownRepos: AttributionHealth['unknownRepos'] = []
+  for (const row of byRepo as Array<{ repo: string | null; rows: number; tokens: number }>) {
+    total += Number(row.tokens)
+    if (row.repo === null) nullTokens += Number(row.tokens)
+    else if (!opts.known.has(row.repo))
+      unknownRepos.push({ repo: row.repo, rows: Number(row.rows) })
+  }
+  const nullShare = total > 0 ? nullTokens / total : null
+  const over = nullShare !== null && nullShare > limit
+  const shapes = over
+    ? (
+        (await sql`
+        SELECT source || ' | ' || coalesce(regexp_replace(project_raw, '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<uuid>', 'g'), '(null)') AS shape,
+               sum(input_tokens + output_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens)::float8 AS tokens
+        FROM usage.records_unique WHERE repo IS NULL AND ts >= ${since.toISOString()}::timestamptz
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 8`) as Array<{ shape: string; tokens: number }>
+      ).map((s) => ({
+        shape: s.shape,
+        tokens: Number(s.tokens),
+      }))
+    : []
+  return {
+    unknownRepos: unknownRepos.sort((a, b) => b.rows - a.rows),
+    nullShare,
+    limit,
+    shapes,
+    ok: unknownRepos.length === 0 && !over,
+  }
+}
+
+export function formatAttributionHealth(h: AttributionHealth): string {
+  const lines: string[] = []
+  if (h.unknownRepos.length > 0)
+    lines.push(
+      `attribution: unknown repo in the last ${ATTRIBUTION_DAYS} days: ${h.unknownRepos.map((u) => `${u.repo} (${u.rows} rows)`).join(', ')}`,
+    )
+  if (h.nullShare !== null && h.nullShare > h.limit) {
+    lines.push(
+      `attribution: ${(h.nullShare * 100).toFixed(1)}% of the last ${ATTRIBUTION_DAYS} days' tokens have no repo (limit ${(h.limit * 100).toFixed(0)}%), top project_raw shapes:`,
+    )
+    for (const s of h.shapes) lines.push(`  ${(s.tokens / 1e6).toFixed(1)}M  ${s.shape}`)
+  }
+  return lines.join('\n')
+}

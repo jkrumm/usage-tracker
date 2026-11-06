@@ -217,3 +217,158 @@ describePg('gateway mirror duplicates', () => {
     ).toEqual(before[0])
   })
 })
+
+// Migration 0018: the cutover rules and migration 0017's cutoff on records_unique.
+
+async function putRaw(r: {
+  source: string
+  id: string
+  ts: string
+  runId?: string
+  detail?: object
+  raw?: object
+}): Promise<number> {
+  const [row] = await db`
+    INSERT INTO usage.records (source, source_id, grain, ts, billing, lane, run_id, lane_detail, raw, input_tokens, cost_usd, cost_source)
+    VALUES (${r.source}, ${r.id}, 'message', ${r.ts}::timestamptz, 'unknown', 'other', ${r.runId ?? null},
+            ${r.detail ? JSON.stringify(r.detail) : null}::text::jsonb, ${r.raw ? JSON.stringify(r.raw) : null}::text::jsonb, 10, 1, 'reported')
+    RETURNING id::int AS id`
+  return row.id
+}
+
+const ok = { status: 200, usageReported: true }
+
+describePg('cutover duplicates', () => {
+  test('gateway-hermes: hermes rows from the first gateway hermes row on, older ones stay', async () => {
+    const gw = await putRaw({
+      source: 'gateway',
+      id: 'g1',
+      ts: '2026-11-02T07:00:00Z',
+      detail: { caller: 'hermes' },
+    })
+    await putRaw({
+      source: 'gateway',
+      id: 'g0',
+      ts: '2026-11-01T07:00:00Z',
+      detail: { caller: 'iris' },
+    })
+    await putRaw({ source: 'hermes', id: 'before', ts: '2026-11-01T23:00:00Z' })
+    const after = await putRaw({ source: 'hermes', id: 'after', ts: '2026-11-03T07:00:00Z' })
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(1)
+    expect(
+      Array.from(
+        await db`SELECT record_id::int AS r, duplicate_of::int AS d, rule FROM usage.record_duplicates`,
+      ),
+    ).toEqual([{ r: after, d: gw, rule: 'gateway-hermes' }])
+  })
+
+  test('gateway-cutover: agent-workflows rows whose run has a reported 200 gateway row', async () => {
+    const gw = await putRaw({
+      source: 'gateway',
+      id: 'g',
+      ts: '2026-11-02T10:00:00Z',
+      runId: 'run-1',
+      raw: ok,
+    })
+    await putRaw({
+      source: 'gateway',
+      id: 'g-fail',
+      ts: '2026-11-02T10:00:00Z',
+      runId: 'run-2',
+      raw: { status: 500, usageReported: true },
+    })
+    await putRaw({
+      source: 'gateway',
+      id: 'g-nousage',
+      ts: '2026-11-02T10:00:00Z',
+      runId: 'run-3',
+      raw: { status: 200, usageReported: false },
+    })
+    const dup = await putRaw({
+      source: 'agent-workflows',
+      id: 'a1',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-1',
+    })
+    await putRaw({
+      source: 'agent-workflows',
+      id: 'a2',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-2',
+    })
+    await putRaw({
+      source: 'agent-workflows',
+      id: 'a3',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-3',
+    })
+    await putRaw({
+      source: 'agent-workflows',
+      id: 'a4',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-9',
+    })
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(1)
+    expect(
+      Array.from(
+        await db`SELECT record_id::int AS r, duplicate_of::int AS d, rule FROM usage.record_duplicates`,
+      ),
+    ).toEqual([{ r: dup, d: gw, rule: 'gateway-cutover' }])
+  })
+
+  test('gateway-cutover keeps a tools row: the gateway never saw the search fee', async () => {
+    await putRaw({
+      source: 'gateway',
+      id: 'g',
+      ts: '2026-11-02T10:00:00Z',
+      runId: 'run-1',
+      raw: ok,
+    })
+    await putRaw({
+      source: 'agent-workflows',
+      id: 'fee',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-1',
+      detail: { step: 'tools' },
+    })
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(0)
+  })
+
+  test('idempotent, and a second call after new rows marks only the new ones', async () => {
+    await putRaw({
+      source: 'gateway',
+      id: 'g',
+      ts: '2026-11-02T10:00:00Z',
+      runId: 'run-1',
+      raw: ok,
+      detail: { caller: 'hermes' },
+    })
+    await putRaw({ source: 'hermes', id: 'h1', ts: '2026-11-03T07:00:00Z' })
+    await putRaw({
+      source: 'agent-workflows',
+      id: 'a1',
+      ts: '2026-11-02T10:00:01Z',
+      runId: 'run-1',
+    })
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(2)
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(0)
+    await putRaw({ source: 'hermes', id: 'h2', ts: '2026-11-04T07:00:00Z' })
+    expect((await db`SELECT usage.flag_cutover_duplicates()::int AS n`)[0].n).toBe(1)
+  })
+
+  test('records_unique hides marked rows and everything before 2026-06-15, usage.records keeps them', async () => {
+    await putRaw({ source: 'x', id: 'old', ts: '2026-06-14T23:59:59Z' })
+    await putRaw({ source: 'x', id: 'edge', ts: '2026-06-15T00:00:00Z' })
+    await putRaw({
+      source: 'gateway',
+      id: 'g',
+      ts: '2026-11-02T07:00:00Z',
+      detail: { caller: 'hermes' },
+    })
+    await putRaw({ source: 'hermes', id: 'h', ts: '2026-11-03T07:00:00Z' })
+    await db`SELECT usage.flag_cutover_duplicates()`
+    const unique = await db`SELECT source_id FROM usage.records_unique ORDER BY source_id`
+    expect(unique.map((r: { source_id: string }) => r.source_id)).toEqual(['edge', 'g'])
+    expect((await db`SELECT count(*)::int AS n FROM usage.records`)[0].n).toBe(4)
+  })
+})

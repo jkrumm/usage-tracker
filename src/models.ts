@@ -453,6 +453,8 @@ export function normalizeModel(raw: string | null): string | null {
 
   m = m.toLowerCase()
   if (m.includes('/')) m = m.split('/').pop() ?? m
+  // Bedrock / IU gateway namespaces left after the provider path: `openai.gpt-6.1-terra`, `eu.anthropic.claude-haiku-5-5`.
+  m = m.replace(/^(?:openai|(?:eu|us)\.anthropic)\./, '')
   // The IU gateway's EU-routed twin — same rate card as its parent. Still
   // live: Hermes fails over to `claude-sonnet-4-6-eu` under throttling.
   m = m.replace(/-eu$/, '')

@@ -10,7 +10,7 @@ push step.
 ## Layout
 
 - `src/cli.ts` — CLI entrypoint: `ingest`, `stats`, `quota`, `iu-portal`, `budget`, `reprice`, `sources`, `health`,
-  `billing-audit`, `window`, `credit`, `report weekly`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
+  `billing-audit`, `window`, `credit`, `report weekly`, `repair`, `pg-migrate`, `prices-sync`, `prices-seed-history`.
 - `src/ingest.ts` — the pipeline. One `connect()` (`src/pg/connect.ts`), each collector isolated, cursor and run
   bookkeeping in `usage.collector_state` (`src/pg/state.ts`: `loadCursor`, `saveState`, `records_total` = the
   source's row count), records through `upsertRecords`. Also drives the quota / picks / portal / credit passes.
@@ -26,8 +26,13 @@ push step.
 - `src/pg/events.ts` — `upsertSessionEvents`: compactions and skill loads (`usage.session_events`, migration 0013; views
   `session_signals` / `lane_signals` hold the cache hit ratio and the counts), emitted by the claude-code collector in
   `CollectResult.events`. See the "Session events" gotcha.
-- `src/lane.ts` (`laneFor`), `src/repo.ts` (`normalizeRepo`) — the pure lane and repo mappings the writer calls.
-- `src/report.ts` — `stats`, `sources`, `health` staleness, `unpricedByModel`, `billing-audit` over the `usage` schema.
+- `src/lane.ts` (`laneFor`), `src/repo.ts` — the pure lane and repo mappings the writer calls: `classifyRepo` (path, bare slug, session
+  evidence, source owner, caller; renames and folds on every result), `normalizeRepo` (paths), `knownRepos` (directories under
+  SourceRoot/IuRoot plus `RETIRED_REPOS`). See the "Repo attribution" gotcha.
+- `src/pg/repair.ts` — `repairAttribution`: recomputes repo / workspace / model / issue_id of records and sessions from `project_raw`,
+  `model_raw` and the transcripts, and marks the cutover duplicates; `make repair [DRYRUN=1] [FULL=1]`, run by `ingest` at most hourly
+  (`collector_state` key `repair`). `src/pg/session-repo.ts` — the transcript evidence behind `usage.session_repo` (migration 0016).
+- `src/report.ts` — `stats`, `sources`, `health` staleness and the attribution guard, `unpricedByModel`, `billing-audit` over the `usage` schema.
 - `src/window.ts` — `window`: the share of the Max 5 h / 7 d windows by session, lane, role, subagent type, issue, repo or
   account over the `usage.window_attribution` / `session_window_share` views (migration 0011; rule and limits in
   `docs/usage-schema.md` §Window share), `make window BY=lane`; the residual (window moved, no priced record) is printed.
@@ -103,7 +108,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - `make verify` exits non-zero unless `launchctl print` sees
   `com.jkrumm.usage-tracker`, `~/Library/Logs/usage-tracker.log` is younger
   than 1800s, and `health` finds no stale source (`max(ts)` per source in `usage.records`, plus the IU portal's
-  last success). `make health`, `make sources`, `make stats BY=<dim>`, `make quota` read the same schema.
+  last success), no unknown repo and at most 10% NULL-repo tokens in the last 7 days (`records_unique`). `make health`, `make sources`, `make stats BY=<dim>`, `make quota` read the same schema.
 - Logs live in `~/Library/Logs/usage-tracker.{log,err}`; `make logs` tails the
   last 50 lines.
 
@@ -141,6 +146,16 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
   cap); `account` is set only on `max` and `api_credit` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
+- **Repo attribution** (`docs/usage-schema.md` §Normalization, §Repair and session evidence): `records.repo` is Argo's "project" dimension and
+  comes from `classifyRepo` (path, bare slug, session transcript evidence, source owner, origin/caller), with renames and folds applied
+  to every result: **nothing is kept under an old name** (`iu/prometheus-epx` is `iu/epos-ai-teamchat-athena`, `iu/prometheus-scripts` is
+  `iu/epos-tool-athena`, ...). `project_raw` and `model_raw` stay verbatim, so a rule change is `make repair FULL=1` (try `DRYRUN=1`
+  first: it rolls back and prints the counts and cost per repo). The agw gateway and agent-workflows write straight to Postgres and
+  bypass the writer; the repair pass is what classifies them. A new repo directory is known as soon as it exists; a retired real repo
+  goes in `RETIRED_REPOS`. `make health` / `make verify` fail on an unknown repo or over 10% NULL-repo tokens in the last 7 days.
+  `usage.records_unique` also hides rows before 2026-06-15 (migration 0017, kept in `records`) and the cutover duplicates
+  (`usage.flag_cutover_duplicates()`: `hermes` rows after the gateway took over its calls, `agent-workflows` rows whose run the
+  gateway reported). The repair never writes a cost column; `make reprice` is what prices a row whose model it normalized.
 - **Collector failures never abort a run.** A throwing collector is recorded as `error` in `usage.collector_state`
   (cursor kept, so the next run retries from the same watermark) and the rest continue, even when Postgres is the
   failure and the error row cannot be written either (logged, the loop goes on, the summary line still prints); a collector with only a note and

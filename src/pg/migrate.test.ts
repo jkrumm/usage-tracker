@@ -57,6 +57,7 @@ describePg('pg migrations', () => {
       'schema_migrations',
       'session_env',
       'session_events',
+      'session_repo',
       'session_signals',
       'session_window_share',
       'sessions',

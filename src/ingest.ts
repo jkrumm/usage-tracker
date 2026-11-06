@@ -7,6 +7,7 @@ import { collectors as allCollectors } from './collectors/index.ts'
 import { log } from './log.ts'
 import { markSessionEnvsPersisted, pendingSessionEnvs, useStoredSessionEnvs } from './models.ts'
 import { upsertSessionEvents } from './pg/events.ts'
+import { repairAttribution, type RepairOptions, type RepairResult } from './pg/repair.ts'
 import { upsertSessionEnv } from './pg/session-env.ts'
 import { loadCursor, loadSessionEnvTable, saveState } from './pg/state.ts'
 import { upsertRecords } from './pg/writer.ts'
@@ -18,6 +19,9 @@ import type { Collector } from './types.ts'
 /** State-only key in usage.collector_state: the credit pass's last attempt (cursor) and outcome. */
 const CREDIT_SOURCE = 'credit'
 const CREDIT_EVERY_MS = 3_600_000
+/** State-only key in usage.collector_state: the attribution repair pass's last attempt (cursor) and outcome. */
+const REPAIR_SOURCE = 'repair'
+const REPAIR_EVERY_MS = 3_600_000
 
 export interface SourceResult {
   source: string
@@ -39,6 +43,8 @@ export interface IngestSummary {
   portal: number
   /** The credit pass: its counts, `'throttled'` (ran within the hour) or null (not asked for, or Postgres failed). */
   credit: CreditPassResult | 'throttled' | null
+  /** The attribution repair pass: its counts, `'throttled'` (ran within the hour) or null (not asked for, or it failed). */
+  repair: RepairResult | 'throttled' | null
 }
 
 export interface IngestOptions {
@@ -57,6 +63,8 @@ export interface IngestOptions {
   portalFetch?: PortalFetcher
   /** Run the credit pass (Admin API cost + credit cycles): `true`, or its options (tests). Default: same condition as `accounts`. */
   credit?: boolean | CreditPassOptions
+  /** Run the attribution repair pass (src/pg/repair.ts) at most hourly: `true`, or its options (tests). Default: same condition as `accounts`. */
+  repair?: boolean | RepairOptions
 }
 
 /**
@@ -141,13 +149,38 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
     }
   }
 
+  // After the collectors and the credit pass: it corrects the rows they (and the gateway) wrote. Hourly like the credit pass,
+  // the attempt time lives in collector_state (`repair`); `repair` on the CLI is not throttled. A failure is logged, not fatal.
+  const repair = opts.repair ?? (!opts.only && !opts.collectors)
+  let repairResult: IngestSummary['repair'] = null
+  if (repair) {
+    try {
+      const last = await loadCursor(sql, REPAIR_SOURCE)
+      if (last && Date.now() - Date.parse(last) < REPAIR_EVERY_MS) {
+        log.info('repair: ran within the last hour, skipped')
+        repairResult = 'throttled'
+      } else {
+        const startedAt = new Date().toISOString()
+        const done = await repairAttribution(sql, repair === true ? {} : repair)
+        repairResult = done
+        await saveState(sql, REPAIR_SOURCE, {
+          cursor: startedAt,
+          status: 'ok',
+          note: `repo=${done.repo} workspace=${done.workspace} model=${done.model} issue=${done.issue} duplicates=${done.duplicates}`,
+        })
+      }
+    } catch (err) {
+      log.error(`repair: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   let unpriced: UnpricedModel[] = []
   try {
     unpriced = await unpricedByModel(sql)
   } catch (err) {
     log.error(`unpriced: ${err instanceof Error ? err.message : String(err)}`)
   }
-  return { results, unpriced, quota, picks, portal, credit: creditResult }
+  return { results, unpriced, quota, picks, portal, credit: creditResult, repair: repairResult }
 }
 
 export interface EventBackfill {
@@ -205,6 +238,13 @@ export function formatCreditLine(credit: IngestSummary['credit']): string | null
   if (credit === null) return null
   if (credit === 'throttled') return 'credit: skipped (ran within the last hour)'
   return `credit: platform_cost +${credit.platformCost} rows, credit_cycles ${credit.cycles} upserted, ${credit.errors} failed`
+}
+
+/** The repair pass's line for the ingest output. */
+export function formatRepairLine(repair: IngestSummary['repair']): string | null {
+  if (repair === null) return null
+  if (repair === 'throttled') return 'repair: skipped (ran within the last hour)'
+  return `repair: repo ${repair.repo}, workspace ${repair.workspace}, model ${repair.model}, issue ${repair.issue}, duplicates ${repair.duplicates}`
 }
 
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {

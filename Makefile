@@ -1,4 +1,4 @@
-.PHONY: help install restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify version install-agent uninstall-agent logs
+.PHONY: help install repair restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify version install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -62,6 +62,9 @@ window: ## Share of the Max 5h/7d windows (override: make window BY=lane DAYS=7 
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources
+
+repair: ## Recompute repo / workspace / model / issue_id and mark cutover duplicates (DRYRUN=1 rolls back and reports, FULL=1 covers every row, default the last 3 days)
+	bun run src/cli.ts repair $(if $(DRYRUN),--dry-run) $(if $(FULL),--full)
 
 billing-audit: ## Per-session claude-code billing check vs. the live hook log
 	bun run src/cli.ts billing-audit $(if $(SINCE),--since $(SINCE)) $(if $(SESSION),--session $(SESSION))

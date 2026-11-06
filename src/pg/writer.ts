@@ -5,7 +5,7 @@ import { log } from '../log.ts'
 import { currentMachine } from '../machine.ts'
 import { classifyBilling, normalizeModel, resolveAccount } from '../models.ts'
 import { baseModel } from '../prices/aliases.ts'
-import { normalizeRepo } from '../repo.ts'
+import { classifyRepo, workspaceFor } from '../repo.ts'
 import type { Billing, StoredBilling, UsageRecord, Workspace } from '../types.ts'
 import { readSessionEnv, sessionEnvLookups } from './session-env.ts'
 import { aggregateSessions, parentSessionKey, sessionKey, type SessionInput } from './sessions.ts'
@@ -158,7 +158,15 @@ function toRow(
   const effort = str(r.raw?.effort)
   const issueId = str(r.raw?.issueId)
   const runId = str(r.raw?.runId)
-  const repo = normalizeRepo(r.project)
+  const repo = classifyRepo({
+    project: r.project,
+    workspace: r.workspace ?? opts.defaultWorkspace,
+    source,
+    caller: str(r.raw?.caller),
+    origin: str(r.raw?.origin),
+    purpose: str(r.raw?.purpose),
+  })
+  const workspace = r.workspace ?? opts.defaultWorkspace ?? workspaceFor(r.project, repo)
   const ts = new Date(r.ts).toISOString()
 
   const row: Row = {
@@ -170,7 +178,7 @@ function toRow(
     model: model ?? undefined,
     repo: repo ?? undefined,
     project_raw: r.project ?? undefined,
-    workspace: r.workspace ?? opts.defaultWorkspace ?? undefined,
+    workspace: workspace ?? undefined,
     billing,
     account: account ?? undefined,
     api_key: apiKey ?? undefined,
@@ -266,9 +274,13 @@ const CONTENT = [
   'price_id',
   'raw',
 ] as const
-const excluded = CONTENT.map((c) => `EXCLUDED.${c}`).join(', ')
+// A NULL from the collector never erases what the repair pass derived: repo, workspace and issue_id keep the stored value.
+const KEEP_STORED: ReadonlySet<string> = new Set(['repo', 'workspace', 'issue_id'])
+const incoming = (c: string): string =>
+  KEEP_STORED.has(c) ? `coalesce(EXCLUDED.${c}, t.${c})` : `EXCLUDED.${c}`
+const excluded = CONTENT.map(incoming).join(', ')
 const current = CONTENT.map((c) => `t.${c}`).join(', ')
-const assign = CONTENT.map((c) => `${c} = EXCLUDED.${c}`).join(', ')
+const assign = CONTENT.map((c) => `${c} = ${incoming(c)}`).join(', ')
 
 const recordsSql = (insertOnly: boolean): string => `
 WITH up AS (

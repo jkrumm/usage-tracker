@@ -41,7 +41,8 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
 | `iu_portal_total` | the portal's monthly total per IU key (reconciliation anchor) | `PK (iu_key, month)` |
 | `record_duplicates` | the later copy of a call two stores recorded (gateway mirror), see [Duplicates](#duplicates) | `PK (record_id)` |
-| `records_unique` | view: `records` without the marked copies; what `budget` and `stats` read | |
+| `records_unique` | view: `records` without the marked copies and without rows before 2026-06-15 (migration 0017); what `budget`, `stats`, `health` and Argo read | |
+| `session_repo` | claude-code sessions resolved from their transcript, see [Repair](#repair-and-session-evidence) | `PK (session_id)` |
 | `schema_migrations` | applied files | `version` |
 
 ### records
@@ -102,14 +103,38 @@ has no lane of its own (a `worker`; the role keeps the distinction). Sessions wi
 
 ## Normalization
 
-- **model:** `normalizeModel` (lowercase, provider prefix, `-eu`, dated suffix) then `baseModel` (`src/prices/aliases.ts`)
-  strips a context flag: `claude-sonnet-5[1m]` is `claude-sonnet-5`. The alias table carries both spellings anyway.
-- **repo** (`normalizeRepo`, `src/repo.ts`): the directory directly under `SourceRoot`, whatever the home dir. Worktrees
-  fold in: `<repo>/.claude/worktrees/...` (the first directory wins), siblings `<repo>-w<N>` and `<repo>-w<N>-trial`, and
-  the container `<repo>-wt`. Under `IuRoot` the result is `iu/<dir>`, a separate namespace that can never collide with
-  `factory.projects`. NULL: bare `SourceRoot`/`IuRoot`, empty, dot-directories (`.hermes-wt`, `.wt`), `IuRoot/worktrees/<name>`
-  (names a branch, not a repo), temp paths, and non-path values (`athena-teamchat`, `hermes-agent`, channel names). The raw
-  string always stays in `project_raw`. Nothing is renamed: only the directory name is the slug.
+- **repo** (`classifyRepo`, `src/repo.ts`; Argo's "project" dimension reads `usage.records_unique.repo`). `normalizeRepo` maps a path:
+  the directory directly under `SourceRoot`, whatever the home dir; worktrees fold in (`<repo>/.claude/worktrees/...`, siblings
+  `<repo>-w<N>[-trial]`, the container `<repo>-wt`, `SourceRoot/worktrees/<repo>/...`); under `IuRoot` the result is `iu/<dir>`, a
+  separate namespace that can never collide with `factory.projects`, and `IuRoot/worktrees/<name>` goes through a prefix table
+  (`se-*`, `student-enrolment*`, `EP-17678*` and three `EP-18347-*` -> `iu/epos-studentenrolment-backend`; `tool-*`, `ps-*`,
+  `prom-*`, `prometheus-dashboard*` -> `iu/epos-tool-athena`; `teamchat-*`; `otf-*`; `dam-*`; `import-dashboard-*`; `split-w*` and
+  anything else NULL). `classifyRepo({ project, workspace, source, caller, origin, purpose, evidence })` is the one classifier the
+  writer and the repair pass call, first hit wins: (a) the project path (also `~/.hermes/hermes-agent`, and the two
+  `prometheus-scripts/wip` folders that are teamchat work); (b) a bare project slug: a token that is no repo (`claude-code`,
+  `cli`, `cron`) falls through, `eval`/`host` are `agent-workflows`, `hermes` is `hermes-agent`, `athena-context-poc`,
+  `waves-2026-10-22-teamchat`, `athena-teamchat` are the teamchat repo, `workspace = work` or a slug of the IU list is `iu/<slug>`,
+  anything else is the slug when it is a known repo; then the session evidence (below); (c) the source's owner (`hermes`,
+  `athena-teamchat`, the `*-gateway` sources, `modelpick`, `argo`; the audio and image variants fold into their gateway;
+  `agent-gateway-*` -> `agent-gateway`, so only after evidence); (d) `origin` then `caller` (`iris`, `hermes`, `modelpick`, `argo`,
+  `eval`, `host`; `claude-code`, `cli`, `agw`, `agw-opencode`, `oc` say nothing), then `purpose = eval` -> `agent-workflows`.
+  **Renames apply to every result** (`iu/prometheus-epx` -> `iu/epos-ai-teamchat-athena`, `iu/prometheus-scripts` ->
+  `iu/epos-tool-athena`, `iu/epos.student-enrolment` and `iu/se-wt-loa-credits` -> `iu/epos-studentenrolment-backend`, `iu/epos.dam`
+  -> `iu/epos-dam-backend`; evidence `~/IuRoot/.archive/README.md`, `github-migration-handover.md`; `iu/prometheus-feuer-agent`
+  stays) together with the private folds (`ShutterflowOps`, `factory-gate-*` / `factory-gameday*` / `factory-scratch-*` /
+  `factory-w3-proof*`, `sy-serendipity-*`, `linewatch-basalt-*`, `bun-email-api-*`, the basalt trial checkouts, `king-smith-mac`,
+  `free-planning-poker-*` fold into their repo; `fan-scratch` and `dispatch-scratch` stay). A **known repo** is a directory under
+  `~/SourceRoot` or `~/IuRoot` (`iu/<dir>`) or one of `RETIRED_REPOS` (real repos that no longer exist but carry usage:
+  `agent-gateway`, `audio-gateway`, `research-gateway`, `photo-flow`, `warden`, ...); `knownRepos()` reads the directories, so a new
+  repo is known the moment its directory exists. NULL: nothing says, e.g. bare `SourceRoot`/`IuRoot`, the home directory, temp
+  paths, dot-directories, `IuRoot/worktrees/split-w*`. `project_raw` and `model_raw` stay verbatim, so every rule is recomputable:
+  change it, `make repair FULL=1`. `workspace`, when the collector gave none, follows the path (`IuRoot` -> work, `SourceRoot` ->
+  private) else the repo (`iu/*` -> work, any other -> private); a stored workspace is never overwritten.
+- **model:** the writer's `model` is `baseModel(normalizeModel(raw))`: `normalizeModel` lowercases and strips the provider path, `-eu` and a
+  dated suffix, `baseModel` (`src/prices/aliases.ts`) a context flag (`claude-sonnet-5[1m]` is `claude-sonnet-5`). It also strips the `openai.`, `eu.anthropic.` and
+  `us.anthropic.` namespaces that follow a provider path (`bedrock/eu.anthropic.claude-haiku-5-5`, `openai.gpt-6.1-terra`). The agw
+  gateway writes its own rows and resolves aliases the writer does not know (`haiku`, `decision-1`), so the repair pass normalizes the
+  stored `model` (falling back to `model_raw` only when it is NULL).
 - **tokens:** SQLite stores `cache_write_tokens` TOTAL plus `cache_write_1h_tokens` as a SUBSET, so
   `cache_write_5m_tokens = total - 1h`. A source that cannot split reports all of it as 5m.
 - **billing:** SQLite `max` -> `max`; `iu` -> `api_key` with `api_key` = `iu_key`; `anthropic-api` -> `api_key`, no key id
@@ -131,8 +156,9 @@ has the semantics of `db.upsertRecords`, into `records`:
 - **Bulk and concurrent.** Chunks of 500 through `jsonb_to_recordset`, one transaction per chunk (sessions, then records), rows
   `ORDER BY` key so overlapping writers lock in the same order. Pure `INSERT ... ON CONFLICT`, no read-modify-write: several
   processes may call it at once. 5,000 rows with sessions take well under 2 s.
-- **Columns.** `model_raw` verbatim; `model = baseModel(normalizeModel(raw))`; `repo = normalizeRepo(project)` with `project_raw`
-  verbatim; `workspace = r.workspace ?? defaultWorkspace`; billing mapped as in Normalization (`api_key` = `resolveIuKey`, `account`
+- **Columns.** `model_raw` verbatim; `model = baseModel(normalizeModel(raw))`; `repo = classifyRepo(...)` (project, source, `raw.caller`/`origin`/`purpose`) with `project_raw`
+  verbatim; `workspace = r.workspace ?? defaultWorkspace ?? workspaceFor(project, repo)`; on conflict `repo`, `workspace` and `issue_id` keep the stored
+  value when the collector reports NULL (the repair pass owns them); billing mapped as in Normalization (`api_key` = `resolveIuKey`, `account`
   = `resolveAccount`, Max rows only); `lane`/`lane_detail` = `laneFor(subTool, source, raw)` on the record; `cache_write_5m =
   total - 1h` (the 1h count is clamped to the total); `effort`/`issue_id`/`run_id` from `raw.effort`/`raw.issueId`/`raw.runId`.
 - **Cost is SQL's.** `cost_usd`, `cost_source`, `price_id` come from `usage.compute_cost(...)` at write time (the one pricing
@@ -434,6 +460,42 @@ whether it is enough, and a revert or replacement, is judged by the reader (Wave
 mark the older one superseded. `loadChanges` throws on a missing or malformed file (the report must not silently drop its changes); a day must be real
 (`2026-02-30` is rejected), a finding id may not hold an address or a reference, and a summary goes through `clean` in both outputs (it is an authored, reviewed file: keep hostnames out of it, `clean` does not catch bare ones)
 
+## Repair and session evidence
+
+`repairAttribution(sql, { dryRun, full })` (`src/pg/repair.ts`; `make repair [DRYRUN=1] [FULL=1]`, `ingest` runs it after the credit
+pass at most hourly under `collector_state` key `repair`, skipped for `--source` and injected collectors, a failure is logged) recomputes
+`repo`, `workspace`, `model` and `issue_id` of `usage.records` and `usage.sessions` with the current rules, for the sources that bypass
+the writer (the agw gateway, agent-workflows) and after a rule change. Ongoing passes cover the last 3 days, `FULL=1` everything.
+Set-based over distinct value tuples: the mapping is computed in TypeScript for the distinct `(source, project_raw, workspace,
+caller, origin, purpose)` tuples and the distinct `(model_raw, model)` pairs, then applied with `jsonb_to_recordset` joins in batches
+of 1000. An UPDATE touches a row only when a value differs (a second run changes 0), changed records get a new `ingested_at` so Argo
+sees them, no cost column is ever written, a non-NULL workspace or `issue_id` is never overwritten, a NULL classification keeps the
+stored repo. Order: (1) rule a/b, model, session renames, (2) session evidence, (3) the evidence, then rule c/d for what is still
+NULL, the workspace fill, `issue_id`, and `usage.flag_cutover_duplicates()`. Stages 1 and 3 are separate transactions (the transcript
+scan holds no row locks). `--dry-run` runs the same stages in one transaction and rolls it back; it prints the per-field change counts and
+the records and cost per repo before and after. The writer keeps a stored `repo`, `workspace` and `issue_id` when a collector reports NULL.
+The model repair changes `model` only: `make reprice` is what would price a row whose normalized model now has a price.
+
+**issue_id** is the factory issue number: `lead-<n>-<k>` in `session_env.factory_session` (joined by `source_session_id`) and
+`SourceRoot/worktrees/<repo>/factory-<n>-<k>` paths give `<n>`; a subagent session inherits its parent's, records take their session's.
+
+**Session evidence** (`src/pg/session-repo.ts`, `usage.session_repo`, migration 0016): for claude-code sessions whose repo is still
+NULL (a deleted UUID worktree under `~/.local/state/{agent-gateway,sideclaw}/worktrees`, the bare home or `SourceRoot`) the transcript
+is located with the claude-code collector's roots (`<id>.jsonl`, subagent `<parent>/subagents/agent-<id>.jsonl`) and, in this order:
+`git-sha` (the first prompt has `git diff [--flags] <sha>...HEAD`, resolved with `git cat-file -e` across SourceRoot, IuRoot and the
+two archived IU repos, one lookup cache per run), `transcript-paths` (`SourceRoot`/`IuRoot` paths in tool inputs through
+`classifyRepo`, winner with >= 60% share and >= 3 hits), `parent` (the parent session's repo), `neighbor` (same
+`lane_detail.workflow`, first record within 15 minutes of resolved sessions that all agree: review synthesis prompts carry no sha),
+`none` (scanned, nothing found: stored with a NULL repo so it is not scanned again). A session without a transcript on disk gets no
+row and is retried. Only sessions without a row are scanned; ongoing passes look at the last 3 days, `FULL=1` at all.
+
+## Attribution health
+
+`make health` / `make verify` additionally exit 1 when a `repo` of `usage.records_unique` in the last 7 days is not a known repo
+(listed with its rows), or when more than `REPO_NULL_SHARE_LIMIT` (10%, `src/report.ts`) of the last 7 days' tokens have a NULL
+repo (the heaviest `source | project_raw` shapes are printed, UUID worktree names folded). A new source, directory or rename that the
+rules do not map therefore fails loudly instead of falling out of Argo's project dimension.
+
 ## Prices (U3)
 
 No hand-kept prices. `usage.compute_cost(model, ts, input, output, cache_read, cache_write_5m, cache_write_1h[, reasoning,
@@ -535,6 +597,15 @@ call is two rows with the same key, model and token counts at timestamps millise
   is idempotent; `scripts/backfill-argo.ts` runs it after its write loop. 2,278 rows, $72.34 (2026-10: $31.2) on the personal
   key, the same rows before and after 0009 (13 rows only changed which row of their call is named as the original). All of
   them are retired sources.
+- **Cutover rules** (`usage.flag_cutover_duplicates()`, migration 0018, called by the repair pass, idempotent): the agw inference gateway
+  (`source = 'gateway'`) reports calls two older stores still report. `gateway-hermes`: `hermes` rows from the first gateway row with
+  `lane_detail.caller = 'hermes'` on (2026-11-02; identical cache_read per day), `duplicate_of` that first gateway row.
+  `gateway-cutover`: `agent-workflows` rows whose `run_id` has a gateway row with `raw.status = 200` and `raw.usageReported = true`
+  (about 390 rows), `duplicate_of` the run's first gateway row. Undo: `DELETE FROM usage.record_duplicates WHERE rule IN
+  ('gateway-hermes', 'gateway-cutover')`.
+- **Cutoff** (migration 0017): `records_unique` also hides rows before `2026-06-15 00:00:00+00`. They stay in `usage.records`
+  (51,095 rows at the time) and `window_attribution` / `window_intervals` read the table directly; a later migration that replaces
+  the view moves or removes the cutoff.
 - **Nothing is deleted.** `usage.records_unique` is `records` without the marked rows; `budget` and `stats` read it, `sources`/`health`
   count raw rows. Undo: `DELETE FROM usage.record_duplicates`. Other readers of `usage.records` (the dashboard) must read the view to
   agree with the portal.

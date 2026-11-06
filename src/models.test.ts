@@ -56,6 +56,14 @@ describe('normalizeModel', () => {
     expect(normalizeModel('MiniMaxAI/MiniMax-M3')).toBe('minimax-m3')
   })
 
+  test('strips the gateway namespaces left after the provider path', () => {
+    expect(normalizeModel('openai.gpt-6.1-terra')).toBe('gpt-6.1-terra')
+    expect(normalizeModel('eu.anthropic.claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(normalizeModel('bedrock/us.anthropic.claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(normalizeModel('vertex_ai_eu/gemini-3.8-flash')).toBe('gemini-3.8-flash')
+    expect(normalizeModel('gpt-5.2-2025-12-11')).toBe('gpt-5.2')
+  })
+
   test("strips the IU gateway's -eu suffix (Hermes's live failover id)", () => {
     expect(normalizeModel('claude-sonnet-4-6-eu')).toBe('claude-sonnet-4-6')
   })

@@ -5,8 +5,10 @@ import { collectors } from './collectors/index.ts'
 import { DEFAULT_IU_KEY, IU_KEYS, iuKeyDef } from './iu-keys.ts'
 import { collectPortal, iuPortalFreshnessAll } from './collectors/iu-portal.ts'
 import { runCreditPass } from './credit/index.ts'
-import { formatCreditLine, formatRunSummary, runIngest } from './ingest.ts'
+import { formatCreditLine, formatRepairLine, formatRunSummary, runIngest } from './ingest.ts'
 import {
+  attributionHealth,
+  formatAttributionHealth,
   formatBillingAudit,
   formatSources,
   formatStale,
@@ -20,6 +22,8 @@ import {
   type GroupBy,
 } from './report.ts'
 import { connect } from './pg/connect.ts'
+import { formatRepair, repairAttribution } from './pg/repair.ts'
+import { knownRepos } from './repo.ts'
 import { runPgCommand } from './pg/cli.ts'
 import { formatReprice, reprice } from './reprice.ts'
 import { loadChanges } from './changes.ts'
@@ -61,7 +65,11 @@ COMMANDS
     --format <f>         md (default) | json
     --out <dir>          Also write <dir>/<week>.md and <week>.json (atomic); the paths go to stderr
   sources                Per-collector status: rows, error rate, last run, last note
-  health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then)
+  health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then),
+                         when a repo of the last 7 days is unknown, or when over 10% of its tokens have no repo
+  repair                 Recompute repo / workspace / model / issue_id from project_raw, model_raw and the transcripts; mark cutover duplicates
+    --dry-run            Run it inside a rolled-back transaction and print the counts and the records and cost per repo before and after
+    --full               Every row, not just the last 3 days
   billing-audit          Per-session claude-code billing check vs. the live hook log
     --since <N>          Only the last N days (default 3, matches log retention)
     --session <id>       Only this session
@@ -87,6 +95,7 @@ ENV
 const COMMANDS = new Set([
   'ingest',
   'health',
+  'repair',
   'quota',
   'iu-portal',
   'credit',
@@ -156,8 +165,9 @@ async function main(): Promise<number> {
       }
       if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`)
       const creditLine = formatCreditLine(summary.credit)
+      const repairLine = formatRepairLine(summary.repair)
       process.stdout.write(
-        `\ndb: postgres usage schema\n${creditLine ? `${creditLine}\n` : ''}${formatRunSummary(summary)}\n`,
+        `\ndb: postgres usage schema\n${creditLine ? `${creditLine}\n` : ''}${repairLine ? `${repairLine}\n` : ''}${formatRunSummary(summary)}\n`,
       )
       if (summary.unpriced.length > 0) {
         const breakdown = summary.unpriced.map((m) => `${m.model}=${m.rows}`).join(' ')
@@ -168,12 +178,19 @@ async function main(): Promise<number> {
 
     if (cmd === 'health') {
       const stale = await staleSources(sql, [...collectors, ...iuPortalFreshnessAll])
-      if (stale.length === 0) {
-        process.stdout.write('health: every source within its expected cadence\n')
-        return 0
-      }
-      process.stderr.write(`${formatStale(stale)}\n`)
-      return 1
+      if (stale.length > 0) process.stderr.write(`${formatStale(stale)}\n`)
+      else process.stdout.write('health: every source within its expected cadence\n')
+      const attribution = await attributionHealth(sql, { known: knownRepos() })
+      if (!attribution.ok) process.stderr.write(`${formatAttributionHealth(attribution)}\n`)
+      else process.stdout.write('health: attribution within limits\n')
+      return stale.length > 0 || !attribution.ok ? 1 : 0
+    }
+
+    if (cmd === 'repair') {
+      const dryRun = rest.includes('--dry-run')
+      const done = await repairAttribution(sql, { dryRun, full: rest.includes('--full') })
+      process.stdout.write(`${formatRepair(done, dryRun)}\n`)
+      return 0
     }
 
     if (cmd === 'quota') {
