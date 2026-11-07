@@ -77,6 +77,7 @@ describePg('report (Postgres)', () => {
       'role',
       'subagent_type',
       'effort',
+      'tool',
     ])
     expect(await byKey('source')).toEqual({ 'claude-code': 2, opencode: 2 })
     expect(await byKey('model')).toEqual({
@@ -91,6 +92,7 @@ describePg('report (Postgres)', () => {
     expect(await byKey('account')).toEqual({ 'iu (max)': 2, '(n/a)': 2 })
     expect(await byKey('iu_key')).toEqual({ personal: 1, 'athena-team': 1, '(n/a)': 2 })
     expect(await byKey('repo')).toEqual({ argo: 3, 'iu/api': 1 })
+    expect(await byKey('tool')).toEqual({ lead: 1, worker: 1, interactive: 2 })
   })
 
   test('api_credit is its own billing group and never lands under an IU key', async () => {

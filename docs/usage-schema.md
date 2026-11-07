@@ -101,6 +101,30 @@ The factory runner exports `USAGE_LANE=wave` on every pane whatever its role, so
 has no lane of its own (a `worker`; the role keeps the distinction). Sessions without a role keep the older precedence
 (`USAGE_LANE`, the agw window, the entrypoint). No lane was added, so the `sessions.lane` CHECK is unchanged.
 
+### Tool vocabulary
+
+`usage.tool_of(source, lane, lane_detail)` (migration 0021, `LANGUAGE sql IMMUTABLE`, one CASE so it inlines) maps a record to the one short
+name Argo's "Tool" dimension and `stats --by tool` show. `usage.records_unique` carries it as its last column, `tool`. `lane` and `lane_detail`
+stay verbatim, so every step, angle and role is still queryable; the tool only names the artifact-free kind. No value contains `:`.
+
+| lane | tool |
+|-|-|
+| `interactive` | `interactive` |
+| `lead`, `wave_mother` | `lead` (a wave mother is the lead's predecessor) |
+| `worker`, `fan_worker` | `lane_detail.role` when `reviewer` or `deep`, else `worker` |
+| `subagent` | `lane_detail.subagent_type`; NULL, empty or `unknown` -> `subagent` |
+| `hermes`, `iris` | `hermes`, `iris` |
+| `agw_workflow` | by `lane_detail.workflow`, below |
+| `other` | by source: `athena-teamchat` -> `teamchat`, `claude-code` -> `headless`, `audio-gateway-mini` -> `audio`, `image-gen-gateway`, `image-gateway` -> `image`, else the source name |
+| anything else | the lane |
+
+`agw_workflow` by workflow: none or empty -> `lane_detail.caller` when set and not `agw`/`agw-opencode`, else `agw`; `unknown` -> `agw`; `review`, `review_ocr`, `verify` -> `review` (angles and
+steps fold); `research`, `research-gateway` -> `research`; `podcast`, `podcast.*` -> `podcast`; the sources `audio-gateway`, `audio-gateway-vps`,
+`audio-proxy` (their workflow is the source name) -> `podcast` when the step is `podcast-*`, else `audio`; `door.speech`, `door.transcriptions` ->
+`audio`; `ab`, `ab-judge`, `bench`, `eval.*`, `cap.eval.*` -> `eval`; `narrative`, `narrative-polish`, `overview` -> `narrative`; `litellm`,
+`agent-gateway-opencode` (the workflow only repeats the source) -> `agw`; anything else -> the first dot segment of the workflow. A new
+workflow therefore shows up under its own name until a rule folds it; change the function in a new migration (`CREATE OR REPLACE`).
+
 ## Normalization
 
 - **repo** (`classifyRepo`, `src/repo.ts`; Argo's "project" dimension reads `usage.records_unique.repo`). `normalizeRepo` maps a path:
@@ -194,6 +218,7 @@ is invented). `sessionKey(source, record)` in `src/pg/sessions.ts` is the identi
 | the part of `source_id` before the first `:` | hermes, feuer (`<session>:<task>:<model>` rows of one session) |
 | the row's own `source_id` | any other session-grain row (opencode sessions, modelpick runs) |
 | none | litellm, astra, athena-teamchat (and codex error events): no session |
+| `lane_detail.session` (set by the repair pass, not the writer) | the agw `gateway` source: one session per key, see [Repair](#repair-and-session-evidence) |
 
 Per session in a batch: `first_ts`/`last_ts` span the records; every attribute (`account`, `billing`, `api_key`, `machine`, `model`,
 `effort`, `repo`, `issue_id`, `run_id`) is the first non-null value in time order, non-subagent records first, so no NULL
@@ -475,6 +500,12 @@ NULL, the workspace fill, `issue_id`, and `usage.flag_cutover_duplicates()`. Sta
 scan holds no row locks). `--dry-run` runs the same stages in one transaction and rolls it back; it prints the per-field change counts and
 the records and cost per repo before and after. The writer keeps a stored `repo`, `workspace` and `issue_id` when a collector reports NULL.
 The model repair changes `model` only: `make reprice` is what would price a row whose normalized model now has a price.
+
+**Gateway sessions** (stage 1): `source='gateway'` rows are written by agw without a `session_id`; each carries its session key in
+`lane_detail.session` (the modelpick and hermes rows have none and stay unlinked). The pass upserts one `usage.sessions` row per key
+(`source='gateway'`, lane and billing of the earliest row, the other attributes their first non-NULL value in time order) and sets
+`records.session_id` (new `ingested_at`). An existing session only widens `first_ts`/`last_ts` and fills NULL attributes; the sessions'
+repo and `issue_id` then follow the normal session stages. The result counts `gatewaySessions` (created) and `gatewayRecords` (linked).
 
 **issue_id** is the factory issue number: `lead-<n>-<k>` in `session_env.factory_session` (joined by `source_session_id`) and
 `SourceRoot/worktrees/<repo>/factory-<n>-<k>` paths give `<n>`; a subagent session inherits its parent's, records take their session's.

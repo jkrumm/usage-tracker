@@ -50,7 +50,7 @@ COMMANDS
   credit                 Admin API cost into platform_cost + the current and previous credit_cycles (ingest runs it hourly; this always runs)
     --days <N>           Trailing window in days (default 35; never shorter than the previous cycle)
   stats                  Aggregated token + cost report (successful requests only)
-    --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | role | subagent_type | effort
+    --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | tool | role | subagent_type | effort
     --since <N>          Only the last N days
   window                 Share of the Max accounts' 5h / 7d windows (points of the window), by session, lane, role, ...
     --by <dim>           session (default) | lane | role | subagent_type | issue | repo | account

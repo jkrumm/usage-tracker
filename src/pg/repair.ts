@@ -15,11 +15,15 @@ import { payload } from './writer.ts'
 // usage.records and usage.sessions from the verbatim columns (project_raw, model_raw, lane_detail) with the current rules, so a
 // changed rule or a source that bypasses the writer (the agw gateway, agent-workflows) is corrected after the fact:
 //
-//   stage 1   rule a/b over the distinct (source, project_raw, workspace, caller, origin, purpose) tuples, model
+//   stage 1   gateway sessions (below), rule a/b over the distinct (source, project_raw, workspace, caller, origin, purpose) tuples, model
 //             normalization over the distinct (model_raw, model) pairs, session renames, issue from worktree paths
 //   stage 2   session evidence (src/pg/session-repo.ts) for sessions that still have no repo, saved in usage.session_repo
 //   stage 3   the evidence, then rule c/d for what is still NULL, workspace fill, issue from the sessions, and the
 //             cutover duplicates (usage.flag_cutover_duplicates)
+//
+// The agw gateway writes straight to Postgres without a session id; its rows carry the session key in `lane_detail.session`,
+// so stage 1 upserts one `usage.sessions` row per key (source `gateway`) and links the records. Those sessions have no
+// transcript: the stage 2 scan only selects claude-code sessions.
 //
 // Set-based over distinct tuples, idempotent (an UPDATE only touches a row whose values differ), never touches a cost
 // column, never overwrites a non-NULL workspace or issue_id, never erases a repo. Changed records get a new `ingested_at`
@@ -52,6 +56,9 @@ export interface RepairResult {
   model: number
   issue: number
   duplicates: number
+  /** Gateway sessions created, and gateway records newly linked to a session (new or existing). */
+  gatewaySessions: number
+  gatewayRecords: number
   /** Verdicts of the session evidence scan by kind. */
   evidence: Partial<Record<Evidence, number>>
   /** Dry run only: records and cost per repo before and after, for the repos that moved. */
@@ -221,6 +228,59 @@ async function applyTuples(db: Db, sql: string, rules: TupleRule[]): Promise<Par
   return out
 }
 
+/**
+ * Gateway sessions: one `usage.sessions` row per `lane_detail.session` key of the unlinked `gateway` records (rows with
+ * no key, e.g. modelpick and hermes calls, stay unlinked). Lane = the earliest row's, every other attribute its first
+ * non-NULL value in time order; an existing session only widens its span and fills NULL attributes. Then the records get
+ * their `session_id`. Returns the sessions created and the records linked.
+ */
+async function repairGatewaySessions(
+  db: Db,
+  c: Ctx,
+): Promise<{ sessions: number; records: number }> {
+  const first = (col: string): string =>
+    `(array_agg(${col} ORDER BY ts, id) FILTER (WHERE ${col} IS NOT NULL))[1]`
+  const [created] = await db.unsafe(
+    `WITH g AS (
+       SELECT r.lane_detail->>'session' AS key, r.id, r.ts, r.lane, r.billing, r.account, r.api_key, r.machine, r.model,
+              r.repo, r.issue_id, r.run_id
+       FROM usage.records r
+       WHERE r.source = 'gateway' AND r.session_id IS NULL AND coalesce(r.lane_detail->>'session', '') <> '' AND ${c.rec}
+     ), n AS (
+       SELECT key, (array_agg(lane ORDER BY ts, id))[1] AS lane, (array_agg(billing ORDER BY ts, id))[1] AS billing,
+              ${first('account')} AS account, ${first('api_key')} AS api_key, ${first('machine')} AS machine,
+              ${first('model')} AS model, ${first('repo')} AS repo, ${first('issue_id')} AS issue_id,
+              ${first('run_id')} AS run_id, min(ts) AS first_ts, max(ts) AS last_ts
+       FROM g GROUP BY key
+     ), up AS (
+       INSERT INTO usage.sessions AS s (source, source_session_id, lane, billing, account, api_key, machine, model, repo,
+                                        issue_id, run_id, first_ts, last_ts)
+       SELECT 'gateway', key, lane, billing, account, api_key, machine, model, repo, issue_id, run_id, first_ts, last_ts FROM n
+       ON CONFLICT (source, source_session_id) DO UPDATE SET
+         first_ts = least(s.first_ts, EXCLUDED.first_ts), last_ts = greatest(s.last_ts, EXCLUDED.last_ts),
+         account = coalesce(s.account, EXCLUDED.account), api_key = coalesce(s.api_key, EXCLUDED.api_key),
+         machine = coalesce(s.machine, EXCLUDED.machine), model = coalesce(s.model, EXCLUDED.model),
+         repo = coalesce(s.repo, EXCLUDED.repo), issue_id = coalesce(s.issue_id, EXCLUDED.issue_id),
+         run_id = coalesce(s.run_id, EXCLUDED.run_id)
+       WHERE (s.first_ts, s.last_ts, s.account, s.api_key, s.machine, s.model, s.repo, s.issue_id, s.run_id)
+             IS DISTINCT FROM (least(s.first_ts, EXCLUDED.first_ts), greatest(s.last_ts, EXCLUDED.last_ts),
+               coalesce(s.account, EXCLUDED.account), coalesce(s.api_key, EXCLUDED.api_key), coalesce(s.machine, EXCLUDED.machine),
+               coalesce(s.model, EXCLUDED.model), coalesce(s.repo, EXCLUDED.repo), coalesce(s.issue_id, EXCLUDED.issue_id),
+               coalesce(s.run_id, EXCLUDED.run_id))
+       RETURNING (xmax = 0) AS inserted
+     )
+     SELECT count(*) FILTER (WHERE inserted)::int AS n FROM up`,
+  )
+  const records = await count(
+    db,
+    `UPDATE usage.records r SET session_id = s.id, ingested_at = ${c.now}
+     FROM usage.sessions s
+     WHERE s.source = 'gateway' AND s.source_session_id = r.lane_detail->>'session'
+       AND r.source = 'gateway' AND r.session_id IS NULL AND ${c.rec}`,
+  )
+  return { sessions: Number(created.n), records }
+}
+
 /** Model normalization over the distinct (model_raw, model) pairs and the distinct session models. */
 async function repairModels(db: Db, c: Ctx): Promise<number> {
   const pairs: Array<{ model_raw: string | null; model: string | null }> = await db.unsafe(
@@ -364,6 +424,7 @@ async function repoSnapshot(db: Db, c: Ctx): Promise<Map<string, { rows: number;
 interface Totals {
   counts: Counts
   duplicates: number
+  gateway: { sessions: number; records: number }
   evidence: Partial<Record<Evidence, number>>
 }
 
@@ -380,8 +441,10 @@ async function run(
   const counts = zero()
   const evidence: Totals['evidence'] = {}
   let duplicates = 0
+  const gateway = { sessions: 0, records: 0 }
 
   await atomic(async (tx) => {
+    Object.assign(gateway, await repairGatewaySessions(tx, c))
     add(counts, await applyTuples(tx, stage1Sql(c), await tupleRules(tx, c, 'ab', opts.known)))
     counts.model += await repairModels(tx, c)
     counts.repo += await repairSessionRepos(tx, c)
@@ -404,7 +467,7 @@ async function run(
     const [row] = await tx.unsafe('SELECT usage.flag_cutover_duplicates()::int AS n')
     duplicates = Number(row.n)
   })
-  return { counts, duplicates, evidence }
+  return { counts, duplicates, gateway, evidence }
 }
 
 /**
@@ -425,7 +488,13 @@ export async function repairAttribution(sql: SQL, opts: RepairOptions = {}): Pro
         await fn(tx)
       })
     })
-    return { ...t.counts, duplicates: t.duplicates, evidence: t.evidence }
+    return {
+      ...t.counts,
+      duplicates: t.duplicates,
+      gatewaySessions: t.gateway.sessions,
+      gatewayRecords: t.gateway.records,
+      evidence: t.evidence,
+    }
   }
 
   let result: RepairResult | undefined
@@ -448,7 +517,14 @@ export async function repairAttribution(sql: SQL, opts: RepairOptions = {}): Pro
       byRepo.sort(
         (x, y) => Math.abs(y.cost.after - y.cost.before) - Math.abs(x.cost.after - x.cost.before),
       )
-      result = { ...t.counts, duplicates: t.duplicates, evidence: t.evidence, byRepo }
+      result = {
+        ...t.counts,
+        duplicates: t.duplicates,
+        gatewaySessions: t.gateway.sessions,
+        gatewayRecords: t.gateway.records,
+        evidence: t.evidence,
+        byRepo,
+      }
       throw new Rollback()
     })
   } catch (err) {
@@ -460,7 +536,7 @@ export async function repairAttribution(sql: SQL, opts: RepairOptions = {}): Pro
 /** The dry run as text, for the CLI. */
 export function formatRepair(r: RepairResult, dryRun: boolean): string {
   const lines = [
-    `repair${dryRun ? ' (dry run, rolled back)' : ''}: repo ${r.repo}, workspace ${r.workspace}, model ${r.model}, issue ${r.issue}, duplicates ${r.duplicates}`,
+    `repair${dryRun ? ' (dry run, rolled back)' : ''}: repo ${r.repo}, workspace ${r.workspace}, model ${r.model}, issue ${r.issue}, duplicates ${r.duplicates}, gateway sessions ${r.gatewaySessions} (records linked ${r.gatewayRecords})`,
     `session evidence: ${
       Object.entries(r.evidence)
         .map(([k, n]) => `${k}=${n}`)

@@ -20,6 +20,7 @@ const row = (over: Partial<AthenaRow> = {}): AthenaRow => ({
   ts: '2026-10-27T10:00:00+00:00',
   touched: '2026-10-27T10:00:00+00:00',
   tool: 'chat-turn:chat',
+  model: null,
   ok: true,
   tokens_in: 100,
   tokens_out: 20,
@@ -31,7 +32,7 @@ const row = (over: Partial<AthenaRow> = {}): AthenaRow => ({
 })
 
 describe('athena-teamchat collector', () => {
-  test("maps a turn: tokens as-is, OpenCode's cost authoritative, no model", () => {
+  test("maps a turn: tokens as-is, OpenCode's cost authoritative, model NULL when not stored", () => {
     expect(toRecord(row())).toMatchObject({
       sourceId: 'turn:1',
       ts: '2026-10-27T10:00:00.000Z',
@@ -44,6 +45,12 @@ describe('athena-teamchat collector', () => {
       outcome: 'ok',
       authoritativeCostUsd: 0.0123,
     })
+  })
+
+  test('a stored model is carried; the archived rows and older rows stay NULL', () => {
+    expect(toRecord(row({ model: 'deepseek-v4.1-flash' })).model).toBe('deepseek-v4.1-flash')
+    expect(toRecord(row({ kind: 'llm', model: 'gpt-6.1-terra' })).model).toBe('gpt-6.1-terra')
+    expect(toRecord(row({ kind: 'sqlite-turn' })).model).toBeNull()
   })
 
   test('a failed call is an error row; source ids never collide across the tables', () => {
@@ -149,6 +156,23 @@ describe('athena-teamchat collector', () => {
         { billing: 'api_key', api_key: 'athena-team', cost_source: 'reported', cost: 0.0004 },
         { billing: 'api_key', api_key: 'athena-team', cost_source: 'reported', cost: 0.0123 },
       ])
+    })
+
+    test('a model never reprices a reported cost, and a re-read fills the model of an existing row', async () => {
+      const db = await pg.reset()
+      const write = (r: AthenaRow[]) =>
+        upsertRecords(db, 'athena-teamchat', r.map(toRecord), { defaultWorkspace: 'work' })
+      const stored = async () => [
+        ...(await db`SELECT model, cost_source, cost_usd::float8 AS cost FROM usage.records WHERE source_id = 'turn:1'`),
+      ]
+      await write([row({ cost: 0.5 })])
+      expect(await stored()).toEqual([{ model: null, cost_source: 'reported', cost: 0.5 }])
+      await write([row({ cost: 0.5, model: 'gpt-5.6-terra' })])
+      expect(await stored()).toEqual([
+        { model: 'gpt-5.6-terra', cost_source: 'reported', cost: 0.5 },
+      ])
+      await write([row({ cost: 0.5, model: 'gpt-5.6-terra' })])
+      expect(await stored()).toHaveLength(1)
     })
   })
 })

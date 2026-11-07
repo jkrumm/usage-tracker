@@ -166,7 +166,7 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
         await saveState(sql, REPAIR_SOURCE, {
           cursor: startedAt,
           status: 'ok',
-          note: `repo=${done.repo} workspace=${done.workspace} model=${done.model} issue=${done.issue} duplicates=${done.duplicates}`,
+          note: `repo=${done.repo} workspace=${done.workspace} model=${done.model} issue=${done.issue} duplicates=${done.duplicates} gateway_sessions=${done.gatewaySessions}`,
         })
       }
     } catch (err) {
@@ -244,7 +244,7 @@ export function formatCreditLine(credit: IngestSummary['credit']): string | null
 export function formatRepairLine(repair: IngestSummary['repair']): string | null {
   if (repair === null) return null
   if (repair === 'throttled') return 'repair: skipped (ran within the last hour)'
-  return `repair: repo ${repair.repo}, workspace ${repair.workspace}, model ${repair.model}, issue ${repair.issue}, duplicates ${repair.duplicates}`
+  return `repair: repo ${repair.repo}, workspace ${repair.workspace}, model ${repair.model}, issue ${repair.issue}, duplicates ${repair.duplicates}, gateway sessions ${repair.gatewaySessions}`
 }
 
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {

@@ -146,6 +146,10 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `api_key` with a NULL `api_key`, it is not an IU key, and `budget` reads IU keys only, so those rows never count against a
   cap); `account` is set only on `max` and `api_credit` rows, `api_key` (the IU key id) only on `api_key` rows; the CLI dimension `iu_key` is the `api_key`
   column and `lane` replaced `sub_tool`. Never compute cost, billing or lane in a collector.
+- **Tool vocabulary** (migration 0021, `docs/usage-schema.md` §Tool vocabulary): `usage.tool_of(source, lane, lane_detail)` is the one
+  mapping from a record to Argo's "Tool" dimension (`interactive`, `lead`, `reviewer`, `Explore`, `review`, `research`, `podcast`, `audio`,
+  `eval`, `teamchat`, ...), exposed as the `tool` column of `usage.records_unique` and `stats --by tool`. `lane` / `lane_detail` stay
+  verbatim (steps and angles remain queryable); a rule change is a new migration with `CREATE OR REPLACE FUNCTION`, nothing is stored.
 - **Repo attribution** (`docs/usage-schema.md` §Normalization, §Repair and session evidence): `records.repo` is Argo's "project" dimension and
   comes from `classifyRepo` (path, bare slug, session transcript evidence, source owner, origin/caller), with renames and folds applied
   to every result: **nothing is kept under an old name** (`iu/prometheus-epx` is `iu/epos-ai-teamchat-athena`, `iu/prometheus-scripts` is
@@ -155,7 +159,8 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   goes in `RETIRED_REPOS`. `make health` / `make verify` fail on an unknown repo or over 10% NULL-repo tokens in the last 7 days.
   `usage.records_unique` also hides rows before 2026-06-15 (migration 0017, kept in `records`) and the cutover duplicates
   (`usage.flag_cutover_duplicates()`: `hermes` rows after the gateway took over its calls, `agent-workflows` rows whose run the
-  gateway reported). The repair never writes a cost column; `make reprice` is what prices a row whose model it normalized.
+  gateway reported). The repair also gives the `gateway` source's rows sessions (one `usage.sessions` row per `lane_detail.session`
+  key, source `gateway`, rows without a key stay unlinked; stage 2 transcript evidence only selects claude-code sessions). The repair never writes a cost column; `make reprice` is what prices a row whose model it normalized.
 - **Collector failures never abort a run.** A throwing collector is recorded as `error` in `usage.collector_state`
   (cursor kept, so the next run retries from the same watermark) and the rest continue, even when Postgres is the
   failure and the error row cannot be written either (logged, the loop goes on, the summary line still prints); a collector with only a note and
@@ -209,8 +214,8 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `~/.local/state/athena/pgsock`, role `athena_app` via the owner's ident map; override `ATHENA_PG_SOCKET_DIR`,
   `ATHENA_PSQL`). `turns` (chat/analysis turns incl. the OpenCode sandbox: tokens + OpenCode's own cost),
   `llm_calls` (host-side calls, cost = tokens × configured prices), `title_calls`; source ids `turn:`/`llm:`/
-  `title:<id>`, `subTool` `chat-turn:<kind>`/`llm:<caller>`/`title`, model NULL (not stored per call), cost
-  authoritative. Re-reads three days behind the newest row because turns mutate until ended. No text is
+  `title:<id>`, `subTool` `chat-turn:<kind>`/`llm:<caller>`/`title`, model from `turns.model` / `llm_calls.model` (NULL on older rows and the archived SQLite rows; `reasoning_tokens` is not read), cost
+  authoritative (a reported cost is never repriced by the model). Re-reads three days behind the newest row because turns mutate until ended. No text is
   read, only counts. `block_results`/`quality_reports`/`artifact_audits` cost columns are cents and
   ignored. The relay is the only holder of the team key, so the whole source is the team key's.
   The build phase (2026-10-22..25, ~15.6 USD, evals through chat-api included) lives in the archived SQLite

@@ -309,4 +309,75 @@ describePg('repairAttribution', () => {
     expect((await db`SELECT repo FROM usage.sessions WHERE id = ${sid}`)[0].repo).toBe('dotfiles')
     expect((await rec('ev')).workspace).toBe('private')
   })
+  test('gateway rows get one session per lane_detail.session key, idempotently, and the session repo follows the rows', async () => {
+    const H = (n: number) => new Date(Date.parse(T) + n * 3_600_000).toISOString()
+    await put({
+      id: 'g2',
+      source: 'gateway',
+      ts: H(1),
+      project: 'argo',
+      workspace: 'private',
+      detail: { session: 's1' },
+      cost: 2,
+    })
+    await put({ id: 'g1', source: 'gateway', ts: H(0), detail: { session: 's1' }, cost: 1 })
+    await put({ id: 'g3', source: 'gateway', ts: H(2), detail: { session: 's2' }, cost: 4 })
+    await put({ id: 'nokey', source: 'gateway', detail: { session: null } })
+    await put({ id: 'cc', source: 'claude-code', detail: { session: 's1' } })
+    await db`UPDATE usage.records SET lane = 'agw_workflow', billing = 'api_credit', account = 'me'
+             WHERE source = 'gateway' AND source_id = 'g1'`
+    const costs = async () =>
+      (await db`SELECT source_id, cost_usd::float8 AS c FROM usage.records ORDER BY source_id`).map(
+        (r: { source_id: string; c: number }) => `${r.source_id}=${r.c}`,
+      )
+    const before = await costs()
+
+    const dry = await run({ dryRun: true })
+    expect(dry.gatewaySessions).toBe(2)
+    expect(dry.gatewayRecords).toBe(3)
+    expect((await db`SELECT count(*)::int AS n FROM usage.sessions`)[0].n).toBe(0)
+
+    const res = await run()
+    expect(res.gatewaySessions).toBe(2)
+    expect(res.gatewayRecords).toBe(3)
+    const sessions = await db`
+      SELECT source, source_session_id AS key, lane, billing, account, repo, first_ts, last_ts
+      FROM usage.sessions ORDER BY source_session_id`
+    expect(sessions.map((s: { key: string }) => s.key)).toEqual(['s1', 's2'])
+    const s1 = sessions[0]
+    expect(s1.source).toBe('gateway')
+    expect(s1.lane).toBe('agw_workflow') // the earliest row's
+    expect(s1.billing).toBe('api_credit')
+    expect(s1.account).toBe('me')
+    expect(new Date(s1.first_ts).toISOString()).toBe(H(0))
+    expect(new Date(s1.last_ts).toISOString()).toBe(H(1))
+    expect(s1.repo).toBe('argo') // from g2, set by the repo rules in the same pass
+    const linked = await db`SELECT source_id, session_id FROM usage.records ORDER BY source_id`
+    const byId = Object.fromEntries(
+      linked.map((r: { source_id: string; session_id: number | null }) => [
+        r.source_id,
+        r.session_id,
+      ]),
+    )
+    expect(byId.g1).toBe(byId.g2)
+    expect(byId.g3).not.toBeNull()
+    expect(byId.nokey).toBeNull()
+    expect(byId.cc).toBeNull()
+    expect(await costs()).toEqual(before)
+
+    const again = await run()
+    expect(again.gatewaySessions).toBe(0)
+    expect(again.gatewayRecords).toBe(0)
+
+    // a later row of a known session only widens the span
+    await put({ id: 'g4', source: 'gateway', ts: H(5), detail: { session: 's1' } })
+    const widened = await run()
+    expect(widened.gatewaySessions).toBe(0)
+    expect(widened.gatewayRecords).toBe(1)
+    const [after] =
+      await db`SELECT last_ts, lane FROM usage.sessions WHERE source_session_id = 's1'`
+    expect(new Date(after.last_ts).toISOString()).toBe(H(5))
+    expect(after.lane).toBe('agw_workflow')
+    expect((await db`SELECT count(*)::int AS n FROM usage.session_repo`)[0].n).toBe(0)
+  })
 })

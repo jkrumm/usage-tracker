@@ -17,6 +17,7 @@ export type GroupBy =
   | 'role'
   | 'subagent_type'
   | 'effort'
+  | 'tool'
 
 interface StatRow {
   key: string
@@ -48,6 +49,8 @@ const GROUP_EXPR: Record<GroupBy, string> = {
   role: "coalesce(lane_detail->>'role', '(none)')",
   subagent_type: "coalesce(lane_detail->>'subagent_type', '(none)')",
   effort: "coalesce(effort, '(none)')",
+  // The canonical tool vocabulary (usage.tool_of, migration 0021), a column of usage.records_unique.
+  tool: 'tool',
 }
 
 export const GROUP_BY_DIMS = Object.keys(GROUP_EXPR) as GroupBy[]

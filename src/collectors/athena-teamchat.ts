@@ -19,13 +19,14 @@ import type { Collector, CollectContext, CollectResult, UsageRecord } from '../t
 // Schema drift (2026-11-01): `turns.kind` became `turns.workflow` and `title_calls` was folded
 // into `llm_calls` (titles from 2026-10-29T06:14Z on were already ingested as `llm:<id>` with
 // subTool `llm:title`; the earlier `title:<id>` rows stay as they are). A turn's failure is now
-// `end_reason` (`succeeded` / `error:...`) while `state` is `ended` either way. `turns.model`,
-// `llm_calls.model` and `turns.reasoning_tokens` now exist but are not read (see AGENTS.md).
+// `end_reason` (`succeeded` / `error:...`) while `state` is `ended` either way. `turns.model` and
+// `llm_calls.model` now exist and are read (NULL on older rows); `turns.reasoning_tokens` is not read (see AGENTS.md).
 //
 // Not read: block_results / quality_reports / artifact_audits carry cost columns, but
 // together they are cents and (audits) a derived follow-up number, so reading them would
-// risk double counting for nothing. No model id is stored per call (the relay pins the
-// allowed models), so rows have model NULL and carry their cost as authoritative.
+// risk double counting for nothing. Postgres rows carry the model the call stored (`turns.model`,
+// `llm_calls.model`; NULL on older rows, always NULL for the archived SQLite rows) and their cost as
+// authoritative: usage.compute_cost keeps a reported cost verbatim, so the model never reprices them.
 //
 // Before the Postgres cutover (2026-10-26) the teamchat kept the same two tables in SQLite;
 // that file is archived read-only and holds the build phase (2026-10-22..25, ~15.6 USD,
@@ -59,6 +60,8 @@ export interface AthenaRow {
   /** Last change of the row: a turn's end, else its start; created_at for the other tables. */
   touched: string
   tool: string
+  /** The model the call stored; null on older rows and on the archived SQLite rows. */
+  model: string | null
   ok: boolean
   tokens_in: number
   tokens_out: number
@@ -77,13 +80,13 @@ const psqlBin = () => process.env.ATHENA_PSQL ?? DEFAULT_PSQL
 // One JSON document per run: psql -At prints a single text value.
 const SQL = `
 SELECT coalesce(json_agg(r ORDER BY r.ts), '[]'::json) FROM (
-  SELECT 'turn' AS kind, id, started_at AS ts, coalesce(ended_at, started_at) AS touched, 'chat-turn:' || workflow AS tool,
+  SELECT 'turn' AS kind, id, started_at AS ts, coalesce(ended_at, started_at) AS touched, 'chat-turn:' || workflow AS tool, model,
          (state = 'ended' AND coalesce(end_reason, '') NOT LIKE 'error%') AS ok,
          tokens_in, tokens_out, cache_read_tokens AS cache_read, cache_write_tokens AS cache_write,
          cost::float8 AS cost, (extract(epoch FROM ended_at - started_at) * 1000)::bigint AS ms
     FROM athena.turns WHERE coalesce(ended_at, started_at) >= :'since'::timestamptz
   UNION ALL
-  SELECT 'llm', id, created_at, created_at, 'llm:' || caller, ok, input_tokens, output_tokens, 0, 0, cost::float8, ms
+  SELECT 'llm', id, created_at, created_at, 'llm:' || caller, model, ok, input_tokens, output_tokens, 0, 0, cost::float8, ms
     FROM athena.llm_calls WHERE created_at >= :'since'::timestamptz
 ) r;`
 
@@ -127,7 +130,7 @@ export function toRecord(row: AthenaRow): UsageRecord {
     sourceId: `${row.kind}:${row.id}`,
     grain: 'message',
     ts: new Date(row.ts).toISOString(),
-    model: null,
+    model: row.model ?? null,
     project: 'athena-teamchat',
     workspace: 'work',
     subTool: row.tool,
@@ -186,6 +189,7 @@ export function readArchive(path: string): AthenaRow[] {
         ts: t.started_at,
         touched: t.ended_at ?? t.started_at,
         tool: 'chat-turn:chat',
+        model: null,
         ok: !(t.outcome ?? '').startsWith('error'),
         tokens_in: t.input_tokens,
         tokens_out: t.output_tokens,
@@ -214,6 +218,7 @@ export function readArchive(path: string): AthenaRow[] {
         ts: t.created_at,
         touched: t.created_at,
         tool: 'title',
+        model: null,
         ok: t.ok === 1,
         tokens_in: t.input_tokens,
         tokens_out: t.output_tokens,
