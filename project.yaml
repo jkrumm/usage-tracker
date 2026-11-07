@@ -10,3 +10,7 @@ deploy:
 ship:
   - { paths: ['**'], via: push }
 leads: 1
+signals:
+  github:
+    author: jkrumm
+    since: 2026-11-07T06:30:00Z
