@@ -59,10 +59,14 @@ describePg('pg migrations', () => {
       'session_events',
       'session_repo',
       'session_signals',
-      'session_window_share',
       'sessions',
       'window_attribution',
       'window_intervals',
+    ])
+    // Stored since migration 0023 (information_schema.tables does not list materialized views).
+    const stored = await sql`SELECT matviewname FROM pg_matviews WHERE schemaname = 'usage'`
+    expect(stored.map((t: { matviewname: string }) => t.matviewname)).toEqual([
+      'session_window_share',
     ])
     const [{ n }] = await sql`
       SELECT count(*)::int AS n FROM pg_indexes WHERE schemaname = 'usage' AND tablename = 'records'`

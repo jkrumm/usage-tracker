@@ -47,7 +47,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 
 **Readers outside this repo.** The software-factory's `factory` role has `USAGE` on the schema and `SELECT` on `sessions`, `records_unique` and
 `session_window_share` only (migration 0022, guarded on the role existing: a host migrated before the role exists gets nothing and needs a new migration repeating the grant; no default privileges, no writes). A migration that `DROP`s and
-recreates one of those relations must repeat the grant; `CREATE OR REPLACE VIEW` keeps it.
+recreates one of those relations must repeat the grant (0023 did, for the stored `session_window_share`); `CREATE OR REPLACE VIEW` keeps it.
 
 ### records
 
@@ -321,7 +321,12 @@ Built in `0011_window_share.sql`, rebuilt per window in `0012_window_share_per_w
   proportion to `cost_usd` (`share_pct`, points of the window: 3.2 = 3.2 % of the 5 h or 7 d window). Per interval the shares
   sum to `delta_pct` exactly. Unpriced records (NULL cost) carry no share.
 - `usage.session_window_share` — a session's share = the sum of its attributed deltas, per window
-  (`five_hour_pct`, `seven_day_pct`), by `(account, session_id)`. A subagent is a session of its own; a tree's share is the
+  (`five_hour_pct`, `seven_day_pct`), by `(account, session_id)`. **A materialized view since migration 0023** (the view took ~12 s per
+  read): `ingest` runs `REFRESH MATERIALIZED VIEW CONCURRENTLY` on it after the collectors and the repair pass (`src/pg/window-share.ts`;
+  `collector_state` key `window-share` holds the outcome), so it is at most one ingest interval (15 min) behind `records` / `quota_samples`
+  and a filtered read is an index lookup on the unique `(account, session_id)` index. A manual refresh: `REFRESH MATERIALIZED VIEW
+  usage.session_window_share` as the `usage` role. `window_attribution` stays a live view (0023 reads each interval's records through
+  the `(account, ts)` index, ~1 s instead of ~13 s). A subagent is a session of its own; a tree's share is the
   sum over a session and its children (`parent_session_id`).
 
 **Residual.** An interval whose `records_cost = 0` moved the window with nothing to blame (the MacBook mirror's lag, a

@@ -10,6 +10,7 @@ import { upsertSessionEvents } from './pg/events.ts'
 import { repairAttribution, type RepairOptions, type RepairResult } from './pg/repair.ts'
 import { upsertSessionEnv } from './pg/session-env.ts'
 import { loadCursor, loadSessionEnvTable, saveState } from './pg/state.ts'
+import { refreshWindowShare } from './pg/window-share.ts'
 import { upsertRecords } from './pg/writer.ts'
 import { unpricedByModel, type UnpricedModel } from './report.ts'
 import { syncIumac } from './remote.ts'
@@ -22,6 +23,8 @@ const CREDIT_EVERY_MS = 3_600_000
 /** State-only key in usage.collector_state: the attribution repair pass's last attempt (cursor) and outcome. */
 const REPAIR_SOURCE = 'repair'
 const REPAIR_EVERY_MS = 3_600_000
+/** State-only key in usage.collector_state: the last refresh of the stored window share and its outcome. */
+const WINDOW_SHARE_SOURCE = 'window-share'
 
 export interface SourceResult {
   source: string
@@ -65,6 +68,8 @@ export interface IngestOptions {
   credit?: boolean | CreditPassOptions
   /** Run the attribution repair pass (src/pg/repair.ts) at most hourly: `true`, or its options (tests). Default: same condition as `accounts`. */
   repair?: boolean | RepairOptions
+  /** Refresh the stored usage.session_window_share (src/pg/window-share.ts): default same condition as `accounts`. */
+  windowShare?: boolean
 }
 
 /**
@@ -171,6 +176,19 @@ export async function runIngest(sql: SQL, opts: IngestOptions = {}): Promise<Ing
       }
     } catch (err) {
       log.error(`repair: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Last of the writers: the stored window share reads the records, quota samples and corrections of this run. Every run
+  // (about 1 s); a failure is logged and recorded, not fatal, and the previous contents stay readable.
+  if (opts.windowShare ?? (!opts.only && !opts.collectors)) {
+    try {
+      const { rows } = await refreshWindowShare(sql)
+      await saveState(sql, WINDOW_SHARE_SOURCE, { status: 'ok', note: `rows=${rows}` })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      log.error(`window-share: ${message}`)
+      await saveState(sql, WINDOW_SHARE_SOURCE, { status: 'error', note: message }).catch(() => {})
     }
   }
 

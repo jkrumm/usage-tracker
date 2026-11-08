@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from 'bun:test'
 import type { SQL } from 'bun'
 import { migratedDb } from './fixture.ts'
+import { refreshWindowShare } from './window-share.ts'
 import { describePg } from './testing.ts'
 
 // Expected shares are computed by hand from this fixture (account a, 2026-10-30, times UTC, five-hour window unless noted):
@@ -93,6 +94,8 @@ describePg('usage.session_window_share', () => {
     await record('s10', 'e', '10:20', 1)
     await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account, cost_usd)
               VALUES ('claude-code', 'sessionless', 'message', ${T('10:25')}, 'max', 'c', 4)`
+    // session_window_share is stored (migration 0023): ingest refreshes it, the test does the same.
+    await refreshWindowShare(sql)
   })
 
   const shares = async (account: string) => {
@@ -177,5 +180,24 @@ describePg('usage.session_window_share', () => {
   test('of two machines reading at the same instant the complete reading counts', async () => {
     const e = await shares('e')
     expect([...e.values()]).toEqual([{ five: 6, seven: 0 }])
+  })
+
+  test('the stored share is read as of the last refresh and a refresh picks up new records', async () => {
+    const [{ before }] = await sql`
+      SELECT five_hour_pct::float8 AS before FROM usage.session_window_share WHERE account = 'e'`
+    expect(before).toBe(6)
+    await sql`INSERT INTO usage.records (source, source_id, grain, ts, session_id, billing, account, cost_usd)
+              VALUES ('claude-code', 'late-e', 'message', ${T('10:25')}, ${ids.s11}, 'max', 'e', 1)`
+    const [stale] =
+      await sql`SELECT count(*)::int AS n FROM usage.session_window_share WHERE account = 'e'`
+    expect(stale.n).toBe(1)
+    await refreshWindowShare(sql)
+    // 6 points split by cost 1 (s10) : 1 (s11)
+    const rows = await sql`
+      SELECT session_id, five_hour_pct::float8 AS five FROM usage.session_window_share WHERE account = 'e' ORDER BY session_id`
+    expect(rows.map((r: Record<string, unknown>) => [Number(r.session_id), r.five])).toEqual([
+      [ids.s10, 3],
+      [ids.s11, 3],
+    ])
   })
 })

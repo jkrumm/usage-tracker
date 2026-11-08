@@ -35,7 +35,8 @@ push step.
 - `src/report.ts` — `stats`, `sources`, `health` staleness and the attribution guard, `unpricedByModel`, `billing-audit` over the `usage` schema.
 - `src/window.ts` — `window`: the share of the Max 5 h / 7 d windows by session, lane, role, subagent type, issue, repo or
   account over the `usage.window_attribution` / `session_window_share` views (migration 0011; rule and limits in
-  `docs/usage-schema.md` §Window share), `make window BY=lane`; the residual (window moved, no priced record) is printed.
+  `docs/usage-schema.md` §Window share; `session_window_share` is a materialized view since 0023, refreshed by `ingest` via
+  `src/pg/window-share.ts`), `make window BY=lane`; the residual (window moved, no priced record) is printed.
 - `src/weekly.ts` — `report weekly [--week <iso>] [--format md|json] [--out <dir>]`: "where the window went" for one ISO week
   (verdict, window share by lane / role / subagent type, skill loads, cache ratio and compactions by lane, top sessions,
   numbered **findings** with a stable id `<rule>:<subject>` and their effect against the previous week); `make report`.
