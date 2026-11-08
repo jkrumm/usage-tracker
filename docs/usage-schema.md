@@ -45,6 +45,10 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `session_repo` | claude-code sessions resolved from their transcript, see [Repair](#repair-and-session-evidence) | `PK (session_id)` |
 | `schema_migrations` | applied files | `version` |
 
+**Readers outside this repo.** The software-factory's `factory` role has `USAGE` on the schema and `SELECT` on `sessions`, `records_unique` and
+`session_window_share` only (migration 0022, guarded on the role existing; no default privileges, no writes). A migration that `DROP`s and
+recreates one of those relations must repeat the grant; `CREATE OR REPLACE VIEW` keeps it.
+
 ### records
 
 `(source, source_id)` is the identity; **machine is an attribute** (the old three-part key produced $3,081 of duplicates).
