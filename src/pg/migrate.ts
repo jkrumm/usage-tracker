@@ -96,6 +96,6 @@ export async function migrate(
     return { applied, alreadyApplied: migrations.length - applied.length }
   } finally {
     await conn`SELECT pg_advisory_unlock(${LOCK_KEY})`.catch(() => undefined)
-    conn.release()
+    await conn.release()
   }
 }
