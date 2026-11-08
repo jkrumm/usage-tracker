@@ -12,6 +12,8 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory') THEN
     GRANT USAGE ON SCHEMA usage TO factory;
     GRANT SELECT ON usage.sessions, usage.records_unique, usage.session_window_share TO factory;
+  ELSE
+    RAISE NOTICE 'role factory does not exist: 0022 granted nothing; create the role first, then add a migration repeating this grant';
   END IF;
 END
 $$;

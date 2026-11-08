@@ -46,7 +46,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `schema_migrations` | applied files | `version` |
 
 **Readers outside this repo.** The software-factory's `factory` role has `USAGE` on the schema and `SELECT` on `sessions`, `records_unique` and
-`session_window_share` only (migration 0022, guarded on the role existing; no default privileges, no writes). A migration that `DROP`s and
+`session_window_share` only (migration 0022, guarded on the role existing: a host migrated before the role exists gets nothing and needs a new migration repeating the grant; no default privileges, no writes). A migration that `DROP`s and
 recreates one of those relations must repeat the grant; `CREATE OR REPLACE VIEW` keeps it.
 
 ### records
