@@ -118,6 +118,7 @@ describe('renameRepo', () => {
     ['basalt-dx-trial', 'basalt-ui'],
     ['basalt-ui-obsidian-trial', 'basalt-ui'],
     ['basalt-ui-playground', 'basalt-ui'],
+    ['basalt-ui-plan-tune', 'basalt-ui'],
     ['basalt-ui-obsidian', 'basalt-ui-obsidian'],
     ['king-smith-mac', 'king-smith-walkingpad-mac'],
     ['free-planning-poker-x', 'free-planning-poker'],

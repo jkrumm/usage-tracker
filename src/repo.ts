@@ -58,7 +58,7 @@ const FOLDS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^linewatch-basalt-/, 'linewatch'],
   [/^bun-email-api-/, 'bun-email-api'],
   [
-    /^(?:basalt-expr-trial|basalt-dx-trial$|basalt-ui-obsidian-trial$|basalt-ui-playground$)/,
+    /^(?:basalt-expr-trial|basalt-dx-trial$|basalt-ui-obsidian-trial$|basalt-ui-playground$|basalt-ui-plan-tune$)/,
     'basalt-ui',
   ],
   [/^free-planning-poker-/, 'free-planning-poker'],
