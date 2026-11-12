@@ -28,7 +28,10 @@ import { iumacDisabled, iumacHost, SSH_OPTS } from '../remote.ts'
 export const PORTAL_SOURCE = 'iu-portal'
 const REFRESH_MS = 4 * 3_600_000
 const REMOTE_CMD = 'cd ~/.local/share/iu-portal/tool && bun scrape.ts daily monthly'
-const HANG_GUARD_MS = 5 * 60_000
+// One scrape (headed browser, daily + monthly) runs about a minute. Two keys at the old 5 min guard filled the
+// ingest's whole 600 s deadline on their own; a hang now costs 2.5 min and ends the pass (HUNG).
+const HANG_GUARD_MS = 150_000
+const HUNG = 124
 const KEY_TIMEOUT_MS = 30_000
 const OTHER_FAILURE_BACKOFF_MS = 3_600_000
 const UNREACHABLE = 255
@@ -139,6 +142,8 @@ export const sshFetcher: PortalFetcher = async (def) => {
     new Response(proc.stderr).text(),
     proc.exited,
   ])
+  if (proc.signalCode)
+    return { code: HUNG, stdout, stderr: `scrape hung, killed after ${HANG_GUARD_MS / 1000} s` }
   return { code, stdout, stderr }
 }
 
@@ -277,13 +282,30 @@ interface KeyOutcome {
 /**
  * Fetch and store each key's portal report, at most once per 4 h per key. Returns the
  * number of daily cells written (0 when throttled, unreachable or failed). Never throws.
- * A signed-out session or an unreachable MacBook is the same for every key, so it ends the pass.
+ * A signed-out session, an unreachable MacBook or a hung scrape is the same for every key, so it ends the pass.
  */
 export async function collectPortal(sql: SQL, opts: CollectPortalOptions = {}): Promise<number> {
   let cells = 0
-  for (const def of opts.keys ?? IU_KEYS) {
+  const keys = opts.keys ?? IU_KEYS
+  for (const [i, def] of keys.entries()) {
     const out = await collectPortalKey(sql, def, opts)
     cells += out.cells
+    if (out.code === HUNG) {
+      // The hang is the MacBook's, not the key's: the keys not tried back off like the one that hung, or each
+      // 15 min run would pay the hang guard again on the next key.
+      const now = opts.now ?? Date.now()
+      for (const rest of keys.slice(i + 1)) {
+        const state = await readPortalState(sql, rest.id)
+        await writePortalState(
+          sql,
+          rest.id,
+          { ...state, lastAttempt: now, lastCode: HUNG },
+          'error',
+          'skipped: the scrape hung for another key',
+        )
+      }
+      break
+    }
     if (out.code === SESSION_EXPIRED || out.code === UNREACHABLE) break
   }
   return cells

@@ -189,6 +189,19 @@ describePg('collectPortal (Postgres)', () => {
     expect((await readPortalState(db)).lastOk).toBe(NOW)
   })
 
+  test('a hung scrape ends the pass for every key and backs off 1 h', async () => {
+    let calls = 0
+    const hung = async () => {
+      calls++
+      return { code: 124, stdout: '', stderr: 'scrape hung' }
+    }
+    const both = [iuKeyDef('personal')!, iuKeyDef('athena-team')!]
+    await collectPortal(db, { keys: both, now: NOW, fetch: hung })
+    expect(calls).toBe(1)
+    await collectPortal(db, { keys: both, now: NOW + 900_000, fetch: hung })
+    expect(calls).toBe(1)
+  })
+
   test('an expired session backs off for 4 h instead of retrying every run', async () => {
     let calls = 0
     const expired = async () => {

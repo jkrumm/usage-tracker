@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { resolveIumacLabel } from './remote.ts'
+import { SYNC_BUDGET_MS, legLimits, resolveIumacLabel } from './remote.ts'
 
 // resolveIumacLabel is the pure decision core of iumacMachineLabel(): the I/O
 // (env read, disk cache read, ssh probe) all happens in the caller, so this
@@ -57,5 +57,21 @@ describe('resolveIumacLabel', () => {
     expect(resolveIumacLabel({ envLabel: undefined, diskLabel: null, probedLabel: null })).toBe(
       'iumac',
     )
+  })
+})
+
+describe('legLimits', () => {
+  test('a full budget keeps the per-leg limits', () => {
+    expect(legLimits(SYNC_BUDGET_MS)).toEqual({ spawnMs: 75_000, rsyncS: 60 })
+  })
+
+  test('a nearly spent budget caps both timers', () => {
+    expect(legLimits(20_000)).toEqual({ spawnMs: 20_000, rsyncS: 20 })
+  })
+
+  test('too little left skips the leg', () => {
+    expect(legLimits(4_999)).toBeNull()
+    expect(legLimits(0)).toBeNull()
+    expect(legLimits(-1)).toBeNull()
   })
 })

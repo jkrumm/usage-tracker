@@ -150,6 +150,26 @@ interface LegResult {
 // switch if both of those somehow don't fire.
 export const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
 const RSYNC_TIMEOUT_S = 60
+// A healthy MacBook answers `true` in about a second, even over the DERP relay.
+const PROBE_TIMEOUT_MS = 20_000
+// The whole mirror sync (probe excluded) shares one budget. The ingest LaunchAgent has a 600 s deadline, and a
+// half-up link (the probe answers, then every leg stalls to its own kill timer) otherwise stacks five legs of
+// 75 s on top of the probe and the rest of the run — the 2026-11-12 rc=124 runs. A spent budget skips the
+// remaining legs; offsets make the catch-up lossless next run.
+export const SYNC_BUDGET_MS = 150_000
+const MIN_LEG_MS = 5_000
+
+/**
+ * What one rsync leg may spend given the time left in the sync budget: the spawn's kill timer and rsync's own
+ * inactivity timeout, both capped by the budget; null when too little is left to start a leg.
+ */
+export function legLimits(leftMs: number): { spawnMs: number; rsyncS: number } | null {
+  if (leftMs < MIN_LEG_MS) return null
+  return {
+    spawnMs: Math.min((RSYNC_TIMEOUT_S + 15) * 1000, leftMs),
+    rsyncS: Math.min(RSYNC_TIMEOUT_S, Math.floor(leftMs / 1000)),
+  }
+}
 const SPAWN_PATH = `/usr/bin:/usr/local/bin:/opt/homebrew/bin:${process.env.PATH ?? ''}`
 
 /**
@@ -179,7 +199,7 @@ async function iumacReachable(): Promise<boolean> {
     const proc = Bun.spawn(['ssh', ...SSH_OPTS, iumacHost(), 'true'], {
       stdout: 'ignore',
       stderr: 'ignore',
-      timeout: (RSYNC_TIMEOUT_S + 15) * 1000,
+      timeout: PROBE_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       env: { ...process.env, PATH: SPAWN_PATH },
     })
@@ -211,11 +231,12 @@ export async function syncIumac(log: Logger): Promise<SyncResult> {
     return { ok: false, note, logsOk: false, codexOk: false, usageJsonlOk: false }
   }
 
-  const logs = await syncLeg('logs', iumacLogsDir())
-  const projects = await syncLeg('projects', iumacProjectsDir())
-  const codex = await syncLeg('codex', iumacCodexDir())
+  const deadline = Date.now() + SYNC_BUDGET_MS
+  const logs = await syncLeg('logs', iumacLogsDir(), deadline)
+  const projects = await syncLeg('projects', iumacProjectsDir(), deadline)
+  const codex = await syncLeg('codex', iumacCodexDir(), deadline)
   if (!codex.ok) log.warn(`iumac mirror: ${codex.note}`)
-  const usageJsonl = await syncLeg('usage-jsonl', iumacUsageJsonlDir())
+  const usageJsonl = await syncLeg('usage-jsonl', iumacUsageJsonlDir(), deadline)
   if (!usageJsonl.ok) log.warn(`iumac mirror: ${usageJsonl.note}`)
 
   if (!projects.ok) {
@@ -300,7 +321,7 @@ function legSubPaths(leg: Leg): string[] {
  * tolerance is handled by rsync exit 23/24 being surfaced as-is in the note
  * rather than special-cased — the leg's flag is advisory anyway.
  */
-async function syncLeg(leg: Leg, destDir: string): Promise<LegResult> {
+async function syncLeg(leg: Leg, destDir: string, deadline: number): Promise<LegResult> {
   for (const sub of legSubPaths(leg)) {
     const dest = sub ? join(destDir, sub) : destDir
     try {
@@ -309,7 +330,7 @@ async function syncLeg(leg: Leg, destDir: string): Promise<LegResult> {
       const msg = err instanceof Error ? err.message : String(err)
       return { ok: false, note: `iumac ${leg} mkdir failed: ${msg}` }
     }
-    const result = await rsyncDir(leg, dest, sub)
+    const result = await rsyncDir(leg, dest, sub, deadline)
     // A month with no Codex activity simply has no directory on the MacBook,
     // and rsync calls that exit 23 ("partial transfer due to error", with a
     // `(l)stat: No such file or directory` on the source). That is the normal
@@ -320,14 +341,26 @@ async function syncLeg(leg: Leg, destDir: string): Promise<LegResult> {
   return { ok: true }
 }
 
-async function rsyncDir(leg: Leg, destDir: string, sub = ''): Promise<LegResult> {
+async function rsyncDir(
+  leg: Leg,
+  destDir: string,
+  sub: string,
+  deadline: number,
+): Promise<LegResult> {
+  const limits = legLimits(deadline - Date.now())
+  if (!limits) {
+    return {
+      ok: false,
+      note: `iumac ${leg}${sub ? `/${sub}` : ''} skipped — mirror sync budget spent`,
+    }
+  }
   const host = iumacHost()
   const remote = sub ? `${REMOTE_SUBDIR[leg]}/${sub}` : REMOTE_SUBDIR[leg]
   const args = [
     'rsync',
     '-a',
     '--delete',
-    `--timeout=${RSYNC_TIMEOUT_S}`,
+    `--timeout=${limits.rsyncS}`,
     '-e',
     `ssh ${SSH_OPTS.join(' ')}`,
     '--include=*/',
@@ -344,7 +377,7 @@ async function rsyncDir(leg: Leg, destDir: string, sub = ''): Promise<LegResult>
       stderr: 'pipe',
       // Belt-and-braces: rsync's own --timeout should always fire first, this
       // is only the fallback if the process wedges some other way.
-      timeout: (RSYNC_TIMEOUT_S + 15) * 1000,
+      timeout: limits.spawnMs,
       killSignal: 'SIGKILL',
       env: { ...process.env, PATH: SPAWN_PATH },
     })
