@@ -276,7 +276,8 @@ export async function resolveSessionRepos(
       `SELECT s.id::int AS id, coalesce(s.repo, e.repo) AS repo
        FROM usage.sessions s LEFT JOIN usage.session_repo e ON e.session_id = s.id
        WHERE s.id = ANY($1::bigint[]) AND coalesce(s.repo, e.repo) IS NOT NULL`,
-      [parentIds],
+      // bun >= 1.4 sends a JS array through unsafe() as its bare text, not a PG array: pass the array literal
+      [`{${parentIds.join(',')}}`],
     )
     for (const r of rows) parentRepo.set(r.id, r.repo)
   }

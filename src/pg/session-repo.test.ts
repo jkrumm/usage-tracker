@@ -265,11 +265,10 @@ describePg('session repo evidence (Postgres)', () => {
 
   test('the table refuses a verdict that contradicts itself', async () => {
     const id = await session('x')
-    await expect(
-      db`INSERT INTO usage.session_repo (session_id, repo, evidence) VALUES (${id}, 'argo', 'none')`,
-    ).rejects.toThrow()
-    await expect(
-      db`INSERT INTO usage.session_repo (session_id, repo, evidence) VALUES (${id}, NULL, 'git-sha')`,
-    ).rejects.toThrow()
+    // bun 1.4: `expect(<sql query>).rejects` never settles on the lazy query object, so run it inside an async fn
+    const insert = async (repo: string | null, evidence: string) =>
+      await db`INSERT INTO usage.session_repo (session_id, repo, evidence) VALUES (${id}, ${repo}, ${evidence})`
+    await expect(insert('argo', 'none')).rejects.toThrow()
+    await expect(insert(null, 'git-sha')).rejects.toThrow()
   })
 })
