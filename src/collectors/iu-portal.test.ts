@@ -196,10 +196,29 @@ describePg('collectPortal (Postgres)', () => {
       return { code: 124, stdout: '', stderr: 'scrape hung' }
     }
     const both = [iuKeyDef('personal')!, iuKeyDef('athena-team')!]
+    await collectPortal(db, { keys: both, now: NOW - 5 * H, fetch: async () => ok(daily) })
     await collectPortal(db, { keys: both, now: NOW, fetch: hung })
     expect(calls).toBe(1)
     await collectPortal(db, { keys: both, now: NOW + 900_000, fetch: hung })
     expect(calls).toBe(1)
+  })
+
+  test('a hang leaves a fresh key as it was', async () => {
+    const hung = async () => ({ code: 124, stdout: '', stderr: 'scrape hung' })
+    const [personal, team] = [iuKeyDef('personal')!, iuKeyDef('athena-team')!]
+    await collectPortal(db, { keys: [team], now: NOW - H, fetch: async () => ok(daily) })
+    await collectPortal(db, { keys: [personal, team], now: NOW, fetch: hung })
+    // 1 h old, inside the 4 h refresh window: untouched by the hang of the key before it
+    expect((await readPortalState(db, 'athena-team')).lastOk).toBe(NOW - H)
+    expect((await readPortalState(db, 'athena-team')).lastCode).toBe(0)
+  })
+
+  test('a hang does not make a never-attempted key look deployed', async () => {
+    const hung = async () => ({ code: 124, stdout: '', stderr: 'scrape hung' })
+    const [personal, team] = [iuKeyDef('personal')!, iuKeyDef('athena-team')!]
+    await collectPortal(db, { keys: [team, personal], now: NOW, fetch: hung })
+    expect((await readPortalState(db, 'personal')).lastAttempt).toBeNull()
+    expect((await readPortalState(db, 'athena-team')).lastCode).toBe(124)
   })
 
   test('an expired session backs off for 4 h instead of retrying every run', async () => {

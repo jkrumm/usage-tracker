@@ -291,11 +291,14 @@ export async function collectPortal(sql: SQL, opts: CollectPortalOptions = {}): 
     const out = await collectPortalKey(sql, def, opts)
     cells += out.cells
     if (out.code === HUNG) {
-      // The hang is the MacBook's, not the key's: the keys not tried back off like the one that hung, or each
-      // 15 min run would pay the hang guard again on the next key.
+      // The hang is the MacBook's, not the key's: a deployed key that was due back off like the one that hung, or
+      // each 15 min run would pay the hang guard again on the next key. A key never attempted (not deployed), one
+      // fresh within the refresh window and one waiting on a sign-in keep the state they have.
       const now = opts.now ?? Date.now()
       for (const rest of keys.slice(i + 1)) {
         const state = await readPortalState(sql, rest.id)
+        const due = state.lastOk === null || now - state.lastOk >= REFRESH_MS
+        if (state.lastAttempt === null || state.lastCode === SESSION_EXPIRED || !due) continue
         await writePortalState(
           sql,
           rest.id,
