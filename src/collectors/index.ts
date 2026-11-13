@@ -20,7 +20,11 @@ export const collectors: Collector[] = [
     source: 'hermes',
     dbPath: process.env.HERMES_DB ?? join(homedir(), '.hermes', 'state.db'),
     workspace: 'private',
-    staleAfterHours: 72,
+    // A personal agent used on demand: the service is healthy (gateway /health 200, daily
+    // builtin cron runs) yet writes no session rows while nobody talks to it. Longest idle gap
+    // Sep-Nov was 37 h, then 3+ days from 2026-11-10 tripped the old 72 h limit and failed the
+    // ingest LaunchAgent. A week of silence is the signal worth failing on.
+    staleAfterHours: 168,
     project: 'hermes-agent',
   }),
   hermesAgentCollector({
