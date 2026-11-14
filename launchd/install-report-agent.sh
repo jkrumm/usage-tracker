@@ -116,8 +116,8 @@ if [[ -n "${USAGE_TRACKER_REPORT_PLIST:-}" ]]; then
   exit 0
 fi
 
-launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+source "$(dirname "${BASH_SOURCE[0]}")/reload-lib.sh"
+reload_agent "$LABEL" "$PLIST"
 
 echo "installed ${LABEL}"
 echo "  plist:  ${PLIST}"

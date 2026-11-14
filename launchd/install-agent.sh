@@ -139,8 +139,8 @@ if [[ -n "${USAGE_TRACKER_PLIST:-}" ]]; then
 fi
 
 # Reload cleanly: bootout if already loaded, then bootstrap + kickstart.
-launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+source "$(dirname "${BASH_SOURCE[0]}")/reload-lib.sh"
+reload_agent "$LABEL" "$PLIST"
 launchctl kickstart -k "gui/$(id -u)/${LABEL}"
 
 echo "installed ${LABEL}"

@@ -63,7 +63,7 @@ push step.
   history backfill of Argo's `argo.usage_record` (dumped read-only over ssh into `~/.local/share/usage-tracker/backfill/`) and the SQLite
   archive into `usage.records` / `usage.sessions`; it writes the proof `docs/backfill/<date>-argo-usage-record.md`.
   `scripts/import-sqlite-state.ts` (`make import-sqlite-state`), `src/backfill-state.ts` — the archive's state tables into `usage.*`.
-- `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent.
+- `launchd/install-agent.sh` — renders and (re)loads the LaunchAgent; `launchd/reload-lib.sh` (sourced by all three installers) waits out the async `bootout` and retries `bootstrap`.
 - `docs/collectors.md` — per-collector mechanics and sharp edges.
 
 ## Validate
