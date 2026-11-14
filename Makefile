@@ -4,17 +4,12 @@ LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
 REPORT_LABEL := com.jkrumm.usage-tracker-report
 
-# Tests need an admin Postgres connection in USAGE_TEST_PG_URL (scratch databases usage_test_<random>). Unset on the
-# mini, it is built from .env.test.tpl through secrets-run; without secrets-run the Postgres suites skip visibly.
+# Tests: the Postgres suites choose their admin connection in src/pg/testing.ts (the unix socket of the mini's cluster,
+# or USAGE_TEST_PG_URL / USAGE_TEST_PG_USER+PASSWORD over TCP); with none they skip visibly.
 # ARGS (make test ARGS=src/prices) reaches the shell as an environment variable, never spliced into the command text.
 export ARGS
 define RUN_TESTS
-@if [ -n "$$USAGE_TEST_PG_URL" ] || ! command -v secrets-run >/dev/null 2>&1; then \
-	bun test $$ARGS; \
-else \
-	secrets-run run --env-file=.env.test.tpl -- sh -c \
-		'USAGE_TEST_PG_URL="postgres://$$(bun -e "process.stdout.write(encodeURIComponent(process.env.USAGE_TEST_PG_USER))"):$$(bun -e "process.stdout.write(encodeURIComponent(process.env.USAGE_TEST_PG_PASSWORD))")@127.0.0.1:5432/postgres" exec bun test $$ARGS'; \
-fi
+@bun test $$ARGS
 endef
 
 help: ## Show this help
@@ -72,7 +67,7 @@ billing-audit: ## Per-session claude-code billing check vs. the live hook log
 typecheck: ## Type-check with tsc
 	bun run tsc --noEmit
 
-test: ## Run the test suite (Postgres suites need secrets-run or USAGE_TEST_PG_URL)
+test: ## Run the test suite (Postgres suites need the local socket or USAGE_TEST_PG_URL)
 	$(RUN_TESTS)
 
 format: ## Format with oxfmt

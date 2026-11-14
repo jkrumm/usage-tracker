@@ -72,10 +72,11 @@ push step.
 `tsc --noEmit` and then `bun test` (Bun's runner; `*.test.ts` colocated in `src/`). `bun run format`
 fixes formatting. The targets are side-effect free — every pipeline suite (ingest, collectors, report, health, writer,
 prices) creates and drops a `usage_test_<random>` database as the admin role; the few SQLite tests left read scratch
-files under `mkdtemp` (the sources' own stores). `make check`/`make test` inject
-`USAGE_TEST_PG_URL` from `.env.test.tpl` through `secrets-run`; without it (no secrets-run)
-those suites skip with the reason in their name (a green run with skips proves nothing: check the count). No test touches the network.
-The Postgres suites use the admin role (`jkrumm`, superuser) on the shared mini server because they must `CREATE`/`DROP`
+files under `mkdtemp` (the sources' own stores). The harness
+(`src/pg/testing.ts`) opens its admin connection over the unix socket of the mini's native cluster (`/tmp`, the OS user, no
+password; the superuser has none), or over TCP when `USAGE_TEST_PG_URL` / `USAGE_TEST_PG_USER` + `USAGE_TEST_PG_PASSWORD` are set;
+without either those suites skip with the reason in their name (a green run with skips proves nothing: check the count). No test touches the network.
+The Postgres suites use the admin role (the OS user, superuser) on the shared mini server because they must `CREATE`/`DROP`
 scratch databases; nothing else needs it. Scratch names are strictly `usage_test_<12 hex>` and `src/pg/testing.ts`
 (`assertScratchName`) refuses to create or drop any other name. `ARGS` (`make test ARGS=src/prices`) reaches the shell as an
 environment variable, never spliced into the command text.

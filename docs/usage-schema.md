@@ -14,8 +14,8 @@ Postgres and retired `src/pricing.ts`: the IU-specific price facts are rows in `
   creates schema `usage` only when absent (in `shared` the role owns it already).
 - **Connection:** `USAGE_PG_URL`, never logged. Unset, `src/pg/connect.ts` builds it for role `usage`, database `shared`,
   `127.0.0.1:5432` from `secrets-run read op://mini/vps-dev/SHARED_USAGE_DB_PASSWORD` (never `op`).
-- **Tests:** `make check` injects an admin connection (`.env.test.tpl` through `secrets-run`); each Postgres suite creates
-  `usage_test_<random>` and drops it. Without secrets-run the suites skip, the reason in their name.
+- **Tests:** the harness (`src/pg/testing.ts`) opens an admin connection over the mini cluster's unix socket (or `USAGE_TEST_PG_URL`); each Postgres suite creates
+  `usage_test_<random>` and drops it. Without a test Postgres the suites skip, the reason in their name.
 
 ## Tables
 
