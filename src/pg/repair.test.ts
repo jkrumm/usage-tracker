@@ -95,6 +95,12 @@ describePg('repairAttribution', () => {
       source: 'gateway',
       detail: { caller: 'iris', origin: 'claude-code' },
     })
+    await put({
+      id: 'factory',
+      source: 'gateway',
+      project: null,
+      detail: { caller: 'cli', workflow: 'factory-triage' },
+    })
     await put({ id: 'nothing', source: 'litellm', project: null })
 
     const res = await run()
@@ -108,6 +114,7 @@ describePg('repairAttribution', () => {
     expect((await rec('kept')).repo).toBe('argo')
     expect((await rec('owner', 'hermes')).repo).toBe('hermes-agent')
     expect((await rec('caller', 'gateway')).repo).toBe('iris')
+    expect((await rec('factory', 'gateway')).repo).toBe('software-factory')
     expect((await rec('nothing', 'litellm')).repo).toBeNull()
   })
 

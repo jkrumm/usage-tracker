@@ -152,7 +152,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   `eval`, `teamchat`, ...), exposed as the `tool` column of `usage.records_unique` and `stats --by tool`. `lane` / `lane_detail` stay
   verbatim (steps and angles remain queryable); a rule change is a new migration with `CREATE OR REPLACE FUNCTION`, nothing is stored.
 - **Repo attribution** (`docs/usage-schema.md` §Normalization, §Repair and session evidence): `records.repo` is Argo's "project" dimension and
-  comes from `classifyRepo` (path, bare slug, session transcript evidence, source owner, origin/caller), with renames and folds applied
+  comes from `classifyRepo` (path, bare slug, session transcript evidence, source owner, origin/caller, factory workflow), with renames and folds applied
   to every result: **nothing is kept under an old name** (`iu/prometheus-epx` is `iu/epos-ai-teamchat-athena`, `iu/prometheus-scripts` is
   `iu/epos-tool-athena`, ...). `project_raw` and `model_raw` stay verbatim, so a rule change is `make repair FULL=1` (try `DRYRUN=1`
   first: it rolls back and prints the counts and cost per repo). The agw gateway and agent-workflows write straight to Postgres and

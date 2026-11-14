@@ -164,6 +164,7 @@ function toRow(
     source,
     caller: str(r.raw?.caller),
     origin: str(r.raw?.origin),
+    workflow: str(r.raw?.workflow),
     purpose: str(r.raw?.purpose),
   })
   const workspace = r.workspace ?? opts.defaultWorkspace ?? workspaceFor(r.project, repo)

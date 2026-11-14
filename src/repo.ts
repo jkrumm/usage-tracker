@@ -236,6 +236,8 @@ export interface RepoInput {
   caller?: string | null
   origin?: string | null
   purpose?: string | null
+  /** The agw workflow (`lane_detail.workflow`): the factory's own (`factory`, `factory-*`) belong to `software-factory`. */
+  workflow?: string | null
   /** The repo a session's transcript points at (usage.session_repo): tried between the project rules and the source rules. */
   evidence?: string | null
 }
@@ -262,7 +264,9 @@ function fromProject(project: string, workspace: string | null, known: KnownRepo
   return bareSlug(p, workspace, known)
 }
 
-/** Rules c and d: what the source, caller, origin or purpose owns. */
+const FACTORY_WORKFLOW = /^factory(-|$)/
+
+/** Rules c and d: what the source, caller, origin, workflow or purpose owns. */
 function fromSource(i: RepoInput): string | null {
   const owner = i.source ? SOURCE_OWNERS[i.source] : undefined
   if (owner) return owner
@@ -270,12 +274,13 @@ function fromSource(i: RepoInput): string | null {
     const hit = key ? CALLER_OWNERS[key] : undefined
     if (hit) return hit
   }
+  if (i.workflow && FACTORY_WORKFLOW.test(i.workflow)) return 'software-factory'
   return i.purpose === 'eval' ? 'agent-workflows' : null
 }
 
 /**
  * The repo of one usage row, first hit wins: (a) the project path, (b) a bare project slug, then the session's
- * transcript evidence, (c) the source's owner, (d) the origin / caller / purpose. A rename or fold is applied to
+ * transcript evidence, (c) the source's owner, (d) the origin / caller, then the factory workflows, then the eval purpose. A rename or fold is applied to
  * whatever wins. NULL when nothing says (the caller keeps the raw project in `project_raw`).
  */
 export function classifyRepo(i: RepoInput, known: KnownRepos = defaultKnown()): string | null {

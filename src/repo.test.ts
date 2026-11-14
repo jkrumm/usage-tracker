@@ -232,6 +232,22 @@ describe('classifyRepo', () => {
       { source: 'gateway', caller: 'agw-opencode', origin: 'claude-code', purpose: 'prod' },
       null,
     ],
+    [
+      'factory workflow',
+      { source: 'gateway', caller: 'cli', workflow: 'factory-triage' },
+      'software-factory',
+    ],
+    [
+      'bare factory workflow',
+      { source: 'gateway', caller: 'claude-code', workflow: 'factory' },
+      'software-factory',
+    ],
+    [
+      'project path beats the factory workflow',
+      { source: 'gateway', project: `${H}/SourceRoot/argo`, workflow: 'factory-triage' },
+      'argo',
+    ],
+    ['unrelated workflow', { source: 'gateway', caller: 'cli', workflow: 'research' }, null],
     ['oc says nothing', { source: 'gateway', caller: 'oc' }, null],
     ['nothing', { source: 'litellm' }, null],
   ]

@@ -15,7 +15,7 @@ import { payload } from './writer.ts'
 // usage.records and usage.sessions from the verbatim columns (project_raw, model_raw, lane_detail) with the current rules, so a
 // changed rule or a source that bypasses the writer (the agw gateway, agent-workflows) is corrected after the fact:
 //
-//   stage 1   gateway sessions (below), rule a/b over the distinct (source, project_raw, workspace, caller, origin, purpose) tuples, model
+//   stage 1   gateway sessions (below), rule a/b over the distinct (source, project_raw, workspace, caller, origin, workflow, purpose) tuples, model
 //             normalization over the distinct (model_raw, model) pairs, session renames, issue from worktree paths
 //   stage 2   session evidence (src/pg/session-repo.ts) for sessions that still have no repo, saved in usage.session_repo
 //   stage 3   the evidence, then rule c/d for what is still NULL, workspace fill, issue from the sessions, and the
@@ -119,6 +119,7 @@ interface Tuple {
   workspace: string | null
   caller: string | null
   origin: string | null
+  workflow: string | null
   purpose: string | null
 }
 
@@ -138,7 +139,7 @@ interface TupleRule extends Tuple {
 const tupleUpdateSql = (repoExpr: string, c: Ctx): string => `
 WITH t AS (
   SELECT * FROM jsonb_to_recordset($1::text::jsonb) AS t(
-    source text, project_raw text, workspace text, caller text, origin text, purpose text,
+    source text, project_raw text, workspace text, caller text, origin text, workflow text, purpose text,
     ab text, cd text, ws text, issue text)
 ), n AS (
   SELECT r.id, r.repo AS old_repo, r.workspace AS old_ws, r.issue_id AS old_issue,
@@ -152,6 +153,7 @@ WITH t AS (
    AND coalesce(r.workspace, chr(1)) = coalesce(t.workspace, chr(1))
    AND coalesce(r.lane_detail->>'caller', chr(1)) = coalesce(t.caller, chr(1))
    AND coalesce(r.lane_detail->>'origin', chr(1)) = coalesce(t.origin, chr(1))
+   AND coalesce(r.lane_detail->>'workflow', chr(1)) = coalesce(t.workflow, chr(1))
    AND coalesce(r.lane_detail->>'purpose', chr(1)) = coalesce(t.purpose, chr(1))
   WHERE ${c.rec}
 ), u AS (
@@ -182,9 +184,10 @@ async function tupleRules(
 ): Promise<TupleRule[]> {
   const rows: Array<Tuple & { repo: string | null; issue_id: string | null }> = await db.unsafe(
     `SELECT r.source, r.project_raw, r.workspace, r.lane_detail->>'caller' AS caller,
-            r.lane_detail->>'origin' AS origin, r.lane_detail->>'purpose' AS purpose, r.repo, r.issue_id
+            r.lane_detail->>'origin' AS origin, r.lane_detail->>'workflow' AS workflow,
+            r.lane_detail->>'purpose' AS purpose, r.repo, r.issue_id
      FROM usage.records r WHERE ${c.rec}
-     GROUP BY 1, 2, 3, 4, 5, 6, 7, 8`,
+     GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9`,
   )
   const out = new Map<string, TupleRule>()
   for (const t of rows) {
@@ -194,10 +197,17 @@ async function tupleRules(
       workspace: t.workspace,
       caller: t.caller,
       origin: t.origin,
+      workflow: t.workflow,
       purpose: t.purpose,
       ab: classifyRepo({ project: t.project_raw, workspace: t.workspace }, known),
       cd: classifyRepo(
-        { source: t.source, caller: t.caller, origin: t.origin, purpose: t.purpose },
+        {
+          source: t.source,
+          caller: t.caller,
+          origin: t.origin,
+          workflow: t.workflow,
+          purpose: t.purpose,
+        },
         known,
       ),
       ws: workspaceFor(t.project_raw, null),
@@ -210,7 +220,15 @@ async function tupleRules(
       repo !== t.repo || workspace !== t.workspace || (t.issue_id ?? rule.issue) !== t.issue_id
     if (changes)
       out.set(
-        JSON.stringify([t.source, t.project_raw, t.workspace, t.caller, t.origin, t.purpose]),
+        JSON.stringify([
+          t.source,
+          t.project_raw,
+          t.workspace,
+          t.caller,
+          t.origin,
+          t.workflow,
+          t.purpose,
+        ]),
         rule,
       )
   }

@@ -137,7 +137,7 @@ workflow therefore shows up under its own name until a rule folds it; change the
   separate namespace that can never collide with `factory.projects`, and `IuRoot/worktrees/<name>` goes through a prefix table
   (`se-*`, `student-enrolment*`, `EP-17678*` and three `EP-18347-*` -> `iu/epos-studentenrolment-backend`; `tool-*`, `ps-*`,
   `prom-*`, `prometheus-dashboard*` -> `iu/epos-tool-athena`; `teamchat-*`; `otf-*`; `dam-*`; `import-dashboard-*`; `split-w*` and
-  anything else NULL). `classifyRepo({ project, workspace, source, caller, origin, purpose, evidence })` is the one classifier the
+  anything else NULL). `classifyRepo({ project, workspace, source, caller, origin, workflow, purpose, evidence })` is the one classifier the
   writer and the repair pass call, first hit wins: (a) the project path (also `~/.hermes/hermes-agent`, and the two
   `prometheus-scripts/wip` folders that are teamchat work); (b) a bare project slug: a token that is no repo (`claude-code`,
   `cli`, `cron`) falls through, `eval`/`host` are `agent-workflows`, `hermes` is `hermes-agent`, `athena-context-poc`,
@@ -145,7 +145,7 @@ workflow therefore shows up under its own name until a rule folds it; change the
   anything else is the slug when it is a known repo; then the session evidence (below); (c) the source's owner (`hermes`,
   `athena-teamchat`, the `*-gateway` sources, `modelpick`, `argo`; the audio and image variants fold into their gateway;
   `agent-gateway-*` -> `agent-gateway`, so only after evidence); (d) `origin` then `caller` (`iris`, `hermes`, `modelpick`, `argo`,
-  `eval`, `host`; `claude-code`, `cli`, `agw`, `agw-opencode`, `oc` say nothing), then `purpose = eval` -> `agent-workflows`.
+  `eval`, `host`; `claude-code`, `cli`, `agw`, `agw-opencode`, `oc` say nothing), then the factory's own agw workflows (`lane_detail.workflow` = `factory` or `factory-*`: triage, queue, ask, steward, errand, screen, ...) -> `software-factory`, then `purpose = eval` -> `agent-workflows`.
   **Renames apply to every result** (`iu/prometheus-epx` -> `iu/epos-ai-teamchat-athena`, `iu/prometheus-scripts` ->
   `iu/epos-tool-athena`, `iu/epos.student-enrolment` and `iu/se-wt-loa-credits` -> `iu/epos-studentenrolment-backend`, `iu/epos.dam`
   -> `iu/epos-dam-backend`; evidence `~/IuRoot/.archive/README.md`, `github-migration-handover.md`; `iu/prometheus-feuer-agent`
@@ -184,7 +184,7 @@ has the semantics of `db.upsertRecords`, into `records`:
 - **Bulk and concurrent.** Chunks of 500 through `jsonb_to_recordset`, one transaction per chunk (sessions, then records), rows
   `ORDER BY` key so overlapping writers lock in the same order. Pure `INSERT ... ON CONFLICT`, no read-modify-write: several
   processes may call it at once. 5,000 rows with sessions take well under 2 s.
-- **Columns.** `model_raw` verbatim; `model = baseModel(normalizeModel(raw))`; `repo = classifyRepo(...)` (project, source, `raw.caller`/`origin`/`purpose`) with `project_raw`
+- **Columns.** `model_raw` verbatim; `model = baseModel(normalizeModel(raw))`; `repo = classifyRepo(...)` (project, source, `raw.caller`/`origin`/`workflow`/`purpose`) with `project_raw`
   verbatim; `workspace = r.workspace ?? defaultWorkspace ?? workspaceFor(project, repo)`; on conflict `repo`, `workspace` and `issue_id` keep the stored
   value when the collector reports NULL (the repair pass owns them); billing mapped as in Normalization (`api_key` = `resolveIuKey`, `account`
   = `resolveAccount`, Max rows only); `lane`/`lane_detail` = `laneFor(subTool, source, raw)` on the record; `cache_write_5m =
@@ -501,7 +501,7 @@ pass at most hourly under `collector_state` key `repair`, skipped for `--source`
 `repo`, `workspace`, `model` and `issue_id` of `usage.records` and `usage.sessions` with the current rules, for the sources that bypass
 the writer (the agw gateway, agent-workflows) and after a rule change. Ongoing passes cover the last 3 days, `FULL=1` everything.
 Set-based over distinct value tuples: the mapping is computed in TypeScript for the distinct `(source, project_raw, workspace,
-caller, origin, purpose)` tuples and the distinct `(model_raw, model)` pairs, then applied with `jsonb_to_recordset` joins in batches
+caller, origin, workflow, purpose)` tuples and the distinct `(model_raw, model)` pairs, then applied with `jsonb_to_recordset` joins in batches
 of 1000. An UPDATE touches a row only when a value differs (a second run changes 0), changed records get a new `ingested_at` so Argo
 sees them, no cost column is ever written, a non-NULL workspace or `issue_id` is never overwritten, a NULL classification keeps the
 stored repo. Order: (1) rule a/b, model, session renames, (2) session evidence, (3) the evidence, then rule c/d for what is still
