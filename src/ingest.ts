@@ -265,6 +265,21 @@ export function formatRepairLine(repair: IngestSummary['repair']): string | null
   return `repair: repo ${repair.repo}, workspace ${repair.workspace}, model ${repair.model}, issue ${repair.issue}, duplicates ${repair.duplicates}, gateway sessions ${repair.gatewaySessions}`
 }
 
+const UNPRICED_LINE_MODELS = 10
+
+/**
+ * The ingest output's unpriced breakdown: the heaviest few models and a count of the rest, so a
+ * catalog gap of hundreds of ids does not print a multi-kilobyte line every run. `make sources`
+ * has the full per-model list.
+ */
+export function formatUnpricedLine(unpriced: UnpricedModel[]): string | null {
+  if (unpriced.length === 0) return null
+  const shown = unpriced.slice(0, UNPRICED_LINE_MODELS).map((m) => `${m.model}=${m.rows}`)
+  const rest = unpriced.length - shown.length
+  const more = rest > 0 ? ` (+${rest} more models, \`make sources\` lists all)` : ''
+  return `unpriced by model: ${shown.join(' ')}${more}`
+}
+
 export function formatRunSummary(summary: IngestSummary, now = new Date()): string {
   const status = summary.results.some((r) => r.status === 'error') ? 'error' : 'ok'
   const perSource = summary.results.map((r) =>

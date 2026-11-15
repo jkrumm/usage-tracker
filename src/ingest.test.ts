@@ -1,12 +1,12 @@
 import type { SQL } from 'bun'
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { astraCollector } from './collectors/astra.ts'
 import { claudeCodeCollector } from './collectors/claude-code.ts'
 import { codexCollector } from './collectors/codex.ts'
-import { backfillEvents, formatRunSummary, runIngest } from './ingest.ts'
+import { backfillEvents, formatRunSummary, formatUnpricedLine, runIngest } from './ingest.ts'
 import { resetAgentGatewayWindowsCacheForTest, resetSessionBaseUrlsCacheForTest } from './models.ts'
 import { migratedDb } from './pg/fixture.ts'
 import { describePg } from './pg/testing.ts'
@@ -506,5 +506,30 @@ describePg('runIngest (Postgres)', () => {
     await runIngest(sql, opts())
     const [after] = await sql`SELECT seen_at FROM usage.session_env WHERE session = 's'`
     expect(new Date(after.seen_at).getTime()).toBe(new Date(before.seen_at).getTime())
+  })
+})
+
+describe('formatUnpricedLine', () => {
+  test('is null without unpriced models', () => {
+    expect(formatUnpricedLine([])).toBeNull()
+  })
+
+  test('lists every model up to the cap', () => {
+    expect(
+      formatUnpricedLine([
+        { model: 'a', rows: 2 },
+        { model: 'b', rows: 1 },
+      ]),
+    ).toBe('unpriced by model: a=2 b=1')
+  })
+
+  test('caps a long list at the heaviest models and counts the rest', () => {
+    const many = Array.from({ length: 400 }, (_, i) => ({ model: `m${i}`, rows: 400 - i }))
+    const line = formatUnpricedLine(many) ?? ''
+    expect(line).toContain('m0=400')
+    expect(line).toContain('m9=391')
+    expect(line).not.toContain('m10=')
+    expect(line).toContain('+390 more models')
+    expect(line.length).toBeLessThan(300)
   })
 })
