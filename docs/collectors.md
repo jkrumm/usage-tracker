@@ -292,6 +292,11 @@ SQL on stdin, `BatchMode` and a 90 s hang guard. Nothing changes in email-gatewa
 The query is injectable (`EmailGatewayQuery`, like athena's); `EMAIL_GATEWAY_SSH` / `EMAIL_GATEWAY_SSH_HOST` override the
 binary and host (tests use a fake `ssh`).
 
+The VPS being unreachable (ssh exit 255 with a connect-level failure: timeout, no route, refused) is a skipped run, not an
+error: the cursor keeps its watermark and gains `downSince`, the note says `vps unreachable since …`, `ingest` exits 0. The
+read is idempotent, so a missed poll costs nothing. After 6 h (`UNREACHABLE_LIMIT_MS`) of continuous failure it throws again
+and the run fails, because this source has no row-age check. Auth, host-key and name-resolution failures never take that path.
+
 One span is one record: `source_id` = `<TraceId>:<SpanId>`, grain `message`, `subTool` = `llm:<lane>`, `model` = `llm.model`,
 `durationMs` from the span's `Duration`, `outcome` from the `outcome` attribute or an `Error` status, workspace `private`.
 Tokens pass through as recorded; there is no cache write. Spans carry no prompt or output text and none is selected.

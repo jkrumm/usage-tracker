@@ -12,6 +12,8 @@ import {
   parseSpans,
   sshQuery,
   toRecord,
+  UNREACHABLE_LIMIT_MS,
+  VpsUnreachableError,
   type SpanRow,
 } from './email-gateway.ts'
 
@@ -148,6 +150,74 @@ describe('email-gateway collector', () => {
       throw new Error('ssh vps exited 255: Could not resolve hostname vps')
     })
     await expect(c.collect({ cursor: null, full: false, log })).rejects.toThrow('exited 255')
+  })
+
+  describe('VPS unreachable', () => {
+    const down = async (): Promise<SpanRow[]> => {
+      throw new VpsUnreachableError(
+        'ssh vps exited 255: ssh: connect to host vps port 22: Operation timed out',
+      )
+    }
+    const cursor = JSON.stringify({ newest: '2026-10-28T09:45:17.039Z' })
+
+    test('a first unreachable poll is a skipped run: no records, the watermark kept, downSince recorded', async () => {
+      const out = await emailGatewayCollector(down).collect({ cursor, full: false, log })
+      expect(out.records).toEqual([])
+      expect(out.note).toContain('vps unreachable since')
+      const parsed = JSON.parse(out.cursor!)
+      expect(parsed.newest).toBe('2026-10-28T09:45:17.039Z')
+      expect(Number.isFinite(Date.parse(parsed.downSince))).toBe(true)
+    })
+
+    test('downSince is kept across polls, then an outage past the limit fails the run', async () => {
+      const recent = new Date(Date.now() - 3_600_000).toISOString()
+      const within = await emailGatewayCollector(down).collect({
+        cursor: JSON.stringify({ newest: null, downSince: recent }),
+        full: false,
+        log,
+      })
+      expect(JSON.parse(within.cursor!).downSince).toBe(recent)
+
+      const long = new Date(Date.now() - UNREACHABLE_LIMIT_MS - 60_000).toISOString()
+      await expect(
+        emailGatewayCollector(down).collect({
+          cursor: JSON.stringify({ newest: null, downSince: long }),
+          full: false,
+          log,
+        }),
+      ).rejects.toThrow('Operation timed out')
+    })
+
+    test('a successful read clears downSince', async () => {
+      const out = await emailGatewayCollector(async () => [span()]).collect({
+        cursor: JSON.stringify({ newest: null, downSince: new Date().toISOString() }),
+        full: false,
+        log,
+      })
+      expect(JSON.parse(out.cursor!)).toEqual({ newest: '2026-10-28T09:45:17.039Z' })
+    })
+
+    test('ssh connect failures are unreachable, auth and resolution failures stay plain errors', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'usage-tracker-ssh-'))
+      const bin = join(dir, 'ssh')
+      process.env.EMAIL_GATEWAY_SSH = bin
+      try {
+        for (const [stderr, unreachable] of [
+          ['ssh: connect to host vps port 22: Operation timed out', true],
+          ['ssh: connect to host vps port 22: No route to host', true],
+          ['vps@host: Permission denied (publickey).', false],
+          ['ssh: Could not resolve hostname vps', false],
+        ] as const) {
+          writeFileSync(bin, `#!/bin/sh\necho "${stderr}" >&2; exit 255\n`)
+          chmodSync(bin, 0o755)
+          const err = await sshQuery(0).catch((e: unknown) => e)
+          expect(err instanceof VpsUnreachableError).toBe(unreachable)
+        }
+      } finally {
+        delete process.env.EMAIL_GATEWAY_SSH
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('transport', () => {

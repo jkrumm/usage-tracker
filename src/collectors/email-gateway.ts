@@ -23,6 +23,15 @@ const OVERLAP_MS = 86_400_000
 export const HISTORY_FLOOR_MS = Date.parse('2026-10-24T10:00:00Z')
 // A hang guard, not a budget: the otel skill's query tool uses 60 s for the same transport.
 const QUERY_TIMEOUT_MS = 90_000
+// The VPS is a Tailscale hop away and drops off for a poll or two (a connect timeout, a rebooting host). The read is
+// cursored and idempotent, so a missed poll costs nothing; an outage this long is not a blip and fails the run again.
+export const UNREACHABLE_LIMIT_MS = 6 * 3_600_000
+// ssh's own connect-level failures (exit 255). Auth, host-key and name-resolution failures are configuration and stay loud.
+const CONNECT_FAILURE =
+  /connect to host .* port \d+: (Operation timed out|Connection timed out|No route to host|Network is unreachable|Connection refused)|Connection (timed out|reset by peer|closed by remote host)/i
+
+/** ssh could not reach the VPS (transport), as opposed to a query that ran and failed. */
+export class VpsUnreachableError extends Error {}
 
 /** One `llm.*` span as selected by SQL. Numbers may arrive as JSON strings (ClickHouse quotes 64-bit ints). */
 export interface SpanRow {
@@ -78,8 +87,12 @@ export const sshQuery: EmailGatewayQuery = async (sinceMs) => {
     new Response(proc.stderr).text(),
     proc.exited,
   ])
-  if (code !== 0)
-    throw new Error(`ssh ${sshHost()} exited ${code}: ${err.trim().split('\n').at(-1) ?? ''}`)
+  if (code !== 0) {
+    const message = `ssh ${sshHost()} exited ${code}: ${err.trim().split('\n').at(-1) ?? ''}`
+    throw code === 255 && CONNECT_FAILURE.test(err)
+      ? new VpsUnreachableError(message)
+      : new Error(message)
+  }
   return parseSpans(out)
 }
 
@@ -109,6 +122,8 @@ export function toRecord(row: SpanRow): UsageRecord {
 
 interface Cursor {
   newest: string | null
+  /** Set while the VPS is unreachable: when the first failed poll happened. Cleared by the next successful read. */
+  downSince?: string
 }
 
 function parseCursor(raw: string | null): Cursor {
@@ -125,7 +140,8 @@ export function emailGatewayCollector(query: EmailGatewayQuery = sshQuery): Coll
     source: 'email-gateway',
     // Exempt from the row-age check: the gateway makes a few model calls a month, so any row-age limit either fails a
     // healthy source or is too loose to mean anything. Silence is still loud: a failed read (ssh, ClickHouse) is a
-    // collector `error` on every run, and `ingest` exits 1 on an error.
+    // collector `error` and `ingest` exits 1 on it. The one exception is the VPS being unreachable for less than
+    // UNREACHABLE_LIMIT_MS: that is a skipped run with a note (the cursor stays), the same as the MacBook legs.
     staleAfterHours: null,
     workspace: 'private',
 
@@ -133,10 +149,31 @@ export function emailGatewayCollector(query: EmailGatewayQuery = sshQuery): Coll
     available: () => true,
 
     async collect(ctx: CollectContext): Promise<CollectResult> {
-      const { newest } = ctx.full ? { newest: null } : parseCursor(ctx.cursor)
+      const { newest, downSince } = ctx.full
+        ? { newest: null, downSince: undefined }
+        : parseCursor(ctx.cursor)
       const sinceMs = Math.max(HISTORY_FLOOR_MS, newest ? Date.parse(newest) - OVERLAP_MS : 0)
       const now = Date.now()
-      const rows = (await query(sinceMs)).filter((r) => {
+      let fetched: SpanRow[]
+      try {
+        fetched = await query(sinceMs)
+      } catch (err) {
+        if (!(err instanceof VpsUnreachableError)) throw err
+        const since =
+          downSince && Number.isFinite(Date.parse(downSince))
+            ? downSince
+            : new Date(now).toISOString()
+        if (now - Date.parse(since) >= UNREACHABLE_LIMIT_MS) throw err
+        ctx.log.warn(
+          `email-gateway: VPS unreachable since ${since}, retrying next run (${err.message})`,
+        )
+        return {
+          records: [],
+          cursor: JSON.stringify({ newest, downSince: since } satisfies Cursor),
+          note: `vps unreachable since ${since}`,
+        }
+      }
+      const rows = fetched.filter((r) => {
         // A span from the future (a skewed gateway clock) must not move the cursor past real ones still to come.
         const ok =
           Boolean(r.TraceId && r.SpanId) &&
