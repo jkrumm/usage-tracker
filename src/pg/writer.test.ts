@@ -152,6 +152,12 @@ describePg('usage.records write path', () => {
     })
   })
 
+  test('a duration beyond int4 saturates instead of failing the batch', async () => {
+    const sql = await ready()
+    await upsertRecords(sql, 'claude-code', [rec('dur_big', { durationMs: 2_172_626_664 })])
+    expect((await one('claude-code', 'dur_big')).duration_ms).toBe(2_147_483_647)
+  })
+
   test('a message-grain Claude row prices all five kinds in SQL (sonnet 5.5, 1M each = 18.60)', async () => {
     const sql = await ready()
     await upsertRecords(sql, 'claude-code', [

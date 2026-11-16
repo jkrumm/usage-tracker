@@ -18,6 +18,9 @@ import { aggregateSessions, parentSessionKey, sessionKey, type SessionInput } fr
 /** Rows per round trip pair (sessions + records). Large enough for the ~850k-row backfill, small enough to stay fast to plan. */
 const CHUNK = 500
 
+/** `records.duration_ms` is an int4 (~24.8 days). A longer span (a Hermes session open for weeks) saturates instead of failing the whole batch. */
+const MAX_DURATION_MS = 2_147_483_647
+
 /** Models whose vendor-reported cost is not what IU charges (sonar: list price incl. search fees): tokens price them. */
 export const IGNORE_REPORTED_COST: ReadonlySet<string> = new Set(['sonar'])
 
@@ -198,7 +201,7 @@ function toRow(
     reasoning_tokens: reasoning,
     duration_ms:
       typeof r.durationMs === 'number' && Number.isFinite(r.durationMs)
-        ? Math.round(r.durationMs)
+        ? Math.min(Math.round(r.durationMs), MAX_DURATION_MS)
         : undefined,
     cost_reported_usd: reported,
     raw,
