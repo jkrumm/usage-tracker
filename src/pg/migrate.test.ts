@@ -62,6 +62,7 @@ describePg('pg migrations', () => {
       'sessions',
       'window_attribution',
       'window_intervals',
+      'window_quiet_intervals',
     ])
     // Stored since migration 0023 (information_schema.tables does not list materialized views).
     const stored = await sql`SELECT matviewname FROM pg_matviews WHERE schemaname = 'usage'`

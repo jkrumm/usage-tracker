@@ -427,8 +427,9 @@ The cost-weighted split above assumes a window moves in proportion to the dollar
 measurement**: per account and window it regresses the points the window moved on the weighted tokens of each model family. Read-only,
 nothing stored; the cost-weighted attribution itself is unchanged and the fit is reported beside it.
 
-- **Observations.** The intervals of `window_intervals` that end in the period are summed into 3 h bins per account and window
-  (`y` = points moved); the Max records inside each interval give the bin's weighted Mtok per family. A bin with no Max record is left out (the
+- **Observations.** The intervals that end in the period, the ones that moved the window (`window_intervals`) and the quiet ones that did not
+  (`window_quiet_intervals`, migration 0026: same readings and bounds, `delta_pct = 0`; dropping them would leave only stretches with points and inflate every
+  slope), are summed into 3 h bins per account and window (`y` = points moved); the Max records inside each interval give the bin's weighted Mtok per family. A bin with no Max record is left out (the
   residual line of `window` already counts it); a family with no tokens in the period has no column.
 - **Weighted Mtok** = (input + 5 x output + 1.25 x 5 m cache write + 2 x 1 h cache write + 0.1 x cache read) / 1e6: the ratios of the
   catalog's list prices, so a window that followed API prices would give every family the same figure, and one that counted tokens alike

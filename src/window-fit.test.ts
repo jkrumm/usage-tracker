@@ -55,7 +55,11 @@ describePg('window --fit (Postgres)', () => {
     await reading(T0 - 3 * HOUR, 0)
     for (let n = 0; n < 80; n++) {
       const at = T0 + n * 3 * HOUR
-      const mtok = { sonnet: 2 + rand() * 6, fable: rand() * 3, haiku: rand() * 6 }
+      // every fourth stretch is quiet: little usage, the meter does not tick (0 points), an observation the fit must keep
+      const quiet = n % 4 === 3
+      const mtok = quiet
+        ? { sonnet: 0.2, fable: 0.05, haiku: 0.1 }
+        : { sonnet: 2 + rand() * 6, fable: rand() * 3, haiku: rand() * 6 }
       let pts = 0
       for (const f of ['sonnet', 'fable', 'haiku'] as const) {
         pts += TRUE[f] * mtok[f]
@@ -85,7 +89,10 @@ describePg('window --fit (Postgres)', () => {
     expect(by.haiku?.determined).toBe(false)
     expect(by.haiku?.relativeToReference).toBeNull()
     expect(by.sonnet?.bins).toBe(80)
-    expect(by.sonnet?.weightedMtok as number).toBeGreaterThan(300)
+    const [quiet] =
+      await sql`SELECT count(*)::int AS n FROM usage.window_quiet_intervals WHERE win = 'five_hour'`
+    expect(quiet?.n).toBe(20)
+    expect(by.sonnet?.weightedMtok as number).toBeGreaterThan(200)
     const text = formatFit(rows, { days: 7 })
     expect(text).toMatch(/haiku\s+not determined yet \(\d+(\.\d)? weighted Mtok\)/)
     expect(text).toContain('account a, 5h window')

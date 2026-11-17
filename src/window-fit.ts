@@ -9,7 +9,8 @@ import type { SQL } from 'bun'
 
 export type Win = 'five_hour' | 'seven_day'
 
-/** The family of a model id, in SQL (`r` is usage.records): `claude-<family>-...` -> `<family>`; anything else is its own family. */
+/** The family of a model id, in SQL (`r` is usage.records): `claude-<family>-...` -> `<family>`; anything else is its own family
+ * (an id like `claude-3-opus` is `3`: the Claude 5 ids this reads are `claude-<family>-<n>`; the weekly report's `modelClass` is a coarser opus/sonnet split of its own). */
 export const FAMILY_SQL = (r: string) =>
   `coalesce(substring(${r}.model from '^claude-([a-z]+)'), ${r}.model, '(unknown)')`
 
@@ -186,9 +187,17 @@ interface FamilyRow {
   weighted: number
 }
 
+/** Every observed stretch of a window: the ones that moved it, and the quiet ones (0026) that are observations with no points. */
+const INTERVALS_CTE = `WITH iv AS (
+  SELECT account, win, from_at, to_at, delta_pct FROM usage.window_intervals
+  UNION ALL
+  SELECT account, win, from_at, to_at, 0 FROM usage.window_quiet_intervals
+)`
+
 /**
  * One fit per account and window over the intervals that end in `[from, to)`. Intervals are summed into 3 h bins (the
- * meters move in whole points, a single interval is mostly zeros and ticks); a bin with no Max record in it carries no
+ * meters move in whole points, a single interval is mostly zeros and ticks), quiet intervals included: a stretch with tokens and no
+ * tick is an observation of zero points, and leaving it out would inflate every slope. A bin with no Max record in it carries no
  * information about any weight and is left out (the residual of `window` already counts it). Run inside the caller's
  * transaction when a report needs one snapshot.
  */
@@ -196,17 +205,21 @@ export async function fitWeights(sql: SQL, opts: FitOptions): Promise<WeightRow[
   const from = opts.from.toISOString()
   const to = opts.to.toISOString()
   const account = opts.account ?? null
-  const binRows = (await sql`
-      SELECT i.account, i.win, floor(extract(epoch FROM i.to_at) / ${BIN_SECONDS}::float8)::bigint AS bin,
+  const binRows = (await sql.unsafe(
+    `${INTERVALS_CTE}
+      SELECT i.account, i.win, floor(extract(epoch FROM i.to_at) / ${BIN_SECONDS})::bigint AS bin,
              sum(i.delta_pct)::float8 AS pts
-      FROM usage.window_intervals i
-      WHERE i.to_at >= ${from}::timestamptz AND i.to_at < ${to}::timestamptz
-        AND (${account}::text IS NULL OR i.account = ${account}::text)
-      GROUP BY 1, 2, 3`) as BinRow[]
+      FROM iv i
+      WHERE i.to_at >= $1::timestamptz AND i.to_at < $2::timestamptz
+        AND ($3::text IS NULL OR i.account = $3::text)
+      GROUP BY 1, 2, 3`,
+    [from, to, account],
+  )) as BinRow[]
   const familyRows = (await sql.unsafe(
-    `SELECT i.account, i.win, floor(extract(epoch FROM i.to_at) / ${BIN_SECONDS})::bigint AS bin,
+    `${INTERVALS_CTE}
+       SELECT i.account, i.win, floor(extract(epoch FROM i.to_at) / ${BIN_SECONDS})::bigint AS bin,
               ${FAMILY_SQL('r')} AS family, sum(${WEIGHTED_TOKENS_SQL('r')})::float8 AS weighted
-       FROM usage.window_intervals i
+       FROM iv i
        JOIN usage.records r
          ON r.billing = 'max' AND r.account = i.account AND r.ts > i.from_at AND r.ts <= i.to_at
        WHERE i.to_at >= $1::timestamptz AND i.to_at < $2::timestamptz

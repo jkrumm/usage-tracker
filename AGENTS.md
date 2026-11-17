@@ -111,7 +111,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
 - `make verify` exits non-zero unless `launchctl print` sees
   `com.jkrumm.usage-tracker`, `~/Library/Logs/usage-tracker.log` is younger
   than 1800s, and `health` finds no stale source (`max(ts)` per source in `usage.records`, plus the IU portal's
-  last success), no unknown repo and at most 10% NULL-repo tokens in the last 7 days (`records_unique`). `make health`, `make sources`, `make stats BY=<dim>`, `make quota` read the same schema.
+  last success), no unknown repo, at most 10% NULL-repo tokens in the last 7 days (`records_unique`) and no model with over 100 unpriced Max records. `make health`, `make sources`, `make stats BY=<dim>`, `make quota` read the same schema.
 - Logs live in `~/Library/Logs/usage-tracker.{log,err}`; `make logs` tails the
   last 50 lines.
 
