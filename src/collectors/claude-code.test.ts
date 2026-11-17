@@ -833,7 +833,9 @@ describe('claude-code two-root collector', () => {
 
       const first = await claudeCodeCollector.collect({ cursor: null, full: false, log })
       const byId = (events: typeof first.events) =>
-        [...(events ?? [])].sort((a, b) => (a.eventId + a.ts < b.eventId + b.ts ? -1 : 1))
+        [...(events ?? [])]
+          .filter((e) => e.kind !== 'tool')
+          .sort((a, b) => (a.eventId + a.ts < b.eventId + b.ts ? -1 : 1))
       expect(byId(first.events)).toEqual([
         {
           eventId: 'cb-1',
@@ -894,6 +896,18 @@ describe('claude-code two-root collector', () => {
       ])
       expect(JSON.stringify(first.events)).not.toContain('free text')
       expect(JSON.stringify(first.events)).not.toContain('args')
+      // Every tool_use block is also a `tool` event (id prefixed, name only), the subagent's in its own session.
+      expect(
+        (first.events ?? [])
+          .filter((e) => e.kind === 'tool')
+          .map((e) => [e.eventId, e.agentId, e.name])
+          .sort(),
+      ).toEqual([
+        ['tool:toolu_a', undefined, 'Skill'],
+        ['tool:toolu_b', undefined, 'Skill'],
+        ['tool:toolu_c', undefined, 'Skill'],
+        ['tool:toolu_d', 'ag1', 'Skill'],
+      ])
       // Records are untouched by events: only the plain assistant line and the skill-call lines carry usage.
       expect(first.records.map((r) => r.sourceId).sort()).toEqual([
         'plain',
@@ -949,7 +963,7 @@ describe('claude-code two-root collector', () => {
         usageJsonlOk: true,
       }))
       const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
-      expect(result.events?.map((e) => e.eventId)).toEqual(['cb-ok', 'toolu_ok'])
+      expect(result.events?.map((e) => e.eventId)).toEqual(['cb-ok', 'tool:toolu_ok', 'toolu_ok'])
     })
 
     test('a Skill call is found whatever the JSON spacing', async () => {
@@ -965,7 +979,71 @@ describe('claude-code two-root collector', () => {
         usageJsonlOk: true,
       }))
       const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
-      expect(result.events?.map((e) => [e.eventId, e.name])).toEqual([['toolu_sp', 'kappa']])
+      expect(result.events?.map((e) => [e.eventId, e.name])).toEqual([
+        ['tool:toolu_sp', 'Skill'],
+        ['toolu_sp', 'kappa'],
+      ])
+    })
+
+    test('every tool_use block is one tool event by name; a block without an id, a tool_result and the input are not', async () => {
+      const toolLine = (ts: string, content: object[], extra: object = {}) => ({
+        type: 'assistant',
+        requestId: `req-${ts}`,
+        sessionId: 'sess-6',
+        timestamp: ts,
+        message: {
+          id: `msg-${ts}`,
+          model: 'claude-sonnet-5',
+          usage: { input_tokens: 1, output_tokens: 1 },
+          content,
+        },
+        ...extra,
+      })
+      writeFileSync(
+        join(localDir, 'sess-6.jsonl'),
+        jsonl(
+          toolLine('2026-10-30T11:00:00.000Z', [
+            { type: 'text', text: 'running' },
+            { type: 'tool_use', id: 'toolu_r', name: 'Read', input: { file_path: '/secret/path' } },
+            {
+              type: 'tool_use',
+              id: 'toolu_b',
+              name: 'mcp__easel__chart',
+              input: { cmd: 'rm -rf' },
+            },
+            { type: 'tool_use', name: 'NoId', input: {} },
+          ]),
+          // the same tool_use id on a repeated line is one event after the database upsert, not a second source of truth here
+          toolLine(
+            '2026-10-30T11:00:01.000Z',
+            [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }],
+            {
+              isSidechain: true,
+              agentId: 'ag9',
+            },
+          ),
+          {
+            type: 'user',
+            sessionId: 'sess-6',
+            timestamp: '2026-10-30T11:00:02.000Z',
+            message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_r', content: 'ok' }] },
+          },
+        ),
+      )
+      setSyncOverrideForTest(async () => ({
+        ok: true,
+        logsOk: true,
+        codexOk: true,
+        usageJsonlOk: true,
+      }))
+      const result = await claudeCodeCollector.collect({ cursor: null, full: false, log })
+      expect(result.events?.map((e) => [e.kind, e.eventId, e.agentId, e.name])).toEqual([
+        ['tool', 'tool:toolu_r', undefined, 'Read'],
+        ['tool', 'tool:toolu_b', undefined, 'mcp__easel__chart'],
+        ['tool', 'tool:toolu_a', 'ag9', 'Agent'],
+      ])
+      expect(JSON.stringify(result.events)).not.toContain('secret')
+      expect(JSON.stringify(result.events)).not.toContain('rm -rf')
     })
 
     test('a size line is emitted only when the message text itself is skill text', async () => {
@@ -1054,7 +1132,10 @@ describe('claude-code two-root collector', () => {
         jsonl(skillCall('toolu_z', 'zeta', '2026-10-30T11:00:00.000Z', { sessionId: 'sess-2' })),
       )
       const second = await claudeCodeCollector.collect({ cursor: first.cursor, full: false, log })
-      expect(second.events?.map((e) => [e.eventId, e.name])).toEqual([['toolu_z', 'zeta']])
+      expect(second.events?.map((e) => [e.eventId, e.name])).toEqual([
+        ['tool:toolu_z', 'Skill'],
+        ['toolu_z', 'zeta'],
+      ])
     })
   })
 })

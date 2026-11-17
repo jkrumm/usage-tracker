@@ -35,7 +35,7 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `price_overrides` | manual corrections | `id` |
 | `collector_state` | per-collector cursor and last-run bookkeeping (also `account-picks`, `iu-portal[:<key>]`) | `source` |
 | `session_env` | the claude-code hook's `base_url` / `lane` / `account` / `factory_role` / `factory_session` per session id | `session` |
-| `session_events` | compactions and skill loads of a session, see [Session events](#session-events-compactions-and-skills-wave-3) | `PK (source, event_id)` |
+| `session_events` | compactions, skill loads and tool calls of a session, see [Session events](#session-events-compactions-and-skills-wave-3) | `PK (source, event_id)` |
 | `session_signals` | view: per session, token sums, cache hit ratio, compactions, skill calls and chars | |
 | `lane_signals` | view: per source, lane and UTC day, the same signals | |
 | `iu_portal_cost` | IU's portal cost report, one cell per day, label and heatmap row, per IU key | `PK (iu_key, day, label, row)` |
@@ -45,8 +45,8 @@ All names lower_snake, times `timestamptz`, money and rates `numeric`, raw paylo
 | `session_repo` | claude-code sessions resolved from their transcript, see [Repair](#repair-and-session-evidence) | `PK (session_id)` |
 | `schema_migrations` | applied files | `version` |
 
-**Readers outside this repo.** The software-factory's `factory` role has `USAGE` on the schema and `SELECT` on `sessions`, `records_unique` and
-`session_window_share` only (migration 0022, guarded on the role existing: a host migrated before the role exists gets nothing and needs a new migration repeating the grant; no default privileges, no writes). A migration that `DROP`s and
+**Readers outside this repo.** The software-factory's `factory` role has `USAGE` on the schema and `SELECT` on `sessions`, `records_unique`,
+`session_window_share` (migration 0022) and `session_signals` (0024: per-session tool calls, compactions, skill loads; the view runs with its owner's rights, `session_events` stays closed) only (both migrations guarded on the role existing: a host migrated before the role exists gets nothing and needs a new migration repeating the grant; no default privileges, no writes). A migration that `DROP`s and
 recreates one of those relations must repeat the grant (0023 did, for the stored `session_window_share`); `CREATE OR REPLACE VIEW` keeps it.
 
 ### records
@@ -363,10 +363,10 @@ Counts per session are derived by a view, never stored on `sessions` or `records
 the record that carries it" is met by `session_signals` (the session) and the event's `ts` (which record it sits between).
 
 `session_events`: `PK (source, event_id)`, `source_session_id` (the `sessions` key, `<session>:<agent>` for a subagent, via
-`eventSessionKey`), `kind` (`compaction` | `skill`), `ts`, `name` (skill), `size_chars` (skill), `detail jsonb`
+`eventSessionKey`), `kind` (`compaction` | `skill` | `tool`), `ts`, `name` (skill: the skill; tool: the tool), `size_chars` (skill), `detail jsonb`
 (compaction: `{trigger, preTokens, postTokens, durationMs}`), `ingested_at`. Indexes `(source, source_session_id)` and
 `(kind, ts)`. No FK to `sessions`: an event can be written before its session's first record. `event_id` is the boundary
-line's `uuid` or the Skill `tool_use` id.
+line's `uuid`, the Skill `tool_use` id, or `tool:<tool_use id>` for a tool call.
 
 **Claude Code collector** (`src/collectors/claude-code.ts`, `parseEvents`; fields verified on 2.1.3xx transcripts):
 - compaction: a `{type:"system", subtype:"compact_boundary"}` line, `compactMetadata` into `detail`.
@@ -375,6 +375,11 @@ line's `uuid` or the Skill `tool_use` id.
 - skill size: the `type:"user"`, `isMeta` line carrying `sourceToolUseID` = the call's id and the text
   `Base directory for this skill: ...`; `size_chars` = total length of its text blocks (a bare string also works). About
   13 % of calls have no such line: `size_chars` stays NULL.
+- tool call (`0024_tool_call_events.sql`): every `tool_use` block of an `assistant` line is a `kind='tool'` event, `event_id`
+  `tool:<tool_use id>` (the prefix keeps it from merging with the `skill` event of a Skill call, which keeps the bare id),
+  `name` = the tool's name (`Read`, `Bash`, `mcp__...`), never its input. A subagent's calls sit in its own session
+  (`<session>:<agent>`). Volume: by far the most numerous kind; the views filter by `kind`, and `lane_signals` skips tool
+  events in its scan. A block without an id is not counted. History before 0024 has none until `make backfill-events`.
 - The call and the size are two events with the same `event_id`; `upsertSessionEvents` (`src/pg/events.ts`) merges them
   on conflict (`name`, `size_chars`, `detail` take the present value, `ts` the earlier), in either order, so a size line in a
   later poll completes the row. A row is written only when a merged column differs, so a `--full` re-scan is a no-op and
@@ -384,8 +389,8 @@ line's `uuid` or the Skill `tool_use` id.
 - `usage.session_signals`, one row per `sessions` row: `session_id, source, source_session_id, lane, account, repo, issue_id,
   effort, parent_session_id, first_ts, last_ts`; `input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
   cache_write_1h_tokens` summed from its records; `cache_hit_ratio` = `cache_read / (input + cache_read + cache_write_5m +
-  cache_write_1h)`, NULL when the denominator is 0; `compactions`, `skill_calls`, `skill_chars` (0, never NULL, when none;
-  a call without a size adds a call and no chars). A subagent is a session of its own; a tree's figure is the sum over a
+  cache_write_1h)`, NULL when the denominator is 0; `compactions`, `skill_calls`, `skill_chars`, `tool_calls` (0, never NULL, when none;
+  a call without a size adds a call and no chars; `tool_calls` counts every tool call of the session itself, a Skill call included, a subagent's in its own row). A subagent is a session of its own; a tree's figure is the sum over a
   session and its children.
 - `usage.lane_signals`, grain `(source, lane, day UTC)`: the same token sums and `cache_hit_ratio` recomputed from the sums
   (never an average of ratios) over the *records* by the record's own lane (a subagent request inside an interactive session
@@ -404,7 +409,7 @@ not for a hot path.
 (parallel seq scan, anti join and sort, 0.25 s at 600k rows). That is fine for a weekly report, not for a hot path; no new index.
 
 **Limits.** A compaction counts only if its boundary line reached disk (a session killed mid-compaction leaves none). Only
-`Skill` tool calls are events: a skill the user invoked by slash command appears only as a preload in subagent files and is
+`Skill` tool calls are `skill` events: a skill the user invoked by slash command appears only as a preload in subagent files and is
 not counted. `size_chars` is characters of the injected text, tokens are about chars / 4; it is the size of the skill's
 first load, not what a later turn re-reads from cache. The bridge-routed and synthetic filters of the record path do not
 apply to events. History before this wave gets its events from `make backfill-events`

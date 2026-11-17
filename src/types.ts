@@ -104,20 +104,20 @@ export interface CollectContext {
 }
 
 /**
- * Something that happened inside a session and is not a billable record: a context compaction, a Skill tool call. Stored in
+ * Something that happened inside a session and is not a billable record: a context compaction, a tool call, a Skill tool call. Stored in
  * usage.session_events (docs/usage-schema.md §Session events). One event can arrive as two halves (a skill's call and the
  * line that shows its loaded size, possibly in different polls); halves share `eventId` and the database merges them.
  */
 export interface SessionEvent {
-  /** Stable source-local id: the boundary line's uuid, the Skill tool_use id. */
+  /** Stable source-local id: the boundary line's uuid, the Skill tool_use id, `tool:<tool_use id>` for a tool call. */
   eventId: string
   /** The transcript's session id; with `agentId` the session is the subagent's own (`eventSessionKey`). */
   sessionId: string
   agentId?: string
-  kind: 'compaction' | 'skill'
+  kind: 'compaction' | 'skill' | 'tool'
   /** ISO 8601 UTC. */
   ts: string
-  /** Skill: the skill's name. */
+  /** Skill: the skill's name; tool: the tool's name. */
   name?: string
   /** Skill: characters of the injected skill text. */
   sizeChars?: number

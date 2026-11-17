@@ -96,6 +96,11 @@ describePg('usage.session_signals and usage.lane_signals', () => {
     await event('claude-code', 'c1', 'sA:ag1', 'skill', T('30', '10:05:00'), 1000)
     await event('claude-code', 'd1', 'sD', 'skill', T('31', '08:00:00'), 400)
     await event('codex', 'x1', 'sA', 'compaction', T('30', '12:00:00'), null)
+    await event('claude-code', 'tool:t1', 'sA', 'tool', T('30', '09:20:00'), null)
+    await event('claude-code', 'tool:t2', 'sA', 'tool', T('30', '09:21:00'), null)
+    await event('claude-code', 'tool:a1', 'sA', 'tool', T('30', '09:30:00'), null)
+    await event('claude-code', 'tool:c1', 'sA:ag1', 'tool', T('30', '10:01:00'), null)
+    await event('codex', 'tool:x2', 'sA', 'tool', T('30', '12:00:00'), null)
   })
 
   const sessionRow = async (key: string) => {
@@ -150,6 +155,13 @@ describePg('usage.session_signals and usage.lane_signals', () => {
     expect(counts(await sessionRow('sE'))).toEqual([0, 0, 0])
   })
 
+  test('tool_calls per session counts only tool events of its own source and session; 0 and not NULL when there are none', async () => {
+    const calls = async (key: string) => (await sessionRow(key)).tool_calls
+    expect(await calls('sA')).toBe(3)
+    expect(await calls('sA:ag1')).toBe(1)
+    for (const key of ['sB', 'sD', 'sE']) expect(await calls(key)).toBe(0)
+  })
+
   const lane = async () => {
     const rows =
       (await sql`SELECT lane, day::text AS day, input_tokens, cache_read_tokens, cache_hit_ratio, compactions, skill_calls, skill_chars
@@ -179,6 +191,7 @@ describePg('usage.session_signals and usage.lane_signals', () => {
 
   test('lane_signals counts events for the lane of their session, and an events-only lane/day still appears', async () => {
     const m = await lane()
+    // tool events are not lane_signals' business: a day with only tool events adds no row, and none changes a count
     expect(counts(m.get('interactive 2026-10-30') as Record<string, unknown>)).toEqual([1, 2, 300])
     expect(counts(m.get('subagent 2026-10-30') as Record<string, unknown>)).toEqual([0, 1, 1000])
     const i31 = m.get('interactive 2026-10-31') as Record<string, unknown>

@@ -36,7 +36,8 @@ import { walkJsonlFiles } from './fs-incremental.ts'
 // Besides records the collector emits session events (usage.session_events): a `compact_boundary` system line is a
 // compaction, a `Skill` tool call is a skill load and the `isMeta` user line after it (`sourceToolUseID` = the call's id)
 // carries the loaded text, whose length is the skill's size. The two skill halves are separate events with the same id:
-// they can land in different polls, the database merges them.
+// they can land in different polls, the database merges them. Every `tool_use` block (Skill included) is also a `tool`
+// event, id `tool:<tool_use id>` (so it never merges with the skill event), name = the tool's name, never its input.
 
 /**
  * This machine's own transcripts root. A function, not a frozen constant, so
@@ -424,7 +425,7 @@ function parseLine(line: string, ctx: LineContext): UsageRecord | null {
 
 // Cheap prefilters: a line is parsed again for events only when it can hold one.
 const COMPACTION_MARK = '"compact_boundary"'
-const SKILL_CALL_MARK = '"Skill"' // not '"name":"Skill"': that would depend on the JSON spacing
+const TOOL_USE_MARK = '"tool_use"' // a Skill call is a tool_use too; not '"name":"Skill"': that would depend on the JSON spacing
 const SKILL_TEXT_MARK = 'Base directory for this skill'
 // An event ts outside this range is garbage (Postgres also rejects year 0): the line is no event, the batch is never failed by it.
 const EVENT_TS_MIN = Date.UTC(2000, 0, 1)
@@ -442,14 +443,15 @@ function messageText(content: unknown): string {
 }
 
 /**
- * The session events of one transcript line (usually none): a compaction boundary, a Skill tool call (name only, never
- * its `args`: free text) or the injected skill text (size only, keyed by the call's id). Only `Skill` tool calls count;
- * a skill the user invoked by slash command has no call to key on.
+ * The session events of one transcript line (usually none): a compaction boundary, a tool call (`tool` event: the tool's
+ * name only, never its input), a Skill tool call (also a `skill` event: the skill's name only, never its `args`: free text)
+ * or the injected skill text (size only, keyed by the call's id). A skill the user invoked by slash command has no call
+ * to key on.
  */
 function parseEvents(line: string): SessionEvent[] {
   if (!line) return []
   const compaction = line.includes(COMPACTION_MARK)
-  const call = line.includes(SKILL_CALL_MARK)
+  const call = line.includes(TOOL_USE_MARK)
   const text = line.includes(SKILL_TEXT_MARK)
   if (!compaction && !call && !text) return []
   let obj: AssistantLine
@@ -487,7 +489,14 @@ function parseEvents(line: string): SessionEvent[] {
       name?: string
       input?: { skill?: unknown }
     }[]) {
-      if (block?.type !== 'tool_use' || block.name !== 'Skill' || !block.id) continue
+      if (block?.type !== 'tool_use' || !block.id) continue
+      out.push({
+        ...base,
+        eventId: `tool:${block.id}`,
+        kind: 'tool',
+        name: typeof block.name === 'string' && block.name ? block.name : undefined,
+      })
+      if (block.name !== 'Skill') continue
       const name =
         typeof block.input?.skill === 'string' && block.input.skill ? block.input.skill : undefined
       out.push({ ...base, eventId: block.id, kind: 'skill', name })

@@ -51,6 +51,24 @@ describePg('usage.session_events writer', () => {
     ])
   })
 
+  test('a tool call is a row of its own beside the skill event of the same tool_use id, and a re-scan is a no-op', async () => {
+    const tool = call({ eventId: 'tool:toolu_1', kind: 'tool', name: 'Skill' })
+    const batch = [
+      tool,
+      call(),
+      size(),
+      call({ eventId: 'tool:toolu_9', kind: 'tool', name: 'Read', agentId: 'ag1' }),
+    ]
+    expect(await upsertSessionEvents(sql, 'claude-code', batch)).toBe(3)
+    expect(await upsertSessionEvents(sql, 'claude-code', batch)).toBe(0)
+    const r = await rows()
+    expect(r.map((x) => [x.event_id, x.source_session_id, x.kind, x.name, x.size_chars])).toEqual([
+      ['tool:toolu_1', 's1', 'tool', 'Skill', null],
+      ['tool:toolu_9', 's1:ag1', 'tool', 'Read', null],
+      ['toolu_1', 's1', 'skill', 'alpha', 1234],
+    ])
+  })
+
   test('halves inside one call merge too; a repeated batch is idempotent and ingested_at moves only on real change', async () => {
     const batch = [
       size(),

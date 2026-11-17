@@ -186,7 +186,7 @@ reloads the ingest agent, and `prices-sync` resolves the Postgres password itsel
   tool calls with their loaded size, keyed `(source, event_id)` (boundary uuid / `tool_use` id), never record attributes or
   `lane_detail`. A skill's call and its size line are two events with one id, merged by `upsertSessionEvents`, so a size
   arriving in a later poll completes the row; `args` is never stored. Counts and the cache hit ratio are the views
-  `session_signals` / `lane_signals` (ratio from sums), nothing stored. Backfill them with `make backfill-events` (full scan, events only, cursor untouched, safe beside the LaunchAgent); `make restamp-claude-code` is only for attribution changes.
+  `session_signals` / `lane_signals` (ratio from sums), nothing stored. Every `tool_use` block is also a `kind='tool'` event (id `tool:<tool_use id>`, tool name only; migration 0024): `session_signals.tool_calls`, which the factory role reads (`SELECT` on the view only). Backfill them with `make backfill-events` (full scan, events only, cursor untouched, safe beside the LaunchAgent); `make restamp-claude-code` is only for attribution changes.
 - **session_env** (`usage.session_env`: `base_url`, `lane`, `account`, `factory_role`, `factory_session` per hook session id) outlives the hook's 3-day log
   retention. `ingest` primes `models.ts` with the table, merges the logs on first lookup and writes new or changed
   lines before each batch, so billing / account / lane see them (details: `docs/collectors.md`). `seen_at` is the hook line's

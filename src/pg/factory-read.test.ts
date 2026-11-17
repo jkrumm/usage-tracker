@@ -21,7 +21,7 @@ describePg('migration 0022 factory read grant', () => {
     await sql.unsafe(grantSql()).simple()
   })
 
-  test('the factory role, when the server has one, reads three relations and nothing else', async () => {
+  test('the factory role, when the server has one, reads its relations and nothing else', async () => {
     const sql = await db.connect()
     const [role] = await sql`SELECT 1 AS ok FROM pg_roles WHERE rolname = 'factory'`
     if (!role) return
@@ -37,6 +37,10 @@ describePg('migration 0022 factory read grant', () => {
       expect(await can('UPDATE', rel)).toBe(false)
       expect(await can('DELETE', rel)).toBe(false)
     }
+    // 0024 added the per-session signals view (tool calls); the tables behind it stay closed
+    expect(await can('SELECT', 'usage.session_signals')).toBe(true)
+    expect(await can('INSERT', 'usage.session_signals')).toBe(false)
+    expect(await can('SELECT', 'usage.session_events')).toBe(false)
     expect(await can('SELECT', 'usage.records')).toBe(false)
     expect(await can('SELECT', 'usage.session_env')).toBe(false)
   })
