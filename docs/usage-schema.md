@@ -421,7 +421,7 @@ restamp-claude-code` also re-emits events but is for attribution changes only.
 ## Weekly report
 
 `usage-tracker report weekly [--week YYYY-Www] [--top N] [--format md|json] [--out <dir>]` (`src/weekly.ts`; exports
-`weeklyReport(sql, {week})`, `formatWeekly`, `parseIsoWeek`, `findingsFor`, `FINDING_THRESHOLDS`). Read-only, nothing stored: both
+`weeklyReport(sql, {week})`, `formatWeekly`, `parseIsoWeek`, `FINDING_THRESHOLDS`). Read-only, nothing stored: both
 weeks are recomputed on every run (the record of changes is a tracked file, §Finding changes). One `REPEATABLE READ` snapshot covers both weeks.
 
 **Range.** An ISO week is Monday 00:00 UTC to the next Monday, `[from, to)`; default = the last full week before now. The previous
