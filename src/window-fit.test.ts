@@ -92,6 +92,10 @@ describePg('window --fit (Postgres)', () => {
     const [quiet] =
       await sql`SELECT count(*)::int AS n FROM usage.window_quiet_intervals WHERE win = 'five_hour'`
     expect(quiet?.n).toBe(20)
+    // together with the moving intervals the view covers every consecutive pair of readings once (81 readings, 80 pairs)
+    const [moving] =
+      await sql`SELECT count(*)::int AS n FROM usage.window_intervals WHERE win = 'five_hour'`
+    expect((moving?.n ?? 0) + (quiet?.n ?? 0)).toBe(80)
     expect(by.sonnet?.weightedMtok as number).toBeGreaterThan(200)
     const text = formatFit(rows, { days: 7 })
     expect(text).toMatch(/haiku\s+not determined yet \(\d+(\.\d)? weighted Mtok\)/)

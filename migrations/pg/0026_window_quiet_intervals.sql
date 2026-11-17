@@ -3,7 +3,9 @@
 -- stretches where the meter did not tick (the 7 d meter moves in whole points) are the observations with tokens and
 -- zero points, and dropping them inflates every slope. window_quiet_intervals lists them with the same readings, pairing
 -- and interval bounds as window_intervals (0012), so window_intervals UNION ALL window_quiet_intervals covers every
--- observed stretch of every window. Nothing stored.
+-- observed stretch of every window. Nothing stored. The readings / paired / deltas CTEs are copies of 0012's: a change to the
+-- pairing or the fresh-window rule must change both views (src/window-fit.test.ts checks that together they cover every pair once).
+-- No grant to the factory role: only the fit reads it, as the usage role.
 CREATE VIEW usage.window_quiet_intervals AS
 WITH readings AS (
   SELECT DISTINCT ON (q.account, v.win, q.sampled_at)
@@ -32,10 +34,3 @@ deltas AS (
   WHERE prev_at IS NOT NULL
 )
 SELECT account, win, from_at, to_at FROM deltas WHERE delta_pct = 0;
-
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'factory') THEN
-    GRANT SELECT ON usage.window_quiet_intervals TO factory;
-  END IF;
-END $$;
