@@ -18,7 +18,7 @@ import { describePg } from './testing.ts'
 //   events: sA compaction 10-30 11:00 and 10-31 00:00:10 | sA skill a1 10-30 09:30 size 300, skill a2 10-30 09:40 no size
 //           sC ("sA:ag1", a subagent) skill c1 10-30 10:05 size 1000 | sD skill d1 10-31 08:00 size 400 (sD has no records)
 //           source 'codex' compaction in a session also called sA (another source: must not count)
-//   sE: no records, no events.
+//   sE: no records, one tool event on 11-01 (a tool-only day: no lane_signals row).
 //
 // session_signals
 //   sA: input 60+40 = 100, read 700, write5m 150, write1h 50, output 30 -> ratio 700 / (100+700+150+50) = 0.7
@@ -26,7 +26,7 @@ import { describePg } from './testing.ts'
 //   sB: input 400+100 = 500, read 100+400 = 500, no writes -> ratio 500 / 1000 = 0.5; no events: 0, 0, 0
 //   sC: all tokens 0 -> denominator 0 -> ratio NULL; parent = sA; skill_calls 1, skill_chars 1000
 //   sD: no records -> tokens 0, ratio NULL; skill_calls 1, skill_chars 400
-//   sE: tokens 0, ratio NULL, 0, 0, 0
+//   sE: tokens 0, ratio NULL, 0, 0, 0, tool_calls 1
 //
 // lane_signals (by the RECORD's lane for tokens, by the session's lane for events)
 //   interactive 10-29: read 300 / (60+300+100) = 300/460                      = 0.652173913...

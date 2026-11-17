@@ -11,7 +11,7 @@ import { connect } from '../src/pg/connect.ts'
 //
 //   make uninstall-agent && make restamp-claude-code && make deploy      (idempotent: a failed run is simply run again)
 //
-// `--events-only` (make backfill-events) is the way to backfill compactions and skill loads: a full scan whose records are
+// `--events-only` (make backfill-events) is the way to backfill compactions, skill loads and tool calls: a full scan whose records are
 // discarded, only usage.session_events is written, the collector's cursor and run state are not touched, and the ingest
 // LaunchAgent may stay loaded. The full restamp above is for attribution changes only.
 
