@@ -5,9 +5,9 @@ import { clean } from './weekly.ts'
 // The record of change ref -> finding id (docs/usage-schema.md §Finding changes). A tracked file the weekly report reads:
 // nothing is stored in the database, the report recomputes a finding's metric for both weeks and prints the change next to it.
 
-export const DEFAULT_CHANGES_PATH = join(import.meta.dir, '..', 'docs', 'finding-changes.json')
+const DEFAULT_CHANGES_PATH = join(import.meta.dir, '..', 'docs', 'finding-changes.json')
 
-export const CHANGE_STATUSES = ['landed', 'declined', 'handed-off'] as const
+const CHANGE_STATUSES = ['landed', 'declined', 'handed-off'] as const
 export type ChangeStatus = (typeof CHANGE_STATUSES)[number]
 
 /** One entry of `docs/finding-changes.json`. */

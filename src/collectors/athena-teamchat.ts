@@ -90,7 +90,7 @@ SELECT coalesce(json_agg(r ORDER BY r.ts), '[]'::json) FROM (
     FROM athena.llm_calls WHERE created_at >= :'since'::timestamptz
 ) r;`
 
-export const psqlQuery: AthenaQuery = async (sinceIso) => {
+const psqlQuery: AthenaQuery = async (sinceIso) => {
   const proc = Bun.spawn(
     [
       psqlBin(),
@@ -161,7 +161,7 @@ function parseCursor(raw: string | null): Cursor {
 }
 
 /** Rows of the archived SQLite teamchat store (build phase, before the Postgres cutover). */
-export function readArchive(path: string): AthenaRow[] {
+function readArchive(path: string): AthenaRow[] {
   const db = new Database(path, { readonly: true })
   try {
     const turns = db

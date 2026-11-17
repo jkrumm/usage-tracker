@@ -67,7 +67,7 @@ export function storedGrain(grain: string): Grain | null {
   }
 }
 
-export function parseRaw(raw: StoredRow['raw']): {
+function parseRaw(raw: StoredRow['raw']): {
   raw: Record<string, unknown> | undefined
   malformed: boolean
 } {

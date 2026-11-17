@@ -17,9 +17,9 @@ import { insertPrice, loadTimelines } from './store.ts'
 // off-peak value changed against the model's latest row. A key that vanished upstream, or whose price became
 // zero/unpublished, is an error line that keeps the previous row: a missing price must never become $0.
 
-export const LITELLM_URL =
+const LITELLM_URL =
   'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
-export const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models'
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/models'
 export const OPENROUTER_PREFIX = 'openrouter:'
 
 export interface SyncDeps {
@@ -43,7 +43,7 @@ async function getJson(url: string): Promise<unknown> {
   return res.json()
 }
 
-export const liveDeps: SyncDeps = {
+const liveDeps: SyncDeps = {
   fetchLiteLLM: async () => (await getJson(LITELLM_URL)) as Record<string, unknown>,
   fetchOpenRouter: async () =>
     ((await getJson(OPENROUTER_URL)) as { data: OpenRouterModel[] }).data,

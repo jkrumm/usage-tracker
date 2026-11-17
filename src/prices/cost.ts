@@ -39,7 +39,7 @@ export interface PriceBook {
   prices: readonly PriceRow[]
   overrides: readonly OverrideRow[]
 }
-export interface ResolvedPrice {
+interface ResolvedPrice {
   origin: 'prices' | 'override'
   priceId: number | null
   overrideId: number | null
@@ -66,7 +66,7 @@ function activeOverride(
 }
 
 /** Precedence: a superseding override, else the catalog row in force, else any override, else null. */
-export function priceAt(book: PriceBook, model: string, ts: Date): ResolvedPrice | null {
+function priceAt(book: PriceBook, model: string, ts: Date): ResolvedPrice | null {
   const asOverride = (o: OverrideRow): ResolvedPrice => ({
     origin: 'override',
     priceId: null,
@@ -125,7 +125,7 @@ const num = (v: string | undefined | null): number | null =>
   v === undefined || v === null ? null : Number(v)
 
 /** Base rates, then the tier the prompt exceeds, then off-peak, then fallbacks for unpublished cache rates. */
-export function effectiveRates(
+function effectiveRates(
   s: Schedule,
   ts: Date,
   tokens: TokenCounts,
@@ -157,7 +157,7 @@ export function effectiveRates(
   return r
 }
 
-export function computeUsd(
+function computeUsd(
   s: Schedule,
   ts: Date,
   tokens: TokenCounts,

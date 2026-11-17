@@ -16,7 +16,7 @@ import { userInfo } from 'node:os'
 type Target = { url: string } | { path: string; port: number; username: string }
 
 /** Where the admin connection goes, or undefined when this machine has no test Postgres. */
-export function adminTarget(env: NodeJS.ProcessEnv = process.env): Target | undefined {
+function adminTarget(env: NodeJS.ProcessEnv = process.env): Target | undefined {
   if (env.USAGE_TEST_PG_URL) return { url: env.USAGE_TEST_PG_URL }
   const { USAGE_TEST_PG_USER: user, USAGE_TEST_PG_PASSWORD: password } = env
   if (user && password) {
@@ -35,7 +35,7 @@ export function adminTarget(env: NodeJS.ProcessEnv = process.env): Target | unde
 }
 
 const TARGET = adminTarget()
-export const pgEnabled = Boolean(TARGET)
+const pgEnabled = Boolean(TARGET)
 
 /** Connection options for `database` on the admin target. */
 function optionsFor(database: string): ConstructorParameters<typeof SQL>[0] {
@@ -58,7 +58,7 @@ export function assertScratchName(name: string): string {
   return name
 }
 
-export const SKIP_REASON =
+const SKIP_REASON =
   'skipped: no test Postgres (no unix socket at PGHOST|/tmp, USAGE_TEST_PG_URL unset)'
 
 if (!pgEnabled) console.warn(`pg tests ${SKIP_REASON}`)

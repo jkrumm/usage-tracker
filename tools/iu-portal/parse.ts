@@ -30,7 +30,7 @@ export interface PortalDocument {
 const DAILY = /^\d{4}-\d{2}-\d{2}$/
 const MONTHLY = /^(\d{2})(\d{4})$/
 
-export function parseUsd(text: string): number {
+function parseUsd(text: string): number {
   const n = Number(text.replace(/[^0-9.-]/g, ''))
   if (!Number.isFinite(n)) throw new Error(`unparseable amount "${text}"`)
   return n

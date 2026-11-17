@@ -48,7 +48,3 @@ export const collectors: Collector[] = [
   athenaTeamchatDefault,
   emailGatewayDefault,
 ]
-
-export function findCollector(source: string): Collector | undefined {
-  return collectors.find((c) => c.source === source)
-}

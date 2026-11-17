@@ -10,7 +10,7 @@ const dec = (v: unknown): string | null =>
 const json = <T>(v: unknown): T | null =>
   v === null || v === undefined ? null : typeof v === 'string' ? (JSON.parse(v) as T) : (v as T)
 
-export function rowSchedule(row: Record<string, unknown>): Schedule {
+function rowSchedule(row: Record<string, unknown>): Schedule {
   return {
     rates: {
       input: dec(row.input) as string,

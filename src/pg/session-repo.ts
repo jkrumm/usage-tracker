@@ -144,7 +144,7 @@ export function pathsRepo(transcript: string): string | null {
 }
 
 /** Checkouts a commit can be searched in: SourceRoot and IuRoot directories that are git checkouts, plus the archived IU repos. */
-export function defaultGitRepos(home = homedir()): GitRepo[] {
+function defaultGitRepos(home = homedir()): GitRepo[] {
   const out: GitRepo[] = []
   const add = (root: string, name: (d: string) => string | null): void => {
     if (!existsSync(root)) return

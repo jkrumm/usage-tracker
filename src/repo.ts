@@ -163,7 +163,7 @@ const CALLER_OWNERS: Readonly<Record<string, string>> = {
 }
 
 /** Retired real repos (no checkout any more) that still carry usage: they keep their own name. */
-export const RETIRED_REPOS: readonly string[] = [
+const RETIRED_REPOS: readonly string[] = [
   'agent-gateway',
   'agentsmd-poc',
   'audio-gateway',

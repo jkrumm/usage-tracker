@@ -94,7 +94,7 @@ export function loadPlatformAccounts(path = registryPath()): PlatformAccount[] {
 }
 
 /** `secrets-run read <ref>` (never `op`: it hangs on a headless Mac). A placeholder or empty value is "missing". */
-export async function resolveSecret(ref: string): Promise<string | null> {
+async function resolveSecret(ref: string): Promise<string | null> {
   try {
     const proc = Bun.spawn(['secrets-run', 'read', ref], {
       stdin: 'ignore',

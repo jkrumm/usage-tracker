@@ -81,13 +81,7 @@ export const FINDING_THRESHOLDS: FindingThresholds = {
 }
 
 /** Lanes whose cache ratio and compaction rate say something about a prompt we own (a subagent's prefix is the parent's). */
-export const MAIN_LANES: readonly string[] = [
-  'interactive',
-  'wave_mother',
-  'lead',
-  'worker',
-  'fan_worker',
-]
+const MAIN_LANES: readonly string[] = ['interactive', 'wave_mother', 'lead', 'worker', 'fan_worker']
 const FACTORY_LANES = new Set(['wave_mother', 'lead', 'worker', 'fan_worker'])
 const OWNER_FACTORY = 'software-factory config/roles.json'
 
@@ -261,7 +255,7 @@ interface WeekData {
 }
 
 /** A skill name is shown only if it looks like a skill name (no dots: no hostnames or addresses); the rest is `(other)`. */
-export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,60}$/
+const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,60}$/
 const SKILL_OTHER = '(other)'
 
 /** Showable label per skill; unsafe names merge into `(other)` here, after aggregation. */
@@ -484,7 +478,7 @@ const modelClass = (model: string) =>
 const ownerOf = (lane: string) => (FACTORY_LANES.has(lane) ? OWNER_FACTORY : 'dotfiles')
 
 /** Pure: the same data and thresholds always give the same findings, ordered by rule then id. */
-export function findingsFor(d: WeekData, th: FindingThresholds = FINDING_THRESHOLDS): RawFinding[] {
+function findingsFor(d: WeekData, th: FindingThresholds = FINDING_THRESHOLDS): RawFinding[] {
   const out: RawFinding[] = []
 
   for (const [name, s] of d.skills) {
