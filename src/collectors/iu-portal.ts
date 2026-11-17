@@ -25,7 +25,7 @@ import { iumacDisabled, iumacHost, SSH_OPTS } from '../remote.ts'
 // feeds latest.json (OCR gate, Tinycast); the others pass `--no-latest` to the scrape.
 // State is kept per key (`iu-portal` for the personal key, `iu-portal:<id>` otherwise).
 
-export const PORTAL_SOURCE = 'iu-portal'
+const PORTAL_SOURCE = 'iu-portal'
 const REFRESH_MS = 4 * 3_600_000
 const REMOTE_CMD = 'cd ~/.local/share/iu-portal/tool && bun scrape.ts daily monthly'
 // One scrape (headed browser, daily + monthly) runs about a minute. Two keys at the old 5 min guard filled the
@@ -117,7 +117,7 @@ export const iuPortalFreshnessAll = IU_KEYS.map((def) => ({
 export const iuPortalFreshness = iuPortalFreshnessAll[0]!
 
 /** The key's secret from the cache (the 1Password account is only a cache namespace), piped into the scrape on iumac. */
-export const sshFetcher: PortalFetcher = async (def) => {
+const sshFetcher: PortalFetcher = async (def) => {
   const keyProc = Bun.spawn(['secrets-run', 'read', def.secretRef], {
     stdout: 'pipe',
     stderr: 'ignore',
@@ -195,7 +195,7 @@ const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
  * (`Claude Haiku 5 5 Eu` = `claude-haiku-5-5-eu` → `claude-haiku-5-5`). Unmatched
  * labels stay NULL, which is the "spend we cannot see" signal.
  */
-export async function resolvePortalModels(sql: SQL): Promise<void> {
+async function resolvePortalModels(sql: SQL): Promise<void> {
   const known = new Map<string, string>()
   const rows =
     await sql`SELECT DISTINCT model_raw, model FROM usage.records WHERE billing = 'api_key' AND model IS NOT NULL`

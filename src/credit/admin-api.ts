@@ -5,7 +5,7 @@ import { utcDay } from './cycle.ts'
 // before credits; rows with no usage are absent; `model` and `api_key_id` can be null. Pure HTTP: no Postgres, no
 // secrets resolution. The admin key goes in the `x-api-key` header and nowhere else: not in a log, not in an error.
 
-export const ADMIN_API_BASE = 'https://api.anthropic.com'
+const ADMIN_API_BASE = 'https://api.anthropic.com'
 const BETA = 'analytics-usage-cost-2026-08-24'
 const FLOOR = Date.UTC(2026, 0, 1) // the API refuses starting_at before 2026-01-01
 const DAY_MS = 86_400_000
@@ -13,7 +13,7 @@ const MAX_REQUEST_DAYS = 31
 const DEFAULT_TRAILING_DAYS = 35
 const REQUEST_TIMEOUT_MS = 30_000
 /** All requests of one org together: a slow Admin API must not stall the 900 s ingest. */
-export const ORG_DEADLINE_MS = 120_000
+const ORG_DEADLINE_MS = 120_000
 const MAX_PAGES = 50
 const SCALE = 12 // decimals kept when summing amounts; the API sends 6
 

@@ -39,14 +39,6 @@ const SOURCE_KEYS: Readonly<Record<string, IuKey>> = {
 
 const known = new Set(IU_KEYS.map((k) => k.id))
 
-/**
- * Rows of a non-default key are only pushed to Argo once Argo stores per-key data: before
- * that, an older Argo would file them under the personal key (portal rows would even
- * overwrite the personal cells of the same day and label, which feeds the cap). Off until
- * `USAGE_SYNC_IU_KEYS=1`; unsent rows stay queued, nothing is lost.
- */
-export const syncNonDefaultKeys = (): boolean => process.env.USAGE_SYNC_IU_KEYS === '1'
-
 /** A registered key id, or null (non-string, unknown id). Unknown ids are never invented into new keys. */
 export function parseIuKey(value: unknown): IuKey | null {
   return typeof value === 'string' && known.has(value) ? value : null

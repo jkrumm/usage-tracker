@@ -2,7 +2,7 @@
 // catalogs' per-token numbers by shifting the decimal point of their shortest printed form, so there is no
 // float drift (1e-7 * 1e6 = 0.09999999999999999 in doubles; here it is "0.1").
 
-export const KINDS = ['input', 'output', 'cache_read', 'cache_write_5m', 'cache_write_1h'] as const
+const KINDS = ['input', 'output', 'cache_read', 'cache_write_5m', 'cache_write_1h'] as const
 export type Kind = (typeof KINDS)[number]
 
 export interface Rates {

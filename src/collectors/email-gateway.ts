@@ -55,7 +55,7 @@ export type EmailGatewayQuery = (sinceMs: number) => Promise<SpanRow[]>
 const sshBin = () => process.env.EMAIL_GATEWAY_SSH ?? 'ssh'
 const sshHost = () => process.env.EMAIL_GATEWAY_SSH_HOST ?? 'vps'
 
-export const spanSql = (sinceMs: number): string => `
+const spanSql = (sinceMs: number): string => `
 SELECT toUnixTimestamp64Milli(Timestamp) AS ts_ms, TraceId, SpanId, SpanName, Duration, StatusCode,
        SpanAttributes['llm.model'] AS model,
        SpanAttributes['llm.input_tokens'] AS input_tokens,

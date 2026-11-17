@@ -9,7 +9,7 @@ import { payload } from './pg/writer.ts'
 // can never overwrite what the Postgres pipeline has written since.
 
 /** Bookkeeping of the retired Argo sync: nothing reads it after the cutover. */
-export const SKIPPED_STATE_KEYS: ReadonlySet<string> = new Set(['argo_portal_fetched_at'])
+const SKIPPED_STATE_KEYS: ReadonlySet<string> = new Set(['argo_portal_fetched_at'])
 
 const CHUNK = 1000
 
@@ -35,7 +35,7 @@ const text = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 
 type Row = Record<string, unknown>
 
-export const toCollectorState = (r: Row) => ({
+const toCollectorState = (r: Row) => ({
   source: r.source as string,
   cursor: text(r.cursor),
   last_run_at: sqliteTime(r.last_run_at),
@@ -44,7 +44,7 @@ export const toCollectorState = (r: Row) => ({
   records_total: typeof r.records_total === 'number' ? r.records_total : 0,
 })
 
-export const toSessionEnv = (r: Row) => ({
+const toSessionEnv = (r: Row) => ({
   session: r.session as string,
   base_url: text(r.base_url),
   lane: text(r.lane),
@@ -75,7 +75,7 @@ export const toAccountPick = (r: Row) => ({
   machine: r.machine as string,
 })
 
-export const toPortalCost = (r: Row) => ({
+const toPortalCost = (r: Row) => ({
   iu_key: (text(r.iu_key) ?? 'personal') as string,
   day: r.day as string,
   label: r.label as string,
@@ -85,7 +85,7 @@ export const toPortalCost = (r: Row) => ({
   fetched_at: fromMs(r.fetched_at) as string,
 })
 
-export const toPortalTotal = (r: Row) => ({
+const toPortalTotal = (r: Row) => ({
   iu_key: (text(r.iu_key) ?? 'personal') as string,
   month: r.month as string,
   total_usd: r.total_usd as number,

@@ -22,14 +22,14 @@ const CHUNK = 500
 const MAX_DURATION_MS = 2_147_483_647
 
 /** Models whose vendor-reported cost is not what IU charges (sonar: list price incl. search fees): tokens price them. */
-export const IGNORE_REPORTED_COST: ReadonlySet<string> = new Set(['sonar'])
+const IGNORE_REPORTED_COST: ReadonlySet<string> = new Set(['sonar'])
 
 /**
  * IU billed no reasoning tokens for these models before the instant (gpt-5.6-terra: the portal matched input + output +
  * cache only until 2026-10-16 ~08:55Z). Earlier rows keep their count in `raw.reasoningTokensUnbilled` and write 0 in
  * `reasoning_tokens`, so usage.compute_cost bills the reasoning share only from then on.
  */
-export const REASONING_FREE_BEFORE: Readonly<Record<string, string>> = {
+const REASONING_FREE_BEFORE: Readonly<Record<string, string>> = {
   'gpt-5.6-terra': '2026-10-16T08:55:00Z',
 }
 

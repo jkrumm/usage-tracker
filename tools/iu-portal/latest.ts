@@ -5,7 +5,7 @@ import type { PortalDocument } from './parse.ts'
 // the mini by the collector (agent-gateway's OCR gate). The cap is a rolling 30-day
 // window, not a calendar month.
 
-export const LIMIT_USD = 500
+const LIMIT_USD = 500
 export const WINDOW_DAYS = 30
 
 export interface Latest {

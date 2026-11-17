@@ -15,10 +15,10 @@ import { OPENROUTER_PREFIX } from './sync.ts'
 // when its schedule differs from the one in force on that day. Idempotent: valid_from is the commit time, so a
 // re-run finds every row already there.
 
-export const LITELLM_REPO = 'https://github.com/BerriAI/litellm.git'
+const LITELLM_REPO = 'https://github.com/BerriAI/litellm.git'
 const FILE = 'model_prices_and_context_window.json'
 export const DEFAULT_SINCE = '2026-04-01'
-export const MAX_CLONE_BYTES = 600 * 1024 * 1024
+const MAX_CLONE_BYTES = 600 * 1024 * 1024
 
 export interface Snapshot {
   sha: string

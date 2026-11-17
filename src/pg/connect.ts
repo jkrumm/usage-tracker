@@ -6,7 +6,7 @@ import { SQL } from 'bun'
 
 const PASSWORD_REF = 'op://mini/vps-dev/SHARED_USAGE_DB_PASSWORD'
 
-export function usagePgUrl(env: NodeJS.ProcessEnv = process.env): string {
+function usagePgUrl(env: NodeJS.ProcessEnv = process.env): string {
   if (env.USAGE_PG_URL) return env.USAGE_PG_URL
   const proc = Bun.spawnSync(['secrets-run', 'read', PASSWORD_REF], {
     stdin: 'ignore',

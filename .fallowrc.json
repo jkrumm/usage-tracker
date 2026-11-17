@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": ["scripts/*.ts", "tools/iu-portal/scrape.ts"],
+  "ignoreExports": [
+    { "file": "src/collectors/athena-teamchat.ts", "exports": ["toRecord"] },
+    { "file": "src/collectors/email-gateway.ts", "exports": ["toRecord"] }
+  ]
+}
