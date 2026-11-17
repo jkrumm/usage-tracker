@@ -95,7 +95,7 @@ backfill-argo: ## One-off history backfill of Argo's table + the SQLite archive 
 restamp-claude-code: ## Re-scan the Claude Code transcripts so existing rows take the current attribution (effort, subagent sessions, role); costs fingerprinted before/after
 	bun run scripts/restamp-claude-code.ts
 
-backfill-events: ## Backfill compactions and skill loads (usage.session_events) from a full transcript scan; writes no records, keeps the cursor, safe beside the LaunchAgent
+backfill-events: ## Backfill compactions, skill loads and tool calls (usage.session_events) from a full transcript scan; writes no records, keeps the cursor, safe beside the LaunchAgent
 	bun run scripts/restamp-claude-code.ts --events-only
 
 import-sqlite-state: ## One-off import of the SQLite archive's state tables (cursors, session_env, quota, picks, portal) into usage.*

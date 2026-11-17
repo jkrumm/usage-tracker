@@ -4,7 +4,7 @@ import { backfillEvents, runIngest } from '../src/ingest.ts'
 import { connect } from '../src/pg/connect.ts'
 
 // Re-stamp the Claude Code attribution (effort, subagent sessions and parent links, factory role, lane) of the rows already
-// in usage.records, and (re)emit its session events (compactions, skill loads: usage.session_events, idempotent): a full re-scan of the transcripts through the normal writer, so the rows are rewritten in place. Costs
+// in usage.records, and (re)emit its session events (compactions, skill loads, tool calls: usage.session_events, idempotent): a full re-scan of the transcripts through the normal writer, so the rows are rewritten in place. Costs
 // are not supposed to move (same tokens, same prices): a fingerprint of every record's id and cost is taken before and
 // after and the run exits 1 when it differs (rows of the run's own time excluded). Afterwards the span of every claude-code session is recomputed from its
 // records, because subagent requests that moved into their own sessions had widened their parent's span.

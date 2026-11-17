@@ -101,6 +101,8 @@ describePg('usage.session_signals and usage.lane_signals', () => {
     await event('claude-code', 'tool:a1', 'sA', 'tool', T('30', '09:30:00'), null)
     await event('claude-code', 'tool:c1', 'sA:ag1', 'tool', T('30', '10:01:00'), null)
     await event('codex', 'tool:x2', 'sA', 'tool', T('30', '12:00:00'), null)
+    // a day with tool events and nothing else: it must add no lane_signals row
+    await event('claude-code', 'tool:e1', 'sE', 'tool', '2026-11-01T09:00:00Z', null)
   })
 
   const sessionRow = async (key: string) => {
@@ -159,7 +161,8 @@ describePg('usage.session_signals and usage.lane_signals', () => {
     const calls = async (key: string) => (await sessionRow(key)).tool_calls
     expect(await calls('sA')).toBe(3)
     expect(await calls('sA:ag1')).toBe(1)
-    for (const key of ['sB', 'sD', 'sE']) expect(await calls(key)).toBe(0)
+    expect(await calls('sE')).toBe(1)
+    for (const key of ['sB', 'sD']) expect(await calls(key)).toBe(0)
   })
 
   const lane = async () => {
@@ -191,7 +194,7 @@ describePg('usage.session_signals and usage.lane_signals', () => {
 
   test('lane_signals counts events for the lane of their session, and an events-only lane/day still appears', async () => {
     const m = await lane()
-    // tool events are not lane_signals' business: a day with only tool events adds no row, and none changes a count
+    // tool events are not lane_signals' business: sE's tool-only day (2026-11-01) adds no row to the exact key list above, and none changes a count
     expect(counts(m.get('interactive 2026-10-30') as Record<string, unknown>)).toEqual([1, 2, 300])
     expect(counts(m.get('subagent 2026-10-30') as Record<string, unknown>)).toEqual([0, 1, 1000])
     const i31 = m.get('interactive 2026-10-31') as Record<string, unknown>

@@ -23,7 +23,7 @@ push step.
   metered/reconciled/unspent. Run by `ingest` after the collectors, at most hourly (`collector_state` key `credit`), or `credit [--days N]` (never throttled; exit 1 on a failed account); `docs/usage-schema.md` §Credit pass.
 - `src/models.ts` — model normalization, `classifyBilling`, `resolveAccount`, the hook-log `session_env` lookups
   (`getSessionLane`, `useStoredSessionEnvs`, `pendingSessionEnvs`) and the transcript-entrypoint lane map.
-- `src/pg/events.ts` — `upsertSessionEvents`: compactions and skill loads (`usage.session_events`, migration 0013; views
+- `src/pg/events.ts` — `upsertSessionEvents`: compactions, skill loads and tool calls (`usage.session_events`, migration 0013; views
   `session_signals` / `lane_signals` hold the cache hit ratio and the counts), emitted by the claude-code collector in
   `CollectResult.events`. See the "Session events" gotcha.
 - `src/lane.ts` (`laneFor`), `src/repo.ts` — the pure lane and repo mappings the writer calls: `classifyRepo` (path, bare slug, session

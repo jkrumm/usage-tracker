@@ -3,7 +3,7 @@ import type { SessionEvent } from '../types.ts'
 import { eventSessionKey } from './sessions.ts'
 import { payload } from './writer.ts'
 
-// The Postgres write path for usage.session_events (docs/usage-schema.md §Session events): compactions and skill loads.
+// The Postgres write path for usage.session_events (docs/usage-schema.md §Session events): compactions, skill loads and tool calls.
 // One event can arrive in two halves (a skill's call, and the line that shows its loaded size, maybe polls apart); both
 // carry the same event id and the conflict clause merges them, in either order.
 

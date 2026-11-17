@@ -127,7 +127,7 @@ export interface SessionEvent {
 
 export interface CollectResult {
   records: UsageRecord[]
-  /** Session events (compactions, skill loads); sources without any leave it out. */
+  /** Session events (compactions, skill loads, tool calls); sources without any leave it out. */
   events?: SessionEvent[]
   /** New watermark to persist for the next run. Echo the old one if unused. */
   cursor: string | null
