@@ -37,6 +37,7 @@ export const ALIASES: readonly Alias[] = [
     'claude-opus-4-6',
     'claude-fable-5',
     'claude-fable-5-1',
+    'claude-fable-5-2',
     'claude-haiku-5-5',
     'claude-haiku-4-5',
   ].map((m) => exact(m)),
