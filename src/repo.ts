@@ -17,9 +17,12 @@ import { join } from 'node:path'
 //   /Users/<any>/IuRoot/worktrees/tool-b             -> iu/epos-tool-athena  (branch worktree: prefix table below)
 //   bare SourceRoot / IuRoot, empty, anything else   -> null
 //
-// Dot-directories (.hermes-wt, .wt) are scratch space and temp paths belong to no repo: null.
+// Dot-directories (.hermes-wt, .wt) and numbered throwaway directories (`scratch-1636`) are scratch space and temp paths
+// belong to no repo: null.
 
 const ROOT = /^\/(?:Users|home)\/[^/]+\/(SourceRoot|IuRoot)(?:\/([^/]+))?(?:\/([^/]+))?/
+/** A throwaway working directory directly under a root (`SourceRoot/scratch-<n>`): it is deleted after use, so it is never a repo. */
+const THROWAWAY_DIR = /^scratch-\d+$/
 const SIBLING_WORKTREE = /^(.+?)-(?:w\d+(?:-trial)?|wt)$/
 const HERMES_PATH = /^\/(?:Users|home)\/[^/]+\/\.hermes\/hermes-agent(?:\/|$)/
 const IU_WIP =
@@ -186,7 +189,7 @@ export function normalizeRepo(project: string | null | undefined): string | null
   const m = ROOT.exec(project.trim())
   if (!m) return null
   const [, root, dir, sub] = m
-  if (!dir || dir.startsWith('.')) return null
+  if (!dir || dir.startsWith('.') || THROWAWAY_DIR.test(dir)) return null
   if (dir === 'worktrees') {
     if (!sub || sub.startsWith('.')) return null
     if (root === 'SourceRoot') return sub
