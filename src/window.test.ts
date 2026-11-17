@@ -58,6 +58,31 @@ describePg('window command', () => {
     expect(formatWindow(report)).toContain('5h moved 12.0, attributed 10.0, residual 2.0 (16.7%')
   })
 
+  test('by model splits a session that mixes families, by cost, with the family as the key', async () => {
+    const sql = await db.reset()
+    const reading = (minutes: number, five: number) =>
+      sql`INSERT INTO usage.quota_samples (account, sampled_at, machine, five_hour_pct, seven_day_pct, five_hour_resets_at, seven_day_resets_at)
+          VALUES ('a', ${at(minutes)}, 'mini', ${five}, 0, '2099-01-01T00:00:00Z', '2099-01-02T00:00:00Z')`
+    await reading(0, 0)
+    await reading(30, 10)
+    const [s] =
+      await sql`INSERT INTO usage.sessions (source, source_session_id, lane) VALUES ('claude-code', 'mixed', 'lead') RETURNING id`
+    const record = (id: string, model: string, cost: number | null) =>
+      sql`INSERT INTO usage.records (source, source_id, grain, ts, session_id, billing, account, model, cost_usd)
+          VALUES ('claude-code', ${id}, 'message', ${at(10)}, ${Number(s.id)}, 'max', 'a', ${model}, ${cost})`
+    await record('m1', 'claude-fable-5-2', 6)
+    await record('m2', 'claude-sonnet-5-5', 3)
+    await record('m3', 'claude-haiku-5-5', 1)
+    await record('m4', 'claude-fable-5-2', null)
+    const report = await windowShare(sql, { by: 'model' })
+    expect(report.rows).toEqual([
+      { key: 'fable', fiveHourPct: 6, sevenDayPct: 0, sessions: 1 },
+      { key: 'sonnet', fiveHourPct: 3, sevenDayPct: 0, sessions: 1 },
+      { key: 'haiku', fiveHourPct: 1, sevenDayPct: 0, sessions: 1 },
+    ])
+    expect(report.coverage[0]).toMatchObject({ movedPts: 10, attributedPts: 10, residualPts: 0 })
+  })
+
   test('filters by account and by days', async () => {
     const sql = await db.sql()
     expect((await windowShare(sql, { by: 'lane', account: 'other' })).rows).toEqual([])

@@ -14,6 +14,8 @@ import {
 } from './ingest.ts'
 import {
   attributionHealth,
+  formatUnpricedMax,
+  unpricedMaxModels,
   formatAttributionHealth,
   formatBillingAudit,
   formatSources,
@@ -35,6 +37,7 @@ import { formatReprice, reprice } from './reprice.ts'
 import { loadChanges } from './changes.ts'
 import { formatWeekly, parseIsoWeek, weeklyReport, writeWeekly } from './weekly.ts'
 import { formatWindow, WINDOW_BY_DIMS, windowShare, type WindowBy } from './window.ts'
+import { fitWeights, formatFit } from './window-fit.ts'
 
 const HELP = `usage-tracker — local token/cost telemetry across AI tools
 
@@ -59,7 +62,9 @@ COMMANDS
     --by <dim>           Group by: source (default) | model | billing | day | machine | lane | account | iu_key | repo | tool | role | subagent_type | effort
     --since <N>          Only the last N days
   window                 Share of the Max accounts' 5h / 7d windows (points of the window), by session, lane, role, ...
-    --by <dim>           session (default) | lane | role | subagent_type | issue | repo | account
+    --by <dim>           session (default) | lane | role | subagent_type | issue | repo | account | model (family)
+    --fit                Fitted weight per model family instead of shares: points of the window per weighted million tokens,
+                         90% bootstrap interval, per account and window (takes --days, --account, --format; not --by / --top)
     --days <N>           Only the last N days (default 7)
     --top <N>            Rows shown (default 20)
     --account <id>       One account's windows only (iu | me | me2)
@@ -72,7 +77,8 @@ COMMANDS
     --out <dir>          Also write <dir>/<week>.md and <week>.json (atomic); the paths go to stderr
   sources                Per-collector status: rows, error rate, last run, last note
   health                 Exit 1 when a source's newest row is older than its expected cadence (ingest also exits 1 then),
-                         when a repo of the last 7 days is unknown, or when over 10% of its tokens have no repo
+                         when a repo of the last 7 days is unknown, when over 10% of its tokens have no repo,
+                         or when a model has over 100 unpriced Max records in the last 7 days
   repair                 Recompute repo / workspace / model / issue_id from project_raw, model_raw and the transcripts; mark cutover duplicates
     --dry-run            Run it inside a rolled-back transaction and print the counts and the records and cost per repo before and after
     --full               Every row, not just the last 3 days
@@ -187,7 +193,10 @@ async function main(): Promise<number> {
       const attribution = await attributionHealth(sql, { known: knownRepos() })
       if (!attribution.ok) process.stderr.write(`${formatAttributionHealth(attribution)}\n`)
       else process.stdout.write('health: attribution within limits\n')
-      return stale.length > 0 || !attribution.ok ? 1 : 0
+      const unpriced = await unpricedMaxModels(sql)
+      if (unpriced.length > 0) process.stderr.write(`${formatUnpricedMax(unpriced)}\n`)
+      else process.stdout.write('health: every Max model is priced\n')
+      return stale.length > 0 || !attribution.ok || unpriced.length > 0 ? 1 : 0
     }
 
     if (cmd === 'repair') {
@@ -303,6 +312,24 @@ async function main(): Promise<number> {
       if (format !== 'plain' && format !== 'json') {
         process.stderr.write(`--format must be plain or json, got "${format}"\n`)
         return 2
+      }
+      if (rest.includes('--fit')) {
+        if (rest.includes('--by') || rest.includes('--top')) {
+          process.stderr.write('--fit takes --days, --account and --format, not --by or --top\n')
+          return 2
+        }
+        const to = new Date()
+        const rows = await sql.begin('ISOLATION LEVEL REPEATABLE READ READ ONLY', (tx) =>
+          fitWeights(tx, {
+            from: new Date(to.getTime() - days * 86_400_000),
+            to,
+            account: flag(rest, '--account'),
+          }),
+        )
+        process.stdout.write(
+          `${format === 'json' ? JSON.stringify({ days, account: flag(rest, '--account') ?? null, rows }, null, 2) : formatFit(rows, { days })}\n`,
+        )
+        return 0
       }
       const report = await windowShare(sql, { by, days, top, account: flag(rest, '--account') })
       process.stdout.write(

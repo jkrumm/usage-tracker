@@ -1,4 +1,4 @@
-.PHONY: help install repair restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window sources billing-audit typecheck format lint check deploy verify version install-agent uninstall-agent logs
+.PHONY: help install repair restamp-claude-code backfill-events backfill-argo import-sqlite-state pg-migrate prices-sync prices-seed-history install-prices-agent uninstall-prices-agent install-report-agent uninstall-report-agent report test budget iu-portal iu-portal-setup iu-portal-login ingest backfill ingest-iumac stats quota window window-fit sources billing-audit typecheck format lint check deploy verify version install-agent uninstall-agent logs
 
 LABEL := com.jkrumm.usage-tracker
 PRICES_LABEL := com.jkrumm.usage-tracker-prices
@@ -52,8 +52,11 @@ iu-portal-login: ## Re-run the IU portal sign-in headed on the MacBook (approve 
 quota: ## Claude account 5h/7d quota series + picker decisions (DAYS=7)
 	bun run src/cli.ts quota $(if $(DAYS),--days $(DAYS))
 
-window: ## Share of the Max 5h/7d windows (override: make window BY=lane DAYS=7 TOP=20 ACCOUNT=me; BY is session|lane|role|subagent_type|issue|repo|account)
+window: ## Share of the Max 5h/7d windows (override: make window BY=lane DAYS=7 TOP=20 ACCOUNT=me; BY is session|lane|role|subagent_type|issue|repo|account|model)
 	bun run src/cli.ts window $(if $(BY),--by $(BY)) $(if $(DAYS),--days $(DAYS)) $(if $(TOP),--top $(TOP)) $(if $(ACCOUNT),--account $(ACCOUNT))
+
+window-fit: ## Measured weight of each model family on the Max windows, per account and window (override: make window-fit DAYS=7 ACCOUNT=me)
+	bun run src/cli.ts window --fit $(if $(DAYS),--days $(DAYS)) $(if $(ACCOUNT),--account $(ACCOUNT))
 
 sources: ## Per-collector status
 	bun run src/cli.ts sources

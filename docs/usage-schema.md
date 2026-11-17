@@ -348,8 +348,10 @@ while the MacBook sleeps) before the cutoff; rows and the coverage line use the 
 **Plan.** `EXPLAIN` of `window_intervals` over 7 days (969 intervals) uses `records_account_ts_idx` (`Index Scan ... Index
 Cond: account, ts range`) for the per-interval record lookup and runs in about 0.85 s; no new index.
 
-CLI: `usage-tracker window --by session|lane|role|subagent_type|issue|repo|account [--days N] [--top N] [--account <id>]
-[--format json|plain]` (`make window BY=lane`). First measurement by lane, role and effort:
+CLI: `usage-tracker window --by session|lane|role|subagent_type|issue|repo|account|model [--days N] [--top N] [--account <id>]
+[--format json|plain]` (`make window BY=lane`). `--by model` keys by model family (`claude-<family>-...` is `<family>`, any other model is its own
+key) and applies the same cost-weighted split per record instead of per session, so a session that mixes families (an orchestrator with
+cheaper subagents) is cut by family; a record without a price carries no share, which `health` now guards (below). First measurement by lane, role and effort:
 `docs/reports/2026-10-30-role-window-share.md`.
 
 ## Session events: compactions and skills (Wave 3)
@@ -418,6 +420,32 @@ writes only `session_events`, never saves the collector's cursor, does not sync 
 upsert is idempotent and merges by id); it prints the events seen, written and the per-kind totals. `make
 restamp-claude-code` also re-emits events but is for attribution changes only.
 
+### Measured weight per model family (`window --fit`)
+
+The cost-weighted split above assumes a window moves in proportion to the dollars of the records in it. `usage-tracker window --fit
+[--days N] [--account <id>] [--format json|plain]` (`make window-fit`; `src/window-fit.ts`) **replaces that assumption with a
+measurement**: per account and window it regresses the points the window moved on the weighted tokens of each model family. Read-only,
+nothing stored; the cost-weighted attribution itself is unchanged and the fit is reported beside it.
+
+- **Observations.** The intervals of `window_intervals` that end in the period are summed into 3 h bins per account and window
+  (`y` = points moved); the Max records inside each interval give the bin's weighted Mtok per family. A bin with no Max record is left out (the
+  residual line of `window` already counts it); a family with no tokens in the period has no column.
+- **Weighted Mtok** = (input + 5 x output + 1.25 x 5 m cache write + 2 x 1 h cache write + 0.1 x cache read) / 1e6: the ratios of the
+  catalog's list prices, so a window that followed API prices would give every family the same figure, and one that counted tokens alike
+  would weigh cache reads like input.
+- **Model.** Least squares through the origin, one column per family (`claude-<family>-...`): `y = sum over families of weight x weighted Mtok`.
+  The 90 % interval is the 5th to 95th percentile of 2,000 bootstrap resamples of the bins; the generator is seeded by account and
+  window, so a report is a function of the database alone. A family whose interval reaches zero or below prints
+  `not determined yet (n weighted Mtok)`; the others print their weight, interval, weighted Mtok and the weight relative to the middle tier
+  (`sonnet`, `REFERENCE_FAMILY`; "-" while either side is undetermined).
+- **What it cannot separate.** Models that always run together (a family that only ever runs as the subagents of another, a day when one
+  family is used and nothing else) make columns collinear: their intervals are wide or undetermined, and the fit says nothing about their
+  split. The 7 d meter moves in whole points, so its fits are coarser than the 5 h ones; a family with few weighted Mtok stays undetermined
+  until it has more. It measures tokens against points, so it does not need a price, and an unpriced model still gets a column.
+- **Output.** `--format json` is `{days, account, rows}`; each row is `{account, win, family, weightedMtok, ptsPerMtok, low, high,
+  determined, relativeToReference, bins}`. The same rows are `tables.weights` of the weekly report (for the report's ISO week), so a chart
+  of the weights over weeks needs no new query.
+
 ## Weekly report
 
 `usage-tracker report weekly [--week YYYY-Www] [--top N] [--format md|json] [--out <dir>]` (`src/weekly.ts`; exports
@@ -441,7 +469,7 @@ compactions are Claude Code only (`source = 'claude-code'`); the ratio is recomp
 week-over-week change of the moved totals; with no window data in the previous week it says so and every delta is `-`/null),
 share of the 5h and 7d windows by lane, factory role, subagent type (each: this week, previous, delta; top N by 7d points, ties by
 5h), skills, cache hit ratio and compactions by lane, top sessions by 7d points (`--top`, default 10, only sessions with attributed points; short id = first 8 characters, `<parent8>:<agent6>`
-for a subagent), findings, coverage. **Skills have no window share**: a session loads several skills and its points cannot be split
+for a subagent), the window weight per model family (§Measured weight per model family; account, window, family, points per weighted Mtok with its 90 % interval, weighted Mtok, weight against the middle tier), findings, coverage. **Skills have no window share**: a session loads several skills and its points cannot be split
 between them, so the table is loads, characters and average size per skill from `session_events kind='skill'`; the average is over
 the loads whose size was seen. A skill name is untrusted free text: it is shown only if it matches `^[A-Za-z0-9][A-Za-z0-9:_-]{0,60}$`
 (no dots, so no hostnames or addresses), otherwise it is grouped under `(other)`; aggregation uses the original name and only the exported
@@ -468,7 +496,7 @@ Every rule needs Claude data in the week, and the window rules (`subagent-effort
 not measured this week lists last week's findings under **Unknown** (`unknown` in the JSON), not Resolved; a rule not measured last week
 makes a present finding `unmeasured`, not `new`. 5h readings never stand in for 7d ones. An empty current week still renders Findings (Resolved, Unknown) before the coverage.
 
-**Output.** Markdown by default (minimum table separators); `--format json` is `{week, from, to, previous, empty, verdict, tables,
+**Output.** Markdown by default (minimum table separators); `--format json` is `{week, from, to, previous, empty, verdict, tables (lane, role, subagentType, skills, cache, topSessions, weights),
 findings, resolved, unknown, coverage}`. `--out <dir>` also writes `<dir>/<week>.md` and `<week>.json` (temp file + rename) and prints the
 paths to stderr; the directory is created or chmod'ed `0700` and the files are `0600`. Every string that came from the database goes through `clean`: URLs and secret references become `(ref)`,
 anything with an `@` becomes `(address)`, so a report never carries a host, a token reference or an address. Account ids are fine.
@@ -540,6 +568,11 @@ row and is retried. Only sessions without a row are scanned; ongoing passes look
 (listed with its rows), or when more than `REPO_NULL_SHARE_LIMIT` (10%, `src/report.ts`) of the last 7 days' tokens have a NULL
 repo (the heaviest `source | project_raw` shapes are printed, UUID worktree names folded). A new source, directory or rename that the
 rules do not map therefore fails loudly instead of falling out of Argo's project dimension.
+
+**Unpriced models.** `health` (and so `make verify`) also exits 1 when a model has more than 100 Max records of the last 7 days with a NULL
+`cost_usd` (`unpricedMaxModels`, `UNPRICED_MAX_LIMIT` in `src/report.ts`; the `<synthetic>` placeholder is no model and is skipped). Max records carry
+the cost-weighted window share, so an unpriced model silently gets none and the shares of the others inflate. The fix is the model's alias in
+`src/prices/aliases.ts` (the catalog must list it), `make prices-sync`, then `make reprice`.
 
 ## Prices (U3)
 

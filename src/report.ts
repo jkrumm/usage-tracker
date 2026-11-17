@@ -114,6 +114,53 @@ export async function unpricedByModel(sql: SQL): Promise<UnpricedModel[]> {
   }))
 }
 
+/** A model with this many unpriced Max records in the window fails `health`. */
+export const UNPRICED_MAX_LIMIT = 100
+const UNPRICED_DAYS = 7
+/** Not a model: the placeholder Claude Code writes for a locally generated message; deliberately without a price. */
+const NOT_A_MODEL = '<synthetic>'
+
+export interface UnpricedMaxModel {
+  model: string
+  rows: number
+  tokens: number
+}
+
+/**
+ * Models with more than `limit` Max records of the last 7 days that no price covers. Max records carry the window share
+ * (cost-weighted), so an unpriced model silently gets none: a new model id needs its alias in `src/prices/aliases.ts` before
+ * its first day of use, and this names it when that was missed.
+ */
+export async function unpricedMaxModels(
+  sql: SQL,
+  opts: { limit?: number; now?: Date } = {},
+): Promise<UnpricedMaxModel[]> {
+  const since = new Date((opts.now ?? new Date()).getTime() - UNPRICED_DAYS * 86_400_000)
+  const rows = await sql`
+    SELECT coalesce(model, '(unknown)') AS model, count(*)::int AS rows,
+           sum(input_tokens + output_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens)::float8 AS tokens
+    FROM usage.records
+    WHERE billing = 'max' AND cost_usd IS NULL AND ts >= ${since.toISOString()}::timestamptz
+      AND coalesce(model, '') <> ${NOT_A_MODEL}
+    GROUP BY 1
+    HAVING count(*) > ${opts.limit ?? UNPRICED_MAX_LIMIT}::int
+    ORDER BY 2 DESC`
+  return rows.map((r: Record<string, unknown>) => ({
+    model: String(r.model),
+    rows: Number(r.rows),
+    tokens: Number(r.tokens),
+  }))
+}
+
+export function formatUnpricedMax(models: UnpricedMaxModel[]): string {
+  return models
+    .map(
+      (m) =>
+        `prices: ${m.model} has ${m.rows} Max records without a price in the last ${UNPRICED_DAYS} days (${(m.tokens / 1e6).toFixed(1)}M tokens, no window share): add its alias to src/prices/aliases.ts, then \`make prices-sync\` and \`make reprice\``,
+    )
+    .join('\n')
+}
+
 export interface SourceStatus {
   source: string
   records: number

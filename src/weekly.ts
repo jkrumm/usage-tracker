@@ -2,6 +2,14 @@ import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SQL } from 'bun'
 import type { ChangeExposure, ChangeNote, ChangeRecord } from './changes.ts'
+import {
+  fitWeights,
+  REFERENCE_FAMILY,
+  relativeText,
+  weightText,
+  winLabel,
+  type WeightRow,
+} from './window-fit.ts'
 
 // `report weekly`: where the Max windows went in one ISO week, verdict first, findings with stable ids that are
 // recomputed for the previous week so every finding carries its effect. Rules and ranges: docs/usage-schema.md §Weekly report.
@@ -200,6 +208,8 @@ export interface WeeklyReport {
     skills: SkillRow[]
     cache: CacheRow[]
     topSessions: TopSession[]
+    /** Fitted window weight per account, window and model family (`window --fit`), for the week; flat so a chart over weeks needs no new query. */
+    weights: WeightRow[]
   }
   findings: Answered<Finding>[]
   resolved: Answered<ResolvedFinding>[]
@@ -725,10 +735,14 @@ export async function weeklyReport(sql: SQL, opts: WeeklyOptions = {}): Promise<
   const th = opts.thresholds ?? FINDING_THRESHOLDS
 
   // One snapshot for both weeks: an ingest committing in between would make the deltas disagree with the rows.
-  const [cur, prev] = await sql.begin('ISOLATION LEVEL REPEATABLE READ READ ONLY', async (tx) => {
-    const cur = await loadWeek(tx, week.from, week.to)
-    return [cur, await loadWeek(tx, prevWeek.from, prevWeek.to)] as const
-  })
+  const [cur, prev, weights] = await sql.begin(
+    'ISOLATION LEVEL REPEATABLE READ READ ONLY',
+    async (tx) => {
+      const cur = await loadWeek(tx, week.from, week.to)
+      const prev = await loadWeek(tx, prevWeek.from, prevWeek.to)
+      return [cur, prev, await fitWeights(tx, { from: week.from, to: week.to })] as const
+    },
+  )
 
   const cw = windowReadings(cur)
   const pw = windowReadings(prev)
@@ -923,7 +937,7 @@ export async function weeklyReport(sql: SQL, opts: WeeklyOptions = {}): Promise<
     windowReadings: cw,
     hasClaudeData: curClaude,
     verdict: { lines, topLane, weekOverWeek },
-    tables: { lane, role, subagentType, skills, cache, topSessions },
+    tables: { lane, role, subagentType, skills, cache, topSessions, weights },
     findings: answered(findings),
     resolved: answered(resolved),
     unknown: answered(unknown),
@@ -1159,6 +1173,31 @@ export function formatWeekly(report: WeeklyReport): string {
             fmt(s.sevenDayPts),
           ]),
         ),
+    '',
+    '## Window weight by model family',
+    '',
+    t.weights.length === 0
+      ? '(no window movement with Max records in the week)'
+      : table(
+          [
+            'account',
+            'window',
+            'family',
+            'pts per weighted Mtok (90% interval)',
+            'weighted Mtok',
+            `vs ${REFERENCE_FAMILY}`,
+          ],
+          t.weights.map((w) => [
+            clean(w.account),
+            winLabel(w.win),
+            clean(w.family),
+            weightText(w),
+            fmt(w.weightedMtok, 1),
+            relativeText(w),
+          ]),
+        ),
+    '',
+    'Measured, not assumed: points the window moved per weighted million tokens (input + 5 x output + 1.25 x 5 m cache write + 2 x 1 h cache write + 0.1 x cache read), least squares through the origin on 3 h bins with a seeded 90% bootstrap interval; a window that followed list prices would show every family alike. Families that always run together cannot be told apart, and the 7d meter moves in whole points, so a week is thin: read the trend over weeks. Beside the cost-weighted shares above, which it does not change.',
     '',
   )
   out.push(...findingsMd())

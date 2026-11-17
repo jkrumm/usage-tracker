@@ -317,6 +317,15 @@ describePg('weekly report', () => {
     weeklyReport(await db.sql(), { week: '2026-W43', thresholds })
   const row = <T extends { key: string }>(rows: T[], key: string) => rows.find((r) => r.key === key)
 
+  test('carries the fitted window weights beside the shares, as rows in the JSON and a section in the markdown', async () => {
+    const r = await week()
+    expect(Array.isArray(r.tables.weights)).toBe(true)
+    for (const w of r.tables.weights) expect(w).toHaveProperty('ptsPerMtok')
+    const md = formatWeekly(r)
+    expect(md).toContain('## Window weight by model family')
+    expect(JSON.parse(JSON.stringify(r)).tables.weights).toEqual(r.tables.weights)
+  })
+
   test('lane, role and subagent-type shares carry this week, the previous week and the delta', async () => {
     const r = await week()
     expect(r.from).toBe('2026-10-19T00:00:00.000Z')

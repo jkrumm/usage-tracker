@@ -6,8 +6,10 @@ import { describePg } from './pg/testing.ts'
 import {
   attributionHealth,
   formatAttributionHealth,
+  formatUnpricedMax,
   REPO_NULL_SHARE_LIMIT,
   staleSources,
+  unpricedMaxModels,
 } from './report.ts'
 
 const pg = migratedDb()
@@ -172,6 +174,37 @@ describePg('attributionHealth (Postgres)', () => {
       nullShare: null,
       ok: true,
     })
+  })
+})
+
+describePg('unpricedMaxModels (Postgres)', () => {
+  const NOW = new Date('2026-11-17T12:00:00Z')
+  let n = 0
+  async function records(
+    model: string,
+    count: number,
+    opts: { cost?: number | null; ts?: string; billing?: string } = {},
+  ) {
+    for (let i = 0; i < count; i++)
+      await sql`INSERT INTO usage.records (source, source_id, grain, ts, billing, account, lane, model, cost_usd)
+          VALUES ('claude-code', ${`u${++n}`}, 'message', ${opts.ts ?? '2026-11-16T10:00:00Z'}::timestamptz, ${opts.billing ?? 'max'}, 'a', 'other', ${model}, ${opts.cost ?? null})`
+  }
+
+  test('names a model with more than 100 unpriced Max records in the last 7 days', async () => {
+    await records('model-x', 101)
+    const found = await unpricedMaxModels(sql, { now: NOW })
+    expect(found.map((m) => [m.model, m.rows])).toEqual([['model-x', 101]])
+    expect(formatUnpricedMax(found)).toContain('model-x has 101 Max records without a price')
+  })
+
+  test('100 records, priced records, old records, other billing and the synthetic placeholder do not count', async () => {
+    await records('few', 100)
+    await records('priced', 150, { cost: 1 })
+    await records('old', 150, { ts: '2026-11-01T00:00:00Z' })
+    await records('metered', 150, { billing: 'api_key' })
+    await records('<synthetic>', 150)
+    expect(await unpricedMaxModels(sql, { now: NOW })).toEqual([])
+    expect(await unpricedMaxModels(sql, { now: NOW, limit: 99 })).toHaveLength(1)
   })
 })
 

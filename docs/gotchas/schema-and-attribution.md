@@ -18,7 +18,7 @@
   the whole schedule (restate tiers / off-peak), `supersedes_prices` makes it beat the catalog. A new IU rate = a new
   override row with a later `valid_from` in a new migration, never an edit; then `make reprice DRYRUN=1`, then
   `make reprice`. The old `FAMILY_PRICING` tier fallback is gone: an unpriced Claude id is NULL until the catalog
-  prices it (`make sources` lists them). Free local models (`gemma4-agent`) stay `cost_source='none'`.
+  prices it (`make sources` lists them; `health` fails on a model with over 100 unpriced Max records in 7 days). Free local models (`gemma4-agent`) stay `cost_source='none'`.
 - **Gateway mirror duplicates are marked, not deleted.** The audio/image gateway calls exist twice in `usage.records` (collector
   copy and the gateway's own Argo push); `usage.record_duplicates` marks the later copy (rule `gateway-mirror`,
   `usage.flag_gateway_duplicates()`), `usage.records_unique` is the view without them, `budget` and `stats` read it.

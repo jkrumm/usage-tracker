@@ -1,10 +1,19 @@
 import type { SQL } from 'bun'
+import { FAMILY_SQL } from './window-fit.ts'
 
 // `window`: the share of the Max accounts' 5-hour and 7-day windows, by session / lane / role / ... over
 // usage.window_attribution (migration 0011; rule in docs/usage-schema.md §Window share). Shares are points of the window
 // (3.2 = 3.2 % of one account's 5 h or 7 d window), so a row spanning accounts adds points of different windows.
 
-export type WindowBy = 'session' | 'lane' | 'role' | 'subagent_type' | 'issue' | 'repo' | 'account'
+export type WindowBy =
+  | 'session'
+  | 'lane'
+  | 'role'
+  | 'subagent_type'
+  | 'issue'
+  | 'repo'
+  | 'account'
+  | 'model'
 
 /** Whitelisted: the only strings ever spliced into the query. `s` is usage.sessions, `a` usage.window_attribution. */
 const BY_EXPR: Record<WindowBy, string> = {
@@ -15,6 +24,8 @@ const BY_EXPR: Record<WindowBy, string> = {
   issue: "coalesce(s.issue_id, '(none)')",
   repo: "coalesce(s.repo, '(none)')",
   account: 'a.account',
+  // Not a session attribute: a model is read off the records, see MODEL_SQL.
+  model: FAMILY_SQL('r'),
 }
 
 /** A session is told apart by its database id: source_session_id is unique only within a source. */
@@ -45,6 +56,37 @@ export interface WindowReport {
   coverage: WindowCoverage[]
 }
 
+const sessionSql = (expr: string, groupExtra: string) =>
+  `SELECT ${expr} AS key,
+          coalesce(sum(a.share_pct) FILTER (WHERE a.win = 'five_hour'), 0)::float8 AS "fiveHourPct",
+          coalesce(sum(a.share_pct) FILTER (WHERE a.win = 'seven_day'), 0)::float8 AS "sevenDayPct",
+          count(DISTINCT a.session_id)::int AS sessions
+   FROM usage.window_attribution a
+   LEFT JOIN usage.sessions s ON s.id = a.session_id
+   WHERE a.to_at >= now() - $1::float8 * interval '1 day' AND ($2::text IS NULL OR a.account = $2::text)
+   GROUP BY 1${groupExtra}
+   ORDER BY "sevenDayPct" DESC, "fiveHourPct" DESC
+   LIMIT $3::int`
+
+/**
+ * By model family: the same cost-weighted split as window_attribution, kept per record instead of per session, so a
+ * session that mixes families (an orchestrator with cheaper subagents) is cut by family. Records with no price carry no
+ * share (as there), which is why a model without a price must show in `health`.
+ */
+const modelSql = (expr: string) =>
+  `SELECT ${expr} AS key,
+          coalesce(sum(i.delta_pct * r.cost_usd / i.records_cost) FILTER (WHERE i.win = 'five_hour'), 0)::float8 AS "fiveHourPct",
+          coalesce(sum(i.delta_pct * r.cost_usd / i.records_cost) FILTER (WHERE i.win = 'seven_day'), 0)::float8 AS "sevenDayPct",
+          count(DISTINCT r.session_id)::int AS sessions
+   FROM usage.window_intervals i
+   JOIN usage.records r
+     ON r.billing = 'max' AND r.account = i.account AND r.ts > i.from_at AND r.ts <= i.to_at AND r.cost_usd > 0
+   WHERE i.records_cost > 0
+     AND i.to_at >= now() - $1::float8 * interval '1 day' AND ($2::text IS NULL OR i.account = $2::text)
+   GROUP BY 1
+   ORDER BY "sevenDayPct" DESC, "fiveHourPct" DESC
+   LIMIT $3::int`
+
 export async function windowShare(
   sql: SQL,
   opts: { by: WindowBy; days?: number; top?: number; account?: string },
@@ -60,16 +102,7 @@ export async function windowShare(
     'ISOLATION LEVEL REPEATABLE READ READ ONLY',
     async (tx) => {
       const rows = await tx.unsafe(
-        `SELECT ${expr} AS key,
-              coalesce(sum(a.share_pct) FILTER (WHERE a.win = 'five_hour'), 0)::float8 AS "fiveHourPct",
-              coalesce(sum(a.share_pct) FILTER (WHERE a.win = 'seven_day'), 0)::float8 AS "sevenDayPct",
-              count(DISTINCT a.session_id)::int AS sessions
-       FROM usage.window_attribution a
-       LEFT JOIN usage.sessions s ON s.id = a.session_id
-       WHERE a.to_at >= now() - $1::float8 * interval '1 day' AND ($2::text IS NULL OR a.account = $2::text)
-       GROUP BY 1${GROUP_EXTRA[opts.by] ?? ''}
-       ORDER BY "sevenDayPct" DESC, "fiveHourPct" DESC
-       LIMIT $3::int`,
+        opts.by === 'model' ? modelSql(expr) : sessionSql(expr, GROUP_EXTRA[opts.by] ?? ''),
         [days, account, top],
       )
       const coverage = await tx`
