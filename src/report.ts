@@ -115,7 +115,7 @@ export async function unpricedByModel(sql: SQL): Promise<UnpricedModel[]> {
 }
 
 /** A model with this many unpriced Max records in the window fails `health`. */
-export const UNPRICED_MAX_LIMIT = 100
+const UNPRICED_MAX_LIMIT = 100
 const UNPRICED_DAYS = 7
 /** Not a model: the placeholder Claude Code writes for a locally generated message; deliberately without a price. */
 const NOT_A_MODEL = '<synthetic>'

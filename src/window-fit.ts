@@ -19,14 +19,14 @@ export const FAMILY_SQL = (r: string) =>
  * The ratios of the catalog's list prices (docs/usage-schema.md §Prices), so a family's fitted weight reads as "points per
  * million input-token equivalents" and a window that followed API prices would give every family the same figure.
  */
-export const WEIGHTED_TOKENS_SQL = (r: string) =>
+const WEIGHTED_TOKENS_SQL = (r: string) =>
   `(${r}.input_tokens + 5 * ${r}.output_tokens + 1.25 * ${r}.cache_write_5m_tokens + 2 * ${r}.cache_write_1h_tokens + 0.1 * ${r}.cache_read_tokens) / 1e6`
 
 /** The family every other family's weight is stated against (the middle tier). */
 export const REFERENCE_FAMILY = 'sonnet'
 
 const BIN_SECONDS = 3 * 3600
-export const BOOTSTRAP_RESAMPLES = 2000
+const BOOTSTRAP_RESAMPLES = 2000
 /** 90 % interval. */
 const LOW_Q = 0.05
 const HIGH_Q = 0.95
