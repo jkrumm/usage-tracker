@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -265,12 +265,16 @@ describe('knownRepos', () => {
     for (const d of ['src/argo', 'src/.hidden', 'src/worktrees', 'iu/epos-x'])
       mkdirSync(join(root, d), { recursive: true })
     writeFileSync(join(root, 'src/notes.md'), '')
+    symlinkSync(join(root, 'src/argo'), join(root, 'src/argo-old'))
+    symlinkSync(join(root, 'src/gone'), join(root, 'src/dangling'))
     const k = knownRepos({ sourceRoot: join(root, 'src'), iuRoot: join(root, 'iu') })
     expect(k.has('argo')).toBe(true)
     expect(k.has('iu/epos-x')).toBe(true)
     expect(k.has('.hidden')).toBe(false)
     expect(k.has('worktrees')).toBe(false)
     expect(k.has('notes.md')).toBe(false)
+    expect(k.has('argo-old')).toBe(true)
+    expect(k.has('dangling')).toBe(false)
     expect(k.has('photo-flow')).toBe(true)
     expect(k.has('nope')).toBe(false)
   })

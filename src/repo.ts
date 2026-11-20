@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -209,6 +209,15 @@ export interface KnownRepoRoots {
   iuRoot?: string
 }
 
+/** A symlink to a directory: a renamed repo keeps its old name this way, and its rows still carry that name. */
+function isDirectoryLink(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** Every repo that exists: the directories under SourceRoot and IuRoot (`iu/<dir>`) plus the retired ones. */
 export function knownRepos(roots: KnownRepoRoots = {}): ReadonlySet<string> {
   const known = new Set<string>(RETIRED_REPOS)
@@ -220,8 +229,8 @@ export function knownRepos(roots: KnownRepoRoots = {}): ReadonlySet<string> {
       return
     }
     for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith('.') || e.name === 'worktrees') continue
-      known.add(prefix + e.name)
+      if (e.name.startsWith('.') || e.name === 'worktrees') continue
+      if (e.isDirectory() || isDirectoryLink(join(root, e.name))) known.add(prefix + e.name)
     }
   }
   add(roots.sourceRoot ?? join(homedir(), 'SourceRoot'), '')
