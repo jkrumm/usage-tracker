@@ -2,8 +2,8 @@
 
 Token and cost telemetry for every AI tool I run, ingested into the Postgres `usage` schema (database `shared` on
 the mini, role `usage`). One normalized `usage.records` table, effective-dated prices in SQL, one CLI. Collectors are
-dumb: they emit tokens and ids only. Model normalization, billing classification, lanes, sessions and pricing live
-centrally in the writer (`src/pg/writer.ts`, `usage.compute_cost`), so a new source never re-implements them. A
+dumb: they emit tokens and ids only. Model normalization, billing classification, sessions and pricing live
+centrally in the writer (`src/pg/writer.ts`, `usage.compute_cost`; the claude-code collector stamps only the lane label, `laneFor` maps it), so a new source never re-implements them. A
 LaunchAgent runs `ingest` every 900 s; the dashboard and APIs read the same schema. There is no staging store and no
 push step.
 
