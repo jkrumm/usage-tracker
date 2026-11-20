@@ -14,9 +14,11 @@ What failure looks like here:
 - **Cost lies.** `usage.compute_cost` (SQL) and `src/prices/cost.ts` must agree, with the shared fixtures in `cost.test.ts` changed
   together. An unpriced model is NULL / `cost_source='none'`, never 0; `prices-sync` keeps the previous row on a vanished or
   zeroed catalog price. No rate card in code: an IU rate is a new `price_overrides` row in a new migration.
-- **A collector decides what only the writer may.** Model normalization, billing, account, lane and IU key are derived in
+- **A collector decides what only the writer may.** Model normalization, billing, account and IU key are derived in
   `src/pg/writer.ts` / `src/models.ts` (`classifyBilling`, `resolveAccount`) / `src/iu-keys.ts` (`resolveIuKey`), never in
-  `src/collectors/*`. A NULL Max account is a collector bug that must stay visible.
+  `src/collectors/*`. Lane is split: the claude-code collector stamps a lane label into `sub_tool` (`stampLane` in
+  `src/collectors/claude-code.ts`, from session_env, the agent-gateway window and the entrypoint); `src/pg/writer.ts` maps it
+  to `usage.records.lane` through `laneFor`. A NULL Max account is a collector bug that must stay visible.
 - **Spend lands in the wrong class.** `billing` is `max` | `api_key` | `api_credit` | `unknown`; `budget` counts IU `api_key` rows only
   and never `api_credit`; gateway mirror duplicates are marked (`records_unique`), not deleted, and counted once.
 - **A migration rewrites history.** Migrations under `migrations/pg` are forward-only and applied files are never edited; the
